@@ -512,10 +512,61 @@ fn derive_target_parser<'src, I>() -> impl Parser<'src, I, ParsedDeriveTarget<'s
 where
     I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
 {
-    qualified_ident_parser().map_with(|path, e| ParsedDeriveTarget {
-        span: e.span(),
-        path,
-    })
+    let ident = select! {
+        Token::Ident(name) => (name, false),
+        Token::Import => ("import", true),
+        Token::Export => ("export", true),
+        Token::Pragma => ("pragma", true),
+        Token::Type => ("type", true),
+        Token::Data => ("data", true),
+        Token::Class => ("class", true),
+        Token::Instance => ("instance", true),
+        Token::Contract => ("contract", true),
+        Token::Public => ("public", true),
+        Token::Payable => ("payable", true),
+        Token::Function => ("function", true),
+        Token::Constructor => ("constructor", true),
+        Token::Fallback => ("fallback", true),
+        Token::Forall => ("forall", true),
+        Token::Default => ("default", true),
+    }
+    .validate(|(name, reserved), e, emitter| {
+        if reserved {
+            emitter.emit(Rich::custom(
+                e.span(),
+                format!("reserved keyword `{name}` cannot name a derived class"),
+            ));
+        }
+        if name.contains('-') {
+            emitter.emit(Rich::custom(
+                e.span(),
+                format!("identifier `{name}` cannot contain hyphens"),
+            ));
+        }
+        (name, e.span())
+    });
+    ident
+        .separated_by(just(Token::Dot))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map_with(|path, e| ParsedDeriveTarget {
+            span: e.span(),
+            path,
+        })
+}
+
+fn derive_declaration_boundary_parser<'src, I>() -> impl Parser<'src, I, (), ParserErr<'src>>
+where
+    I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
+{
+    let contract_field = ident_parser()
+        .then_ignore(just(Token::Colon))
+        .rewind()
+        .ignored();
+    just(Token::RBrace)
+        .to(())
+        .or(top_level_item_start_token_parser())
+        .or(contract_field)
 }
 
 fn derive_attr_parser<'src, I>() -> impl Parser<'src, I, ParsedDeriveAttr<'src>, ParserErr<'src>>
@@ -549,11 +600,13 @@ where
     // Once `#[` has been seen, consume a closed but otherwise malformed
     // attribute as one recoverable unit. This keeps the following declaration
     // available to the ordinary item parser.
+    let malformed_boundary = derive_declaration_boundary_parser();
     let malformed = just(Token::Hash)
         .ignore_then(just(Token::LBracket))
         .ignore_then(
             any()
                 .and_is(just(Token::RBracket).not())
+                .and_is(malformed_boundary.not())
                 .repeated()
                 .collect::<Vec<_>>(),
         )
@@ -575,8 +628,7 @@ where
     // boundary for contract-local attributes.
     let recovery_boundary = just(Token::RBracket)
         .to(())
-        .or(just(Token::RBrace).to(()))
-        .or(top_level_item_start_token_parser());
+        .or(derive_declaration_boundary_parser());
     let unclosed = just(Token::Hash)
         .ignore_then(just(Token::LBracket))
         .ignore_then(

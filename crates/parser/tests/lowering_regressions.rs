@@ -1038,3 +1038,52 @@ fn derive_remains_an_ordinary_identifier_outside_attributes() {
     }));
     assert!(top_function(&db, module, "derive").body(&db).is_some());
 }
+
+#[test]
+fn unclosed_derive_does_not_consume_later_declarations_or_contract_fields() {
+    let db = TestDb::default();
+    let src = r#"
+#[derive(Eq)
+function kept() {}
+]
+data After;
+contract C {
+  #[derive(Eq)
+  slot: word;
+  function nested() {}
+}
+"#;
+    let (file, module) = parse_module(&db, "derive-unclosed-boundaries", src);
+    assert!(!diagnostics(&db, file).is_empty());
+    assert!(top_function(&db, module, "kept").body(&db).is_some());
+    assert!(module.items(&db).iter().any(|item| {
+        matches!(item, Item::AdtDef(adt) if (*adt.name(&db).atom()).text(&db) == "After")
+    }));
+
+    let contract = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ContractDef(contract) => Some(*contract),
+            _ => None,
+        })
+        .expect("contract");
+    assert_eq!(contract.fields(&db).len(), 1);
+    assert!(contract_function(&db, module, "nested").body(&db).is_some());
+}
+
+#[test]
+fn derive_targets_reject_reserved_identifiers() {
+    let db = TestDb::default();
+    let src = "#[derive(fallback)] data Kept;";
+    let (file, module) = parse_module(&db, "derive-reserved-target", src);
+    assert!(!diagnostics(&db, file).is_empty());
+    module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::AdtDef(adt) => Some(*adt),
+            _ => None,
+        })
+        .expect("data declaration survives malformed attribute");
+}
