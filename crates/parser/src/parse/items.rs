@@ -508,6 +508,103 @@ where
     just(Token::Semi).ignored()
 }
 
+fn derive_target_parser<'src, I>() -> impl Parser<'src, I, ParsedDeriveTarget<'src>, ParserErr<'src>>
+where
+    I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
+{
+    qualified_ident_parser().map_with(|path, e| ParsedDeriveTarget {
+        span: e.span(),
+        path,
+    })
+}
+
+fn derive_attr_parser<'src, I>() -> impl Parser<'src, I, ParsedDeriveAttr<'src>, ParserErr<'src>>
+where
+    I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
+{
+    let derive_kw = select! { Token::Ident(name) if name == "derive" => () };
+    let targets = derive_target_parser()
+        .separated_by(just(Token::Comma))
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LParen), just(Token::RParen));
+    let valid = just(Token::Hash)
+        .ignore_then(just(Token::LBracket))
+        .ignore_then(derive_kw)
+        .ignore_then(targets)
+        .then_ignore(just(Token::RBracket))
+        .map_with(|targets, e| ParsedDeriveAttr {
+            span: e.span(),
+            targets,
+        })
+        .validate(|attr, _, emitter| {
+            if attr.targets.is_empty() {
+                emitter.emit(Rich::custom(
+                    attr.span,
+                    "derive attribute requires at least one class path",
+                ));
+            }
+            attr
+        });
+
+    // Once `#[` has been seen, consume a closed but otherwise malformed
+    // attribute as one recoverable unit. This keeps the following declaration
+    // available to the ordinary item parser.
+    let malformed = just(Token::Hash)
+        .ignore_then(just(Token::LBracket))
+        .ignore_then(
+            any()
+                .and_is(just(Token::RBracket).not())
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
+        .then_ignore(just(Token::RBracket))
+        .map_with(|_, e| ParsedDeriveAttr {
+            span: e.span(),
+            targets: Vec::new(),
+        })
+        .validate(|attr, _, emitter| {
+            emitter.emit(Rich::custom(
+                attr.span,
+                "malformed derive attribute; expected `#[derive(Class, ...)]`",
+            ));
+            attr
+        });
+
+    // If the closing `]` is missing, stop before the next declaration so the
+    // outer item parser can still recover that declaration. `RBrace` is also a
+    // boundary for contract-local attributes.
+    let recovery_boundary = just(Token::RBracket)
+        .to(())
+        .or(just(Token::RBrace).to(()))
+        .or(top_level_item_start_token_parser());
+    let unclosed = just(Token::Hash)
+        .ignore_then(just(Token::LBracket))
+        .ignore_then(
+            any()
+                .and_is(recovery_boundary.not())
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
+        .map_with(|_, e| ParsedDeriveAttr {
+            span: e.span(),
+            targets: Vec::new(),
+        })
+        .validate(|attr, _, emitter| {
+            emitter.emit(Rich::custom(
+                attr.span,
+                "unclosed derive attribute; expected `]`",
+            ));
+            attr
+        });
+
+    valid
+        .or(malformed)
+        .or(unclosed)
+        .labelled("derive attribute")
+        .as_context()
+        .boxed()
+}
+
 fn adt_payload_parser<'src, I>() -> impl Parser<
     'src,
     I,
@@ -575,6 +672,7 @@ where
         .map_with(|(name, ty_params, ctors), e| ParsedTopItem::Adt {
             span: e.span(),
             leading_comments: Vec::new(),
+            derive_attr: None,
             name,
             ty_params,
             ctors,
@@ -771,13 +869,15 @@ where
         .map_with(|(name, ty_params, ctors), e| ParsedContractItem::Adt {
             span: e.span(),
             leading_comments: Vec::new(),
+            derive_attr: None,
             name,
             ty_params,
             ctors,
         })
         .boxed();
 
-    let item_start = just(Token::Public)
+    let item_start = just(Token::Hash)
+        .or(just(Token::Public))
         .or(just(Token::Payable))
         .or(just(Token::Function))
         .or(just(Token::Constructor))
@@ -815,9 +915,49 @@ fn contract_member_parser<'src, I>()
 where
     I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
 {
-    field_def_parser()
+    let member = field_def_parser()
         .map(ParsedContractMember::Field)
         .or(contract_item_parser().map(ParsedContractMember::Item))
+        .boxed();
+
+    derive_attr_parser()
+        .or_not()
+        .then(member)
+        .validate(|(derive_attr, mut member), _, emitter| {
+            let Some(attr) = derive_attr else {
+                return member;
+            };
+
+            match &mut member {
+                ParsedContractMember::Item(ParsedContractItem::Adt {
+                    span, derive_attr, ..
+                }) => {
+                    *span = LexSpan::from(attr.span.start..span.end);
+                    *derive_attr = Some(attr);
+                }
+                _ => {
+                    emitter.emit(Rich::custom(
+                        attr.span,
+                        "derive attribute is only allowed on data declarations",
+                    ));
+                    let span = match &mut member {
+                        ParsedContractMember::Field(field) => &mut field.span,
+                        ParsedContractMember::Item(ParsedContractItem::Function(function)) => {
+                            &mut function.span
+                        }
+                        ParsedContractMember::Item(ParsedContractItem::TypeAlias {
+                            span, ..
+                        })
+                        | ParsedContractMember::Item(ParsedContractItem::Adt { span, .. })
+                        | ParsedContractMember::Item(ParsedContractItem::Error { span, .. }) => {
+                            span
+                        }
+                    };
+                    *span = LexSpan::from(attr.span.start..span.end);
+                }
+            }
+            member
+        })
         .boxed()
 }
 
@@ -872,7 +1012,8 @@ pub(super) fn top_item_parser<'src, I>()
 where
     I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
 {
-    let item_start = just(Token::Import)
+    let item_start = just(Token::Hash)
+        .or(just(Token::Import))
         .or(just(Token::Export))
         .or(just(Token::Pragma))
         .or(just(Token::Type))
@@ -898,7 +1039,7 @@ where
             }
         });
 
-    choice((
+    let item = choice((
         import_parser(),
         export_parser(),
         pragma_parser(),
@@ -908,8 +1049,46 @@ where
         instance_parser(),
         contract_parser(),
         function_parser(),
-    ))
-    .recover_with(via_parser(recovery))
-    .labelled("top-level item")
-    .as_context()
+    ));
+
+    derive_attr_parser()
+        .or_not()
+        .then(item)
+        .validate(|(derive_attr, mut item), _, emitter| {
+            let Some(attr) = derive_attr else {
+                return item;
+            };
+
+            match &mut item {
+                ParsedTopItem::Adt {
+                    span, derive_attr, ..
+                } => {
+                    *span = LexSpan::from(attr.span.start..span.end);
+                    *derive_attr = Some(attr);
+                }
+                _ => {
+                    emitter.emit(Rich::custom(
+                        attr.span,
+                        "derive attribute is only allowed on data declarations",
+                    ));
+                    let span = match &mut item {
+                        ParsedTopItem::Import { span, .. }
+                        | ParsedTopItem::Export { span, .. }
+                        | ParsedTopItem::Pragma { span, .. }
+                        | ParsedTopItem::TypeAlias { span, .. }
+                        | ParsedTopItem::Adt { span, .. }
+                        | ParsedTopItem::Class { span, .. }
+                        | ParsedTopItem::Instance { span, .. }
+                        | ParsedTopItem::Contract { span, .. }
+                        | ParsedTopItem::Function { span, .. }
+                        | ParsedTopItem::Error { span, .. } => span,
+                    };
+                    *span = LexSpan::from(attr.span.start..span.end);
+                }
+            }
+            item
+        })
+        .recover_with(via_parser(recovery))
+        .labelled("top-level item")
+        .as_context()
 }

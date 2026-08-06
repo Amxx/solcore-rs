@@ -11,7 +11,7 @@ use super::{
     context::LoweringCtx,
     fingerprint::{export_fingerprint, import_fingerprint, instance_head_fingerprint},
     span::{
-        lower_owned_ident, lower_path, lower_qualifier_path, lower_spanned_ident,
+        lower_owned_ident, lower_path, lower_qualifier_path, lower_spanned_ident, path_text,
         root_span_from_lex, span_from_absolute,
     },
 };
@@ -410,6 +410,7 @@ pub(super) fn lower_adt<'db>(
     ctx: &mut LoweringCtx<'db, '_>,
     span: LexSpan,
     leading_comments: Vec<ParsedSourceComment<'_>>,
+    derive_attr: Option<ParsedDeriveAttr<'_>>,
     name: SpannedStr<'_>,
     ty_params: Vec<SpannedStr<'_>>,
     ctors: Vec<ParsedAdtCtor<'_>>,
@@ -417,6 +418,26 @@ pub(super) fn lower_adt<'db>(
     let adt_def = ctx.alloc_def_with_location(DefKind::Adt, Some(name.0), span.start);
 
     let anchor = AnchorId::def(ctx.db, adt_def);
+    let (derive_attr_span, derives) = derive_attr.map_or_else(
+        || (None, Vec::new()),
+        |attr| {
+            let attr_span = span_from_absolute(anchor, attr.span, span.start);
+            let targets = attr
+                .targets
+                .into_iter()
+                .map(|target| {
+                    lower_owned_ident(
+                        ctx.db,
+                        anchor,
+                        span.start,
+                        path_text(&target.path),
+                        target.span,
+                    )
+                })
+                .collect();
+            (Some(attr_span), targets)
+        },
+    );
     let name = lower_spanned_ident(ctx.db, anchor, span.start, name);
     let ty_params = ty_params
         .into_iter()
@@ -437,6 +458,8 @@ pub(super) fn lower_adt<'db>(
         adt_def,
         span,
         lower_source_comments(leading_comments),
+        derive_attr_span,
+        derives,
         name,
         ty_params,
         ctors,
@@ -742,6 +765,7 @@ fn lower_contract_item<'db>(
         ParsedContractItem::Adt {
             span,
             leading_comments,
+            derive_attr,
             name,
             ty_params,
             ctors,
@@ -749,6 +773,7 @@ fn lower_contract_item<'db>(
             ctx,
             span,
             leading_comments,
+            derive_attr,
             name,
             ty_params,
             ctors,

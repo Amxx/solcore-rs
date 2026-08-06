@@ -137,11 +137,20 @@ pub(crate) fn parse_file_to_hir_impl<'db>(
                 ParsedTopItem::Adt {
                     span,
                     leading_comments,
+                    derive_attr,
                     name,
                     ty_params,
                     ctors,
                 } => {
-                    let adt = lower_adt(&mut ctx, span, leading_comments, name, ty_params, ctors);
+                    let adt = lower_adt(
+                        &mut ctx,
+                        span,
+                        leading_comments,
+                        derive_attr,
+                        name,
+                        ty_params,
+                        ctors,
+                    );
                     items.push(item::Item::AdtDef(adt));
                 }
                 ParsedTopItem::Class {

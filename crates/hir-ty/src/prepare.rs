@@ -1072,6 +1072,8 @@ fn dispatch_name_declarations<'db>(
         adt_def,
         method.span,
         Vec::new(),
+        None,
+        Vec::new(),
         spanned_ident(db, method.span, &ty_name),
         Vec::new(),
         Vec::new(),

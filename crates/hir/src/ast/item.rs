@@ -39,6 +39,19 @@ pub struct AdtDef<'db> {
     #[returns(ref)]
     pub leading_comments: Vec<SourceComment>,
 
+    /// Span covering the complete `#[derive(...)]` attribute, when present.
+    #[tracked]
+    #[returns(copy)]
+    pub derive_attr_span: Option<Span<'db>>,
+
+    /// Requested class derivations in source order.
+    ///
+    /// Qualified paths are normalized into dotted identifiers while each
+    /// element retains the span of its complete source path.
+    #[tracked]
+    #[returns(ref)]
+    pub derives: Vec<SpannedElem<'db, Ident<'db>>>,
+
     /// Declared type name.
     #[tracked]
     pub name: SpannedElem<'db, Ident<'db>>,

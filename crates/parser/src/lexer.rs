@@ -246,6 +246,9 @@ pub enum Token<'a> {
     /// `?`.
     #[token("?")]
     Question,
+    /// `#`.
+    #[token("#")]
+    Hash,
 
     /// `.`.
     #[token(".")]
@@ -394,6 +397,7 @@ mod tests {
         assert_eq!(tokenize("as"), vec![Token::As]);
         assert_eq!(tokenize("let"), vec![Token::Let]);
         assert_eq!(tokenize("data"), vec![Token::Data]);
+        assert_eq!(tokenize("derive"), vec![Token::Ident("derive")]);
         assert_eq!(tokenize("class"), vec![Token::Class]);
         assert_eq!(tokenize("forall"), vec![Token::Forall]);
         assert_eq!(tokenize("instance"), vec![Token::Instance]);
@@ -474,6 +478,7 @@ mod tests {
         assert_eq!(tokenize("}"), vec![Token::RBrace]);
         assert_eq!(tokenize("["), vec![Token::LBracket]);
         assert_eq!(tokenize("]"), vec![Token::RBracket]);
+        assert_eq!(tokenize("#"), vec![Token::Hash]);
         assert_eq!(tokenize("_"), vec![Token::Underscore]);
     }
 

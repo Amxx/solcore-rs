@@ -93,6 +93,24 @@ pub(crate) struct ParseOutput<T> {
     pub(crate) errors: Vec<ParsedError>,
 }
 
+/// One class named by a `derive` attribute.
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedDeriveTarget<'src> {
+    /// Span covering the complete possibly-qualified class path.
+    pub(crate) span: LexSpan,
+    /// Class path segments in source order.
+    pub(crate) path: Vec<SpannedStr<'src>>,
+}
+
+/// Parsed `#[derive(...)]` attribute attached to a data declaration.
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedDeriveAttr<'src> {
+    /// Span covering the complete attribute, from `#` through `]`.
+    pub(crate) span: LexSpan,
+    /// Classes requested by the attribute, in source order.
+    pub(crate) targets: Vec<ParsedDeriveTarget<'src>>,
+}
+
 /// Parsed top-level item before HIR lowering.
 #[derive(Debug, Clone)]
 pub(crate) enum ParsedTopItem<'src> {
@@ -152,6 +170,8 @@ pub(crate) enum ParsedTopItem<'src> {
         span: LexSpan,
         /// Consecutive comments directly preceding the declaration.
         leading_comments: Vec<ParsedSourceComment<'src>>,
+        /// Optional derive attribute preceding `data`.
+        derive_attr: Option<ParsedDeriveAttr<'src>>,
         /// Type name.
         name: SpannedStr<'src>,
         /// Type parameters.
@@ -483,6 +503,8 @@ pub(crate) enum ParsedContractItem<'src> {
         span: LexSpan,
         /// Consecutive comments directly preceding the declaration.
         leading_comments: Vec<ParsedSourceComment<'src>>,
+        /// Optional derive attribute preceding `data`.
+        derive_attr: Option<ParsedDeriveAttr<'src>>,
         /// ADT name.
         name: SpannedStr<'src>,
         /// Type parameters.

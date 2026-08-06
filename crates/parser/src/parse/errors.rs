@@ -135,6 +135,7 @@ fn token_spelling(token: &Token<'_>) -> &'static str {
         Token::Caret => "^",
         Token::At => "@",
         Token::Question => "?",
+        Token::Hash => "#",
         Token::Dot => ".",
         Token::Colon => ":",
         Token::Semi => ";",
