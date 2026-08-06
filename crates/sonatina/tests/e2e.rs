@@ -13,9 +13,9 @@ use solcore_sonatina::translate_hull_program;
 use solcore_test_utils::{
     define_frontend_test_db,
     e2e::{
-        AbiShape, E2eFailure, FailureKind, ResolvedE2eCall, e2e_enabled, e2e_pipeline_only,
-        e2e_required, encode_hex, parse_e2e_directive, resolve_e2e_comments,
-        with_shared_evm_harness,
+        AbiShape, E2eExecution, E2eFailure, FailureKind, ResolvedE2eCall, e2e_enabled,
+        e2e_pipeline_only, e2e_required, encode_hex, load_raw_e2e_vector, parse_e2e_directive,
+        resolve_e2e_comments, with_shared_evm_harness,
     },
     load_fixture_case_with_file_urls, load_reachable_modules_with_file_urls,
     repo_root_from_manifest,
@@ -27,7 +27,7 @@ use specialize::{
 
 define_frontend_test_db!(TestDb, hir_ty);
 
-type CompiledFixture = (Vec<(OptLevel, Vec<u8>)>, Vec<ResolvedE2eCall>);
+type CompiledFixture = (Vec<(OptLevel, Vec<u8>)>, E2eExecution);
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/../../tests/e2e",
@@ -43,7 +43,7 @@ fn sonatina_evm_e2e(fixture: Fixture<&str>) {
     }
 
     let path = PathBuf::from(fixture.path());
-    let result = lower_and_compile(&path).and_then(|(creations, calls)| {
+    let result = lower_and_compile(&path).and_then(|(creations, execution)| {
         if e2e_pipeline_only() {
             return Ok(());
         }
@@ -52,14 +52,20 @@ fn sonatina_evm_e2e(fixture: Fixture<&str>) {
                 return Ok(());
             };
             for (opt_level, creation) in creations {
-                harness
-                    .execute_deployed_calls(&encode_hex(&creation), &calls)
-                    .map_err(|failure| {
-                        E2eFailure::new(
-                            failure.kind,
-                            format!("{opt_level:?} execution failed: {}", failure.message),
-                        )
-                    })?;
+                let result = match &execution {
+                    E2eExecution::Directives(calls) => {
+                        harness.execute_deployed_calls(&encode_hex(&creation), calls)
+                    }
+                    E2eExecution::Raw(vector) => {
+                        harness.execute_raw_vector(&encode_hex(&creation), vector)
+                    }
+                };
+                result.map_err(|failure| {
+                    E2eFailure::new(
+                        failure.kind,
+                        format!("{opt_level:?} execution failed: {}", failure.message),
+                    )
+                })?;
             }
             Ok(())
         })
@@ -75,6 +81,8 @@ fn sonatina_evm_e2e(fixture: Fixture<&str>) {
 
 fn lower_and_compile(path: &Path) -> Result<CompiledFixture, E2eFailure> {
     let lowered = lower_fixture(path)?;
+    let evm_version = lowered.execution.effective_evm_version();
+    require_sonatina_evm_version(&evm_version)?;
     let creations = [OptLevel::O0, OptLevel::O2]
         .into_iter()
         .map(|opt_level| {
@@ -82,7 +90,23 @@ fn lower_and_compile(path: &Path) -> Result<CompiledFixture, E2eFailure> {
                 .map(|creation| (opt_level, creation))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((creations, lowered.calls))
+    Ok((creations, lowered.execution))
+}
+
+fn require_sonatina_evm_version(evm_version: &str) -> Result<(), E2eFailure> {
+    if evm_version.eq_ignore_ascii_case("osaka") {
+        return Ok(());
+    }
+    Err(pipeline_error(format!(
+        "Sonatina currently targets only Osaka, but this fixture requires `{evm_version}`"
+    )))
+}
+
+#[test]
+fn sonatina_rejects_non_osaka_execution_targets() {
+    assert!(require_sonatina_evm_version("osaka").is_ok());
+    let error = require_sonatina_evm_version("prague").unwrap_err();
+    assert!(error.message.contains("targets only Osaka"), "{error}");
 }
 
 fn compile_creation(
@@ -129,7 +153,7 @@ fn compile_creation(
 struct LoweredFixture {
     db: &'static TestDb,
     program: Program<'static>,
-    calls: Vec<ResolvedE2eCall>,
+    execution: E2eExecution,
 }
 
 fn lower_fixture(path: &Path) -> Result<LoweredFixture, E2eFailure> {
@@ -147,12 +171,14 @@ fn lower_fixture(path: &Path) -> Result<LoweredFixture, E2eFailure> {
         .ok_or_else(|| pipeline_error("entry source file is missing"))?;
     let hir = parse_file_to_hir(db, file).module(db);
     let specialized = specialize_module(db, hir, SpecializeOptions::default());
-    finish_lowering(db, specialized)
+    let raw_vector = load_raw_e2e_vector(path)?;
+    finish_lowering(db, specialized, raw_vector)
 }
 
 fn finish_lowering(
     db: &'static TestDb,
     specialized: specialize::SpecializeOutput<'static>,
+    raw_vector: Option<solcore_test_utils::e2e::RawE2eVector>,
 ) -> Result<LoweredFixture, E2eFailure> {
     if !specialized.diagnostics.is_empty() {
         return Err(pipeline_error(format!(
@@ -161,7 +187,19 @@ fn finish_lowering(
         )));
     }
     let source = parse_file_to_hir(db, specialized.module.module.file(db)).module(db);
-    let directives = resolve_fixture_directives(db, source, &specialized.module)?;
+    let (contract, execution) = match raw_vector {
+        Some(vector) => {
+            let contract = vector.contract.clone();
+            (contract, E2eExecution::Raw(vector))
+        }
+        None => {
+            let directives = resolve_fixture_directives(db, source, &specialized.module)?;
+            (
+                directives.contract,
+                E2eExecution::Directives(directives.calls),
+            )
+        }
+    };
     let emitted = hull::emit_module(db, &specialized.module, hull::EmitOptions::default());
     if !emitted.diagnostics.is_empty() {
         return Err(pipeline_error(format!(
@@ -176,11 +214,11 @@ fn finish_lowering(
         )));
     }
 
-    let program = contract_program(&emitted.program, &directives.contract)?;
+    let program = contract_program(&emitted.program, &contract)?;
     Ok(LoweredFixture {
         db,
         program,
-        calls: directives.calls,
+        execution,
     })
 }
 

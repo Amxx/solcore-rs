@@ -16,14 +16,20 @@ use std::{
 };
 
 mod directive;
+mod vector;
 
 pub use directive::*;
+pub use vector::*;
 
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+pub const DEFAULT_ANVIL_HARDFORK: &str = "osaka";
 const ANVIL_START_TIMEOUT: Duration = Duration::from_secs(15);
 const ANVIL_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const ANVIL_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const RAW_E2E_SENDER: &str = "0x1212121212121212121212121212120000000012";
+const RAW_E2E_BALANCE: &str = "0x10000000000000000000000000";
+const RAW_E2E_GAS: &str = "0x1312d00";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FailureKind {
@@ -76,6 +82,13 @@ pub fn e2e_required() -> bool {
     env_flag("E2E_REQUIRED")
 }
 
+pub fn configured_anvil_hardfork() -> String {
+    env::var_os("ANVIL_HARDFORK")
+        .unwrap_or_else(|| DEFAULT_ANVIL_HARDFORK.into())
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn env_flag(name: &str) -> bool {
     env::var_os(name).as_deref() == Some(std::ffi::OsStr::new("1"))
 }
@@ -98,6 +111,7 @@ pub fn looks_like_hex(value: &str) -> bool {
 
 pub struct EvmHarness {
     cast: PathBuf,
+    anvil_path: PathBuf,
     anvil: Anvil,
 }
 
@@ -105,6 +119,13 @@ pub struct EvmHarness {
 enum CallOutcome {
     Return(String),
     Revert(Option<Vec<u8>>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawTransactionOutcome {
+    succeeded: bool,
+    output: Vec<u8>,
+    contract_address: Option<String>,
 }
 
 impl EvmHarness {
@@ -133,8 +154,13 @@ impl EvmHarness {
             ));
         }
 
-        match Anvil::spawn(&anvil_path, &cast) {
-            Ok(anvil) => Ok(Some(Self { cast, anvil })),
+        let hardfork = configured_anvil_hardfork();
+        match Anvil::spawn(&anvil_path, &cast, &hardfork) {
+            Ok(anvil) => Ok(Some(Self {
+                cast,
+                anvil_path,
+                anvil,
+            })),
             Err(message) => unavailable(message),
         }
     }
@@ -214,22 +240,32 @@ impl EvmHarness {
 
     /// Submits one state-changing call and waits for a successful receipt.
     pub fn send(&self, address: &str, calldata: &str) -> Result<(), E2eFailure> {
-        let output = run_command(
-            &self.cast,
-            &[
-                "send",
-                "--rpc-url",
-                self.url(),
-                "--private-key",
-                ANVIL_PRIVATE_KEY,
-                address,
-                calldata,
-                "--json",
-            ],
-            &[],
-            COMMAND_TIMEOUT,
-        )
-        .map_err(|message| E2eFailure::new(FailureKind::Transaction, message))?;
+        self.send_with_value(address, calldata, None)
+    }
+
+    fn send_with_value(
+        &self,
+        address: &str,
+        calldata: &str,
+        value: Option<&str>,
+    ) -> Result<(), E2eFailure> {
+        let mut args = vec![
+            "send".to_owned(),
+            "--rpc-url".to_owned(),
+            self.url().to_owned(),
+            "--private-key".to_owned(),
+            ANVIL_PRIVATE_KEY.to_owned(),
+            address.to_owned(),
+            calldata.to_owned(),
+        ];
+        if let Some(value) = value.filter(|value| *value != "0x0") {
+            args.push("--value".to_owned());
+            args.push(value.to_owned());
+        }
+        args.push("--json".to_owned());
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = run_command(&self.cast, &args, &[], COMMAND_TIMEOUT)
+            .map_err(|message| E2eFailure::new(FailureKind::Transaction, message))?;
         if !output.status.success() {
             return Err(E2eFailure::new(
                 FailureKind::Transaction,
@@ -297,6 +333,289 @@ impl EvmHarness {
         }
         Ok(())
     }
+
+    /// Executes an upstream-compatible raw calldata/returndata vector.
+    ///
+    /// Every entry is one real transaction. Its trace supplies the returndata
+    /// while its receipt supplies the status, so the observed output and the
+    /// state visible to later entries always come from the same execution.
+    pub fn execute_raw_vector(
+        &self,
+        bytecode: &str,
+        vector: &RawE2eVector,
+    ) -> Result<(), E2eFailure> {
+        let evm_version = vector.effective_evm_version();
+        let anvil = Anvil::spawn(&self.anvil_path, &self.cast, evm_version).map_err(|message| {
+            E2eFailure::new(
+                FailureKind::Tooling,
+                format!(
+                    "failed to start dedicated `{evm_version}` Anvil for {}: {message}",
+                    vector.name
+                ),
+            )
+        })?;
+        let harness = Self {
+            cast: self.cast.clone(),
+            anvil_path: self.anvil_path.clone(),
+            anvil,
+        };
+        harness.prepare_raw_sender()?;
+
+        let mut creation = format!("0x{bytecode}");
+        creation.push_str(&encode_hex(&vector.constructor.calldata));
+        let constructor_value = vector.constructor.value_rpc_quantity();
+        let constructor = harness
+            .raw_transaction(None, &creation, &constructor_value)
+            .map_err(|error| {
+                E2eFailure::new(
+                    error.kind,
+                    format!("{} constructor: {}", vector.name, error.message),
+                )
+            })?;
+        assert_raw_constructor_outcome(vector, &constructor)?;
+        if !constructor.succeeded {
+            return Ok(());
+        }
+        let address = constructor.contract_address.ok_or_else(|| {
+            E2eFailure::new(
+                FailureKind::Deploy,
+                format!(
+                    "{} constructor succeeded without a contract address",
+                    vector.name
+                ),
+            )
+        })?;
+        for (index, call) in vector.calls.iter().enumerate() {
+            let label = format!(
+                "{} raw call #{} ({}) [{}]",
+                vector.name,
+                index + 1,
+                call.label,
+                call.calldata
+            );
+            let value = call.value_rpc_quantity();
+            let transaction = harness
+                .raw_transaction(Some(&address), &call.calldata, &value)
+                .map_err(|error| {
+                    E2eFailure::new(error.kind, format!("{label}: {}", error.message))
+                })?;
+            let outcome = if transaction.succeeded {
+                CallOutcome::Return(format!("0x{}", encode_hex(&transaction.output)))
+            } else {
+                CallOutcome::Revert(Some(transaction.output))
+            };
+            assert_call_outcome(&label, &call.expected, &outcome)?;
+        }
+        Ok(())
+    }
+
+    fn prepare_raw_sender(&self) -> Result<(), E2eFailure> {
+        self.rpc_result(
+            "anvil_setBalance",
+            serde_json::json!([RAW_E2E_SENDER, RAW_E2E_BALANCE]),
+            FailureKind::Tooling,
+        )?;
+        self.rpc_result(
+            "anvil_impersonateAccount",
+            serde_json::json!([RAW_E2E_SENDER]),
+            FailureKind::Tooling,
+        )?;
+        Ok(())
+    }
+
+    fn raw_transaction(
+        &self,
+        recipient: Option<&str>,
+        data: &str,
+        value: &str,
+    ) -> Result<RawTransactionOutcome, E2eFailure> {
+        let mut transaction = serde_json::Map::new();
+        transaction.insert("from".to_owned(), serde_json::json!(RAW_E2E_SENDER));
+        transaction.insert("data".to_owned(), serde_json::json!(data));
+        transaction.insert("value".to_owned(), serde_json::json!(value));
+        transaction.insert("gas".to_owned(), serde_json::json!(RAW_E2E_GAS));
+        if let Some(recipient) = recipient {
+            transaction.insert("to".to_owned(), serde_json::json!(recipient));
+        }
+
+        let transaction_hash = self.rpc_result(
+            "eth_sendTransaction",
+            serde_json::json!([transaction]),
+            FailureKind::Transaction,
+        )?;
+        let transaction_hash = transaction_hash.as_str().ok_or_else(|| {
+            E2eFailure::new(
+                FailureKind::Transaction,
+                format!("eth_sendTransaction returned a non-string hash: {transaction_hash}"),
+            )
+        })?;
+
+        let started = Instant::now();
+        let receipt = loop {
+            let receipt = self.rpc_result(
+                "eth_getTransactionReceipt",
+                serde_json::json!([transaction_hash]),
+                FailureKind::Transaction,
+            )?;
+            if !receipt.is_null() {
+                break receipt;
+            }
+            if started.elapsed() >= COMMAND_TIMEOUT {
+                return Err(E2eFailure::new(
+                    FailureKind::Transaction,
+                    format!(
+                        "transaction {transaction_hash} was not mined within {COMMAND_TIMEOUT:?}"
+                    ),
+                ));
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+
+        let succeeded = transaction_receipt_succeeded(&receipt)?;
+        let contract_address = receipt
+            .get("contractAddress")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let trace = self.rpc_result(
+            "debug_traceTransaction",
+            serde_json::json!([
+                transaction_hash,
+                {
+                    "disableStorage": true,
+                    "disableMemory": true,
+                    "disableStack": true
+                }
+            ]),
+            FailureKind::Transaction,
+        )?;
+        let trace_failed = trace
+            .get("failed")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                E2eFailure::new(
+                    FailureKind::Transaction,
+                    format!("transaction trace has no boolean `failed` field: {trace}"),
+                )
+            })?;
+        if succeeded == trace_failed {
+            return Err(E2eFailure::new(
+                FailureKind::Transaction,
+                format!(
+                    "receipt and trace disagree for transaction {transaction_hash}: receipt success is {succeeded}, trace failure is {trace_failed}"
+                ),
+            ));
+        }
+        let output = trace
+            .get("returnValue")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                E2eFailure::new(
+                    FailureKind::Transaction,
+                    format!("transaction trace has no string `returnValue` field: {trace}"),
+                )
+            })?;
+        let output = decode_hex_data(output).map_err(|message| {
+            E2eFailure::new(
+                FailureKind::Decode,
+                format!("invalid transaction trace output: {message}"),
+            )
+        })?;
+
+        Ok(RawTransactionOutcome {
+            succeeded,
+            output,
+            contract_address,
+        })
+    }
+
+    fn rpc_result(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        kind: FailureKind,
+    ) -> Result<serde_json::Value, E2eFailure> {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        });
+        let response = post_json(self.url(), &request.to_string())
+            .map_err(|error| E2eFailure::new(kind, format!("{method}: {}", error.message)))?;
+        let response: serde_json::Value = serde_json::from_slice(&response).map_err(|error| {
+            E2eFailure::new(
+                kind,
+                format!("{method}: invalid JSON-RPC response: {error}"),
+            )
+        })?;
+        let object = response.as_object().ok_or_else(|| {
+            E2eFailure::new(
+                kind,
+                format!("{method}: JSON-RPC response is not an object"),
+            )
+        })?;
+        if object.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
+            || object.get("id").and_then(serde_json::Value::as_u64) != Some(1)
+        {
+            return Err(E2eFailure::new(
+                kind,
+                format!("{method}: invalid JSON-RPC envelope: {response}"),
+            ));
+        }
+        match (object.get("result"), object.get("error")) {
+            (Some(result), None) => Ok(result.clone()),
+            (None, Some(error)) => Err(E2eFailure::new(
+                kind,
+                format!("{method}: JSON-RPC error: {error}"),
+            )),
+            _ => Err(E2eFailure::new(
+                kind,
+                format!(
+                    "{method}: JSON-RPC response must contain exactly one of result or error: {response}"
+                ),
+            )),
+        }
+    }
+}
+
+fn assert_raw_constructor_outcome(
+    vector: &RawE2eVector,
+    outcome: &RawTransactionOutcome,
+) -> Result<(), E2eFailure> {
+    if vector.constructor.expected_success != outcome.succeeded {
+        return Err(E2eFailure::new(
+            FailureKind::Mismatch,
+            format!(
+                "{} constructor: expected {}, got {} with output 0x{}",
+                vector.name,
+                if vector.constructor.expected_success {
+                    "success"
+                } else {
+                    "failure"
+                },
+                if outcome.succeeded {
+                    "success"
+                } else {
+                    "failure"
+                },
+                encode_hex(&outcome.output)
+            ),
+        ));
+    }
+    if let Some(expected) = &vector.constructor.expected_output
+        && expected != &outcome.output
+    {
+        return Err(E2eFailure::new(
+            FailureKind::Mismatch,
+            format!(
+                "{} constructor: expected output 0x{}, got 0x{}",
+                vector.name,
+                encode_hex(expected),
+                encode_hex(&outcome.output)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn require_successful_transaction_receipt(stdout: &[u8]) -> Result<(), E2eFailure> {
@@ -306,24 +625,27 @@ fn require_successful_transaction_receipt(stdout: &[u8]) -> Result<(), E2eFailur
             format!("invalid cast send JSON receipt: {error}"),
         )
     })?;
-    let status = receipt.get("status").ok_or_else(|| {
-        E2eFailure::new(
-            FailureKind::Transaction,
-            format!("cast send receipt has no status: {receipt}"),
-        )
-    })?;
-    let succeeded = match status {
-        serde_json::Value::Number(number) => number.as_u64() == Some(1),
-        serde_json::Value::String(quantity) => parse_rpc_quantity(quantity) == Some(1),
-        _ => false,
-    };
-    if succeeded {
+    if transaction_receipt_succeeded(&receipt)? {
         return Ok(());
     }
     Err(E2eFailure::new(
         FailureKind::Transaction,
         format!("transaction receipt is not successful: {receipt}"),
     ))
+}
+
+fn transaction_receipt_succeeded(receipt: &serde_json::Value) -> Result<bool, E2eFailure> {
+    let status = receipt.get("status").ok_or_else(|| {
+        E2eFailure::new(
+            FailureKind::Transaction,
+            format!("transaction receipt has no status: {receipt}"),
+        )
+    })?;
+    Ok(match status {
+        serde_json::Value::Number(number) => number.as_u64() == Some(1),
+        serde_json::Value::String(quantity) => parse_rpc_quantity(quantity) == Some(1),
+        _ => false,
+    })
 }
 
 fn parse_rpc_quantity(quantity: &str) -> Option<u64> {
@@ -825,10 +1147,7 @@ struct Anvil {
 }
 
 impl Anvil {
-    fn spawn(anvil: &Path, cast: &Path) -> Result<Self, String> {
-        // Sonatina currently targets Osaka and may emit Osaka-only opcodes.
-        // Keep the runtime target aligned unless a caller explicitly overrides it.
-        let hardfork = env::var_os("ANVIL_HARDFORK").unwrap_or_else(|| "osaka".into());
+    fn spawn(anvil: &Path, cast: &Path, hardfork: &str) -> Result<Self, String> {
         let mut child = Command::new(anvil)
             .arg("--host")
             .arg("127.0.0.1")

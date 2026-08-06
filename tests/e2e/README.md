@@ -55,12 +55,27 @@ and a scalar are written as `((7, 1), 9)`. The complete shared example is in
 `composite-values/main.solc`. Normal comments are ignored, while a malformed
 comment beginning with `#[` is an error.
 
+For ABI shapes that the compiler metadata cannot describe yet, a fixture may
+instead place an upstream-compatible `main.json` next to `main.solc`. The JSON
+supplies complete calldata, call value, expected raw returndata or revert
+payload, the contract name, and optionally the required EVM version. As in the
+upstream runner, every entry is executed once as a real transaction from
+`0x1212121212121212121212121212120000000012`; the same execution supplies both
+the status/output assertion and the state observed by later entries. Each
+vector runs on a fresh, dedicated Anvil instance at its declared version. An
+omitted `evmVersion` means Prague, matching upstream; vectors that require
+Osaka must say so explicitly. Yul compilation uses that same target. The
+current Sonatina dependency only supports Osaka, so its runner rejects other
+targets explicitly instead of emitting Osaka bytecode for an older runtime.
+This is also the migration format for Solcore's dispatch fixtures with dynamic
+arrays or ADTs.
+
 Each case is lowered by the selected backend, compiled to EVM creation
 bytecode, deployed to Anvil, and called through the generated ABI selector.
 Set `E2E=1` to run execution tests. `E2E_PIPELINE_ONLY=1` stops after backend
 code generation; `E2E_REQUIRED=1` makes missing tools an error. Anvil defaults
-to the Osaka hardfork to match Sonatina's target; `ANVIL_HARDFORK` can override
-it for an alternate runtime.
+to the Osaka hardfork for directive fixtures; `ANVIL_HARDFORK` can override it
+for an alternate Yul runtime. Raw vectors always use their own `evmVersion`.
 
 For local optimized runs, use the workspace's E2E profile. It uses moderate
 optimization (`opt-level = 2`) without LTO, keeping execution representative

@@ -17,9 +17,9 @@ use parser::parse_file_to_hir;
 use solcore_test_utils::{
     define_frontend_test_db,
     e2e::{
-        AbiShape, COMMAND_TIMEOUT, E2eFailure, FailureKind, ResolvedE2eCall, command_available,
-        e2e_enabled, e2e_pipeline_only, looks_like_hex, parse_e2e_directive, resolve_e2e_comments,
-        run_command, with_shared_evm_harness,
+        AbiShape, COMMAND_TIMEOUT, E2eExecution, E2eFailure, FailureKind, ResolvedE2eCall,
+        command_available, e2e_enabled, e2e_pipeline_only, load_raw_e2e_vector, looks_like_hex,
+        parse_e2e_directive, resolve_e2e_comments, run_command, with_shared_evm_harness,
     },
     load_fixture_case_with_file_urls, load_reachable_modules_with_file_urls,
     repo_root_from_manifest,
@@ -65,18 +65,22 @@ fn run_fixture(path: &Path) -> Result<(), E2eFailure> {
         .parent()
         .and_then(Path::file_name)
         .unwrap_or(path.as_os_str());
-    let bytecode = compile_yul(&solc, label, &rendered.yul)?;
+    let evm_version = rendered.execution.effective_evm_version();
+    let bytecode = compile_yul(&solc, label, &rendered.yul, &evm_version)?;
     with_shared_evm_harness(|harness| {
         let Some(harness) = harness else {
             return Ok(());
         };
-        harness.execute_deployed_calls(&bytecode, &rendered.calls)
+        match &rendered.execution {
+            E2eExecution::Directives(calls) => harness.execute_deployed_calls(&bytecode, calls),
+            E2eExecution::Raw(vector) => harness.execute_raw_vector(&bytecode, vector),
+        }
     })
 }
 
 struct RenderedFixture {
     yul: String,
-    calls: Vec<ResolvedE2eCall>,
+    execution: E2eExecution,
 }
 
 fn render_fixture(path: &Path) -> Result<RenderedFixture, E2eFailure> {
@@ -105,7 +109,20 @@ fn render_fixture(path: &Path) -> Result<RenderedFixture, E2eFailure> {
         )));
     }
 
-    let directives = resolve_fixture_directives(db, source_module, &specialized.module)?;
+    let raw_vector = load_raw_e2e_vector(path)?;
+    let (contract, execution) = match raw_vector {
+        Some(vector) => {
+            let contract = vector.contract.clone();
+            (contract, E2eExecution::Raw(vector))
+        }
+        None => {
+            let directives = resolve_fixture_directives(db, source_module, &specialized.module)?;
+            (
+                directives.contract,
+                E2eExecution::Directives(directives.calls),
+            )
+        }
+    };
     let emitted = hull::emit_module(db, &specialized.module, hull::EmitOptions::default());
     if !emitted.diagnostics.is_empty() {
         return Err(pipeline_error(format!(
@@ -120,13 +137,10 @@ fn render_fixture(path: &Path) -> Result<RenderedFixture, E2eFailure> {
         )));
     }
 
-    let program = contract_program(&emitted.program, &directives.contract)?;
+    let program = contract_program(&emitted.program, &contract)?;
     let yul = solcore_yul::render_hull_program(db, &program)
         .map_err(|error| pipeline_error(format!("Yul translation failed: {}", error.message())))?;
-    Ok(RenderedFixture {
-        yul,
-        calls: directives.calls,
-    })
+    Ok(RenderedFixture { yul, execution })
 }
 
 struct ResolvedFixtureDirectives {
@@ -358,6 +372,7 @@ fn compile_yul(
     solc: &Path,
     label: impl AsRef<std::ffi::OsStr>,
     yul: &str,
+    evm_version: &str,
 ) -> Result<String, E2eFailure> {
     let path = temp_yul_path(label.as_ref());
     fs::write(&path, yul).map_err(|error| {
@@ -369,7 +384,13 @@ fn compile_yul(
 
     let output = run_command(
         solc,
-        &["--strict-assembly", "--optimize", "--bin"],
+        &[
+            "--strict-assembly",
+            "--optimize",
+            "--evm-version",
+            evm_version,
+            "--bin",
+        ],
         &[path.as_path()],
         COMMAND_TIMEOUT,
     );
