@@ -255,6 +255,150 @@ pub(super) fn def_hash_suffix<'db>(db: &'db dyn Db, def: DefId<'db>) -> String {
     format!("d{:08x}", (hasher.finish() & 0xffff_ffff) as u32)
 }
 
+/// Returns a source-stable fingerprint for a proof tree.
+///
+/// Salsa intern ids are intentionally not hashed directly: user definitions
+/// are identified by their source identity, and types and predicates are
+/// traversed structurally. This keeps generated symbol names independent of
+/// query evaluation order.
+pub(super) fn evidence_hash_suffix<'db>(db: &'db dyn Db, evidence: &[Evidence<'db>]) -> String {
+    let mut hasher = DefaultHasher::new();
+    evidence.len().hash(&mut hasher);
+    for evidence in evidence {
+        hash_evidence(db, evidence, &mut hasher);
+    }
+    format!("p{:016x}", hasher.finish())
+}
+
+fn hash_evidence<'db>(db: &'db dyn Db, evidence: &Evidence<'db>, state: &mut DefaultHasher) {
+    match evidence {
+        Evidence::Instance {
+            instance,
+            args,
+            sub_evidence,
+        } => {
+            0u8.hash(state);
+            hash_def_id(db, *instance, state);
+            hash_tys(db, args, state);
+            sub_evidence.len().hash(state);
+            for evidence in sub_evidence {
+                hash_evidence(db, evidence, state);
+            }
+        }
+        Evidence::Builtin { pred } => {
+            1u8.hash(state);
+            hash_pred(db, *pred, state);
+        }
+        Evidence::Superclass { class, pred, child } => {
+            2u8.hash(state);
+            hash_def_id(db, *class, state);
+            hash_pred(db, *pred, state);
+            hash_evidence(db, child, state);
+        }
+        Evidence::Derived {
+            kind,
+            pred,
+            sub_evidence,
+        } => {
+            3u8.hash(state);
+            match kind {
+                DerivedClauseKind::Generic { adt } => {
+                    0u8.hash(state);
+                    hash_def_id(db, *adt, state);
+                }
+                DerivedClauseKind::Class {
+                    adt,
+                    class,
+                    target_index,
+                } => {
+                    1u8.hash(state);
+                    hash_def_id(db, *adt, state);
+                    hash_def_id(db, *class, state);
+                    target_index.hash(state);
+                }
+                DerivedClauseKind::Closure => 2u8.hash(state),
+            }
+            hash_pred(db, *pred, state);
+            sub_evidence.len().hash(state);
+            for evidence in sub_evidence {
+                hash_evidence(db, evidence, state);
+            }
+        }
+    }
+}
+
+fn hash_pred<'db>(db: &'db dyn Db, pred: Pred<'db>, state: &mut DefaultHasher) {
+    match pred.kind(db) {
+        PredKind::InClass { class, main, args } => {
+            0u8.hash(state);
+            match class {
+                ClassId::Builtin(class) => {
+                    0u8.hash(state);
+                    class.hash(state);
+                }
+                ClassId::User(class) => {
+                    1u8.hash(state);
+                    hash_def_id(db, *class, state);
+                }
+            }
+            hash_ty(db, *main, state);
+            hash_tys(db, args, state);
+        }
+        PredKind::Eq { lhs, rhs } => {
+            1u8.hash(state);
+            hash_ty(db, *lhs, state);
+            hash_ty(db, *rhs, state);
+        }
+        PredKind::Error => 2u8.hash(state),
+    }
+}
+
+fn hash_tys<'db>(db: &'db dyn Db, tys: &[Ty<'db>], state: &mut DefaultHasher) {
+    tys.len().hash(state);
+    for ty in tys {
+        hash_ty(db, *ty, state);
+    }
+}
+
+fn hash_ty<'db>(db: &'db dyn Db, ty: Ty<'db>, state: &mut DefaultHasher) {
+    match ty.kind(db) {
+        TyKind::Error => 0u8.hash(state),
+        TyKind::Unknown => 1u8.hash(state),
+        TyKind::BoundVar(var) => {
+            2u8.hash(state);
+            var.index.hash(state);
+        }
+        TyKind::Named { ctor, args } => {
+            3u8.hash(state);
+            match ctor {
+                TyCtor::Builtin(ctor) => {
+                    0u8.hash(state);
+                    ctor.hash(state);
+                }
+                TyCtor::User(user) => {
+                    1u8.hash(state);
+                    hash_def_id(db, user.def, state);
+                    user.kind.hash(state);
+                }
+            }
+            hash_tys(db, args, state);
+        }
+        TyKind::Function { params, ret } => {
+            4u8.hash(state);
+            hash_tys(db, params, state);
+            hash_ty(db, *ret, state);
+        }
+        TyKind::Tuple(elems) => {
+            5u8.hash(state);
+            hash_tys(db, elems, state);
+        }
+        TyKind::Comptime(inner) => {
+            6u8.hash(state);
+            hash_ty(db, *inner, state);
+        }
+    }
+}
+
 fn hash_def_id<'db>(db: &'db dyn Db, def: DefId<'db>, state: &mut DefaultHasher) {
     hash_source_file_identity(db, def.file(db), state);
     def.kind(db).hash(state);

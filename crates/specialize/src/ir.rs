@@ -272,6 +272,12 @@ pub enum MonoFunctionOrigin<'db> {
         adt: DefId<'db>,
         method: String,
     },
+    DerivedClass {
+        adt: DefId<'db>,
+        class: DefId<'db>,
+        target_index: u32,
+        method: String,
+    },
     External,
 }
 

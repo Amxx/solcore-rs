@@ -38,7 +38,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             .mono_ty(callee_ty, "operator callee", expr.span)?;
         let evidence = self
             .call_evidence(expr.expr_id, expr.expr_id)
-            .map(|evidence| self.subst.apply_evidence(self.driver.db, evidence.evidence))
+            .map(|evidence| self.specialize_evidence(evidence.evidence))
             .or_else(|| {
                 self.driver.solve_operator_method_pred(
                     class_name,
@@ -108,7 +108,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             let mono_callee_ty = self.driver.mono_ty(callee_ty, "operator callee", span)?;
             let evidence = self
                 .call_evidence(expr_id, expr_id)
-                .map(|evidence| self.subst.apply_evidence(self.driver.db, evidence.evidence))
+                .map(|evidence| self.specialize_evidence(evidence.evidence))
                 .or_else(|| {
                     self.driver.solve_operator_method_pred(
                         class_name,
@@ -317,7 +317,19 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             .expr_ty(callee)
             .map(|ty| self.subst.apply_ty(self.driver.db, ty))
             .unwrap_or_else(|| Ty::unknown(self.driver.db));
-        if !ty_is_closed(self.driver.db, callee_ty)
+        if ty_has_specialization_hole(self.driver.db, callee_ty)
+            && let Some(hir_nameres::Resolution::ClassMethod { class, name }) = &resolution
+        {
+            let partial = Ty::function(
+                self.driver.db,
+                arg_exprs.iter().map(|arg| arg.ty.ty()).collect(),
+                result_ty,
+            );
+            callee_ty = self
+                .driver
+                .close_class_method_callee_ty(*class, name, partial, Some(span))
+                .unwrap_or(partial);
+        } else if !ty_is_closed(self.driver.db, callee_ty)
             && matches!(
                 resolution,
                 Some(hir_nameres::Resolution::Def {
@@ -397,7 +409,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 }
                 let evidence = self
                     .call_evidence(call_expr, callee)
-                    .map(|evidence| self.subst.apply_evidence(self.driver.db, evidence.evidence))
+                    .map(|evidence| self.specialize_evidence(evidence.evidence))
                     .or_else(|| {
                         self.driver
                             .solve_class_method_pred(class, &name, callee_ty, Some(span))
@@ -451,9 +463,9 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                     hir_nameres::BuiltinKind::ClassMethod(
                         hir_nameres::BuiltinClassMethod::InvokableInvoke,
                     ) => {
-                        let evidence = self.call_evidence(call_expr, callee).map(|evidence| {
-                            self.subst.apply_evidence(self.driver.db, evidence.evidence)
-                        });
+                        let evidence = self
+                            .call_evidence(call_expr, callee)
+                            .map(|evidence| self.specialize_evidence(evidence.evidence));
                         if let Some(evidence) = evidence
                             && let Some(name) = self.driver.resolve_class_method_call(
                                 "invoke", evidence, callee_ty, span, self.depth,
@@ -494,9 +506,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 if let Some((class, name)) = self.qualified_class_method(callee) {
                     let evidence = self
                         .call_evidence(call_expr, callee)
-                        .map(|evidence| {
-                            self.subst.apply_evidence(self.driver.db, evidence.evidence)
-                        })
+                        .map(|evidence| self.specialize_evidence(evidence.evidence))
                         .or_else(|| {
                             self.driver
                                 .solve_class_method_pred(class, &name, callee_ty, Some(span))
@@ -710,6 +720,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 ty: callee_ty,
                 base_name: name,
                 origin: MonoFunctionOrigin::Source,
+                evidence_bindings: Vec::new(),
             };
             return self.driver.enqueue(key, self.depth + 1);
         }
@@ -756,7 +767,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             });
         }
         if let Some(evidence) = self.call_evidence_for_builtin_int(span) {
-            let evidence = self.subst.apply_evidence(self.driver.db, evidence.evidence);
+            let evidence = self.specialize_evidence(evidence.evidence);
             if let Some(name) = self.driver.resolve_class_method_call(
                 "fromInteger",
                 evidence,
@@ -792,5 +803,21 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             origin: MonoCallOrigin::ByName,
             args,
         })
+    }
+}
+
+pub(super) fn ty_has_specialization_hole<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    match ty.kind(db) {
+        TyKind::Error | TyKind::Unknown | TyKind::BoundVar(_) => true,
+        TyKind::Named { args, .. } | TyKind::Tuple(args) => {
+            args.iter().any(|arg| ty_has_specialization_hole(db, *arg))
+        }
+        TyKind::Function { params, ret } => {
+            params
+                .iter()
+                .any(|param| ty_has_specialization_hole(db, *param))
+                || ty_has_specialization_hole(db, *ret)
+        }
+        TyKind::Comptime(inner) => ty_has_specialization_hole(db, *inner),
     }
 }

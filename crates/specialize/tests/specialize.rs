@@ -22,9 +22,10 @@ use parser::parse_file_to_hir;
 use rustc_hash::{FxHashMap, FxHashSet};
 use salsa::Setter;
 use solcore_specialize::{
-    MonoComptimeObligationKind, MonoEntry, MonoExpr, MonoExprKind, MonoItem, MonoPatKind,
-    MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, SpecializeDiagnosticKind, SpecializeOptions,
-    SpecializeOutput, specialize_module, specialize_name, specialize_prepared_module,
+    MonoComptimeObligationKind, MonoEntry, MonoExpr, MonoExprKind, MonoFunctionOrigin, MonoItem,
+    MonoPatKind, MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, SpecializeDiagnosticKind,
+    SpecializeOptions, SpecializeOutput, specialize_module, specialize_name,
+    specialize_prepared_module,
 };
 
 #[salsa::db]
@@ -1818,6 +1819,712 @@ contract C {
 }
 
 #[test]
+fn derived_class_wrapper_converts_exact_self_arguments_and_returns() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+#[derive(CloneLike)]
+data Box = Box(word);
+
+function main(x:Box) -> Box {
+  return CloneLike.clone(x);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrapper = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedClass { method, .. } if method == "clone"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("derived CloneLike.clone wrapper");
+    assert_eq!(wrapper.params.len(), 1);
+    assert_eq!(wrapper.params[0].ty.ty().display(db).to_string(), "adt:Box");
+    assert_eq!(wrapper.ret.ty().display(db).to_string(), "adt:Box");
+    let MonoStmtKind::Return(Some(MonoExpr {
+        kind:
+            MonoExprKind::Call {
+                callee: to,
+                args: to_args,
+                ..
+            },
+        ..
+    })) = &wrapper.body[0].kind
+    else {
+        panic!("expected Generic.to return: {wrapper:#?}");
+    };
+    assert!(to.name.starts_with("Generic_to_"), "{}", to.name);
+    let MonoExprKind::Call {
+        args: delegated_args,
+        ..
+    } = &to_args[0].kind
+    else {
+        panic!("expected delegated class call: {wrapper:#?}");
+    };
+    assert!(matches!(
+        delegated_args.as_slice(),
+        [MonoExpr {
+            kind: MonoExprKind::Call { callee, .. },
+            ..
+        }] if callee.name.starts_with("Generic_from_")
+    ));
+}
+
+#[test]
+fn derived_class_wrapper_keeps_method_binders_distinct_from_self() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall self . class self:Choose {
+  forall x . function choose(value:x, witness:self) -> x;
+}
+
+instance word:Choose {
+  forall x . function choose(value:x, witness:word) -> x { return value; }
+}
+
+#[derive(Choose)]
+data Box = Box(word);
+
+function main(value:Box, witness:Box) -> Box {
+  return Choose.choose(value, witness);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrapper = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedClass { method, .. } if method == "choose"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("derived Choose.choose wrapper");
+    assert_eq!(wrapper.params.len(), 2);
+    assert!(
+        wrapper
+            .params
+            .iter()
+            .all(|param| param.ty.ty().display(db) == "adt:Box")
+    );
+    assert_eq!(wrapper.ret.ty().display(db).to_string(), "adt:Box");
+    let MonoStmtKind::Return(Some(MonoExpr {
+        kind: MonoExprKind::Call { args, .. },
+        ..
+    })) = &wrapper.body[0].kind
+    else {
+        panic!("expected direct delegated return: {wrapper:#?}");
+    };
+    assert!(matches!(
+        args.as_slice(),
+        [
+            MonoExpr {
+                kind: MonoExprKind::Var(value),
+                ..
+            },
+            MonoExpr {
+                kind: MonoExprKind::Call { callee, .. },
+                ..
+            }
+        ] if value.name == "value" && callee.name.starts_with("Generic_from_")
+    ));
+}
+
+#[test]
+fn derived_class_wrapper_respects_a_manual_generic_instance() {
+    let (_db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+pragma no-generic-instance-for Box;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+#[derive(CloneLike)]
+data Box = Box(bool);
+
+instance Box:Generic(word) {
+  function from(x:Box) -> word { return 7; }
+  function to(x:word) -> Box { return Box(false); }
+}
+
+function main(x:Box) -> Box {
+  return CloneLike.clone(x);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    assert!(
+        matches!(
+            main_return_expr(&output),
+            Some(MonoExpr {
+                kind: MonoExprKind::Con { args, .. },
+                ..
+            }) if matches!(
+                args.as_slice(),
+                [MonoExpr {
+                    kind: MonoExprKind::Con { ctor, args },
+                    ..
+                }] if ctor.name == "false" && args.is_empty()
+            )
+        ),
+        "{:#?}",
+        output.module
+    );
+}
+
+#[test]
+fn derived_class_wrapper_uses_the_imported_definition_environment() {
+    let db = Box::leak(Box::new(TestDb::default()));
+    let main_root = PathBuf::from("/main");
+    db.module_tree = Some(ModuleTree::new(
+        db,
+        main_root.clone(),
+        PathBuf::from("/std"),
+        BTreeMap::new(),
+    ));
+    db.module_fs_snapshot = Some(module_fs_snapshot_for_roots(db, [main_root.as_path()]));
+    let lib_path = main_root.join("lib.solc");
+    let main_path = main_root.join("main.solc");
+    let lib_file = source_file_at_path(
+        db,
+        &lib_path,
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+export { Box(*), cloneBox };
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+#[derive(CloneLike)]
+data Box = Box(word);
+
+function cloneBox(x:Box) -> Box {
+  return CloneLike.clone(x);
+}
+"#,
+    );
+    let main_file = source_file_at_path(
+        db,
+        &main_path,
+        r#"
+import lib;
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+contract C {
+  function main(x:lib.Box) -> lib.Box {
+    return lib.cloneBox(x);
+  }
+}
+"#,
+    );
+    let lib_key = module_key_for_path(LibraryId::Main, &main_root, &lib_path).unwrap();
+    let main_key = module_key_for_path(LibraryId::Main, &main_root, &main_path).unwrap();
+    db.insert_module_file(lib_key, lib_file);
+    db.insert_module_file(main_key, main_file);
+
+    let module = parse_file_to_hir(db, main_file).module(db);
+    let output = specialize_module(db, module, SpecializeOptions::default());
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let (adt, class) = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function) => match function.origin {
+                MonoFunctionOrigin::DerivedClass { adt, class, .. } => Some((adt, class)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("imported derived-class wrapper: {:#?}", output.module));
+    assert_eq!(adt.file(db), lib_file);
+    assert_eq!(class.file(db), lib_file);
+}
+
+#[test]
+fn derived_class_and_instance_specializations_are_proof_aware_across_modules() {
+    let db = Box::leak(Box::new(TestDb::default()));
+    let main_root = PathBuf::from("/main");
+    db.module_tree = Some(ModuleTree::new(
+        db,
+        main_root.clone(),
+        PathBuf::from("/std"),
+        BTreeMap::new(),
+    ));
+    db.module_fs_snapshot = Some(module_fs_snapshot_for_roots(db, [main_root.as_path()]));
+
+    let modules = [
+        (
+            "lib.solc",
+            r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+export { Pick, Wrap(*) };
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:Pick {
+  function pick(x:a) -> word;
+}
+
+forall a b . a:Pick, b:Pick =>
+instance (a,b):Pick {
+  function pick(x:(a,b)) -> word {
+    match x {
+    | (left, right) =>
+        let left_value = Pick.pick(left);
+        let right_value = Pick.pick(right);
+        let result : word;
+        assembly { result := add(mul(left_value, 10), right_value) }
+        return result;
+    }
+  }
+}
+
+#[derive(Pick)]
+data Wrap(a) = Wrap(a, a);
+"#,
+        ),
+        (
+            "left.solc",
+            r#"
+import lib.{*};
+export { left };
+
+instance word:Pick {
+  function pick(x:word) -> word {
+    let result : word;
+    assembly { result := sload(x) }
+    return result;
+  }
+}
+
+function left(x:Wrap(word)) -> word {
+  return Pick.pick(x);
+}
+"#,
+        ),
+        (
+            "right.solc",
+            r#"
+import lib.{*};
+export { right };
+
+instance word:Pick {
+  function pick(x:word) -> word {
+    let result : word;
+    assembly { result := sload(add(x, 1)) }
+    return result;
+  }
+}
+
+function right(x:Wrap(word)) -> word {
+  return Pick.pick(x);
+}
+"#,
+        ),
+        (
+            "main.solc",
+            r#"
+import lib.{*};
+import left.{left};
+import right.{right};
+
+contract C {
+  function main(x:Wrap(word), y:Wrap(word)) -> (word, word) {
+    return (left(x), right(y));
+  }
+}
+"#,
+        ),
+    ];
+
+    let mut files = BTreeMap::new();
+    for (name, src) in modules {
+        let path = main_root.join(name);
+        let file = source_file_at_path(db, &path, src);
+        let key = module_key_for_path(LibraryId::Main, &main_root, &path).unwrap();
+        db.insert_module_file(key, file);
+        files.insert(name, file);
+    }
+
+    let main_file = files["main.solc"];
+    let lib_file = files["lib.solc"];
+    let left_file = files["left.solc"];
+    let right_file = files["right.solc"];
+    let module = parse_file_to_hir(db, main_file).module(db);
+    let output = specialize_module(db, module, SpecializeOptions::default());
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let functions = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let wrappers = functions
+        .iter()
+        .copied()
+        .filter(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedClass { method, .. } if method == "pick"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(wrappers.len(), 2, "{wrappers:#?}");
+    assert_ne!(wrappers[0].name, wrappers[1].name);
+    assert!(wrappers.iter().all(|function| function.name.contains("_p")));
+
+    let pair_methods = functions
+        .iter()
+        .copied()
+        .filter(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::InstanceMethod { instance, method, .. }
+                    if instance.file(db) == lib_file && method == "pick"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(pair_methods.len(), 2, "{pair_methods:#?}");
+    assert_ne!(pair_methods[0].name, pair_methods[1].name);
+    assert!(
+        pair_methods
+            .iter()
+            .all(|function| function.name.contains("_p"))
+    );
+
+    let word_method_name = |file| {
+        functions
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { instance, method, .. }
+                        if instance.file(db) == file && method == "pick"
+                )
+            })
+            .map(|function| function.name.clone())
+            .unwrap_or_else(|| panic!("word Pick.pick specialization for {file:?}"))
+    };
+    let left_word = word_method_name(left_file);
+    let right_word = word_method_name(right_file);
+
+    let source_function = |file, name: &str| {
+        functions
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(function.origin, MonoFunctionOrigin::Source)
+                    && function.source.is_some_and(|def| {
+                        def.file(db) == file && def.name(db).as_deref() == Some(name)
+                    })
+            })
+            .unwrap_or_else(|| panic!("source specialization for {name}"))
+    };
+    let assert_proof_chain =
+        |source_file, source_name: &str, expected_word: &str, other_word: &str| {
+            let source_calls = function_call_names(source_function(source_file, source_name));
+            let wrapper = wrappers
+                .iter()
+                .copied()
+                .find(|function| source_calls.contains(&function.name))
+                .unwrap_or_else(|| panic!("{source_name} does not call a derived wrapper"));
+            let wrapper_calls = function_call_names(wrapper);
+            let pair = pair_methods
+                .iter()
+                .copied()
+                .find(|function| wrapper_calls.contains(&function.name))
+                .unwrap_or_else(|| panic!("{} does not call a pair instance", wrapper.name));
+            let pair_calls = function_call_names(pair);
+            assert!(pair_calls.contains(expected_word), "{pair:#?}");
+            assert!(!pair_calls.contains(other_word), "{pair:#?}");
+        };
+    assert_proof_chain(left_file, "left", &left_word, &right_word);
+    assert_proof_chain(right_file, "right", &right_word, &left_word);
+}
+
+#[test]
+fn derived_class_wrapper_preserves_adt_arguments_and_reuses_proofs() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+#[derive(CloneLike)]
+data Wrap(a) = Wrap(a);
+
+function main(x:Wrap(word)) -> Wrap(word) {
+  let first = CloneLike.clone(x);
+  return CloneLike.clone(first);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrappers = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedClass { method, .. } if method == "clone"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(wrappers.len(), 1, "{wrappers:#?}");
+    let wrapper = wrappers[0];
+    assert_eq!(wrapper.params.len(), 1);
+    assert!(
+        wrapper.params[0]
+            .ty
+            .ty()
+            .display(db)
+            .to_string()
+            .contains("Wrap")
+    );
+    assert!(wrapper.ret.ty().display(db).to_string().contains("Wrap"));
+    let MonoStmtKind::Return(Some(MonoExpr {
+        kind: MonoExprKind::Call { args, .. },
+        ..
+    })) = &wrapper.body[0].kind
+    else {
+        panic!("expected Generic.to return: {wrapper:#?}");
+    };
+    assert_eq!(args.len(), 1);
+}
+
+#[test]
+fn derived_class_wrapper_reuses_its_reservation_for_recursive_adts() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+import std.Generic.{*};
+
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+#[derive(Eq)]
+data List = Nil | Cons(word, List);
+
+function main(x:List) -> bool {
+  return Eq.eq(x, x);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrappers = output
+        .module
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                MonoItem::Function(function)
+                    if matches!(
+                        &function.origin,
+                        MonoFunctionOrigin::DerivedClass { method, .. } if method == "eq"
+                    )
+            )
+        })
+        .count();
+    assert_eq!(wrappers, 1, "{:#?}", output.module);
+}
+
+#[test]
+fn derived_class_wrapper_rejects_nested_self_without_emitting_unchecked_ir() {
+    let (_db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:NestedSelf {
+  function inspect(x:a, nested:(a, word)) -> bool;
+}
+
+instance word:NestedSelf {
+  function inspect(x:word, nested:(word, word)) -> bool { return true; }
+}
+
+#[derive(NestedSelf)]
+data Box = Box(word);
+
+function main(x:Box) -> bool {
+  return NestedSelf.inspect(x, (x, 0));
+}
+"#,
+    );
+
+    assert!(output.diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SpecializeDiagnosticKind::UnsupportedEvidence { context }
+            if context == "cannot generate NestedSelf.inspect"
+    )));
+    assert!(!output.module.items.iter().any(|item| matches!(
+        item,
+        MonoItem::Function(function)
+            if matches!(function.origin, MonoFunctionOrigin::DerivedClass { .. })
+    )));
+}
+
+#[test]
+fn derived_class_wrapper_uses_absurd_for_an_empty_adt() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+forall a . class a:Make {
+  function make() -> a;
+}
+
+#[derive(Make)]
+data Never;
+
+function main() -> Never {
+  return Make.make();
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrapper = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedClass { method, .. } if method == "make"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("derived Make.make wrapper");
+    assert!(matches!(
+        wrapper.body.as_slice(),
+        [MonoStmt {
+            kind: MonoStmtKind::Return(Some(MonoExpr {
+                kind: MonoExprKind::Call { callee, args, .. },
+                ..
+            })),
+            ..
+        }] if callee.name.contains("absurd") && args.is_empty()
+    ));
+}
+
+#[test]
 fn generic_abi_decoder_evidence_specializes_for_internal_sum_adt() {
     let output = specialize_src_with_std(
         r#"
@@ -2422,6 +3129,123 @@ fn constant_value_number(expr: &MonoExpr<'_>) -> Option<String> {
         }
         MonoExprKind::TypeAnnot { expr, .. } => constant_value_number(expr),
         _ => None,
+    }
+}
+
+fn function_call_names(function: &solcore_specialize::MonoFunction<'_>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    collect_stmt_call_names(&function.body, &mut names);
+    names
+}
+
+fn collect_stmt_call_names(stmts: &[MonoStmt<'_>], names: &mut BTreeSet<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            MonoStmtKind::Let { init, .. } => {
+                if let Some(init) = init {
+                    collect_expr_call_names(init, names);
+                }
+            }
+            MonoStmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    collect_expr_call_names(expr, names);
+                }
+            }
+            MonoStmtKind::Expr(expr) => collect_expr_call_names(expr, names),
+            MonoStmtKind::Assign { lhs, rhs, .. } => {
+                collect_expr_call_names(lhs, names);
+                collect_expr_call_names(rhs, names);
+            }
+            MonoStmtKind::Match { scrutinees, arms } => {
+                for scrutinee in scrutinees {
+                    collect_expr_call_names(scrutinee, names);
+                }
+                for arm in arms {
+                    collect_stmt_call_names(&arm.body, names);
+                }
+            }
+            MonoStmtKind::For {
+                init,
+                cond,
+                post,
+                body,
+            } => {
+                collect_stmt_call_names(init, names);
+                collect_expr_call_names(cond, names);
+                collect_stmt_call_names(post, names);
+                collect_stmt_call_names(body, names);
+            }
+            MonoStmtKind::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                collect_expr_call_names(cond, names);
+                collect_stmt_call_names(then_body, names);
+                if let Some(else_body) = else_body {
+                    collect_stmt_call_names(else_body, names);
+                }
+            }
+            MonoStmtKind::Block(body) => collect_stmt_call_names(body, names),
+            MonoStmtKind::Assembly(_)
+            | MonoStmtKind::Break
+            | MonoStmtKind::Continue
+            | MonoStmtKind::Error => {}
+        }
+    }
+}
+
+fn collect_expr_call_names(expr: &MonoExpr<'_>, names: &mut BTreeSet<String>) {
+    match &expr.kind {
+        MonoExprKind::Call { callee, args, .. } => {
+            names.insert(callee.name.clone());
+            for arg in args {
+                collect_expr_call_names(arg, names);
+            }
+        }
+        MonoExprKind::ClosureDispatch { callee, args } => {
+            collect_expr_call_names(callee, names);
+            for arg in args {
+                collect_expr_call_names(arg, names);
+            }
+        }
+        MonoExprKind::Tuple(elems) | MonoExprKind::Con { args: elems, .. } => {
+            for elem in elems {
+                collect_expr_call_names(elem, names);
+            }
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. } => {
+            collect_expr_call_names(lhs, names);
+            collect_expr_call_names(rhs, names);
+        }
+        MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
+            collect_expr_call_names(expr, names);
+        }
+        MonoExprKind::Index { base, index } | MonoExprKind::StorageIndex { base, index } => {
+            collect_expr_call_names(base, names);
+            collect_expr_call_names(index, names);
+        }
+        MonoExprKind::Field { base, .. } => collect_expr_call_names(base, names),
+        MonoExprKind::Match { scrutinee, arms } => {
+            collect_expr_call_names(scrutinee, names);
+            for arm in arms {
+                collect_expr_call_names(&arm.expr, names);
+            }
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_call_names(cond, names);
+            collect_expr_call_names(then_expr, names);
+            collect_expr_call_names(else_expr, names);
+        }
+        MonoExprKind::Lambda { body, .. } => collect_stmt_call_names(body, names),
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Error => {}
     }
 }
 

@@ -20,6 +20,9 @@ pub(super) struct Driver<'db> {
     pub(super) synthetic: FxHashMap<SyntheticKey<'db>, String>,
     pub(super) synthetic_order: Vec<SyntheticKey<'db>>,
     pub(super) synthetic_funs: FxHashMap<SyntheticKey<'db>, MonoFunction<'db>>,
+    pub(super) derived_classes: FxHashMap<DerivedClassKey<'db>, String>,
+    pub(super) derived_class_order: Vec<DerivedClassKey<'db>>,
+    pub(super) derived_class_funs: FxHashMap<DerivedClassKey<'db>, MonoFunction<'db>>,
     pub(super) queue: VecDeque<PendingSpec<'db>>,
     pub(super) dispatch_selector_overrides: Vec<(String, String)>,
     pub(super) diagnostics: Vec<SpecializeDiagnostic<'db>>,
@@ -69,6 +72,7 @@ pub(super) struct SpecKey<'db> {
     pub(super) ty: Ty<'db>,
     pub(super) base_name: String,
     pub(super) origin: MonoFunctionOrigin<'db>,
+    pub(super) evidence_bindings: Vec<(Pred<'db>, Evidence<'db>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -77,6 +81,17 @@ pub(super) struct SyntheticKey<'db> {
     pub(super) method: String,
     pub(super) main: Ty<'db>,
     pub(super) rep: Ty<'db>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct DerivedClassKey<'db> {
+    pub(super) adt: DefId<'db>,
+    pub(super) class: DefId<'db>,
+    pub(super) target_index: u32,
+    pub(super) method: String,
+    pub(super) main: Ty<'db>,
+    pub(super) target_ty: Ty<'db>,
+    pub(super) sub_evidence: Vec<Evidence<'db>>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +137,9 @@ impl<'db> Driver<'db> {
             synthetic: FxHashMap::default(),
             synthetic_order: Vec::new(),
             synthetic_funs: FxHashMap::default(),
+            derived_classes: FxHashMap::default(),
+            derived_class_order: Vec::new(),
+            derived_class_funs: FxHashMap::default(),
             queue: VecDeque::new(),
             dispatch_selector_overrides: Vec::new(),
             diagnostics: Vec::new(),
@@ -158,6 +176,11 @@ impl<'db> Driver<'db> {
         }
         for key in &self.synthetic_order {
             if let Some(fun) = self.synthetic_funs.get(key) {
+                items.push(MonoItem::Function(fun.clone()));
+            }
+        }
+        for key in &self.derived_class_order {
+            if let Some(fun) = self.derived_class_funs.get(key) {
                 items.push(MonoItem::Function(fun.clone()));
             }
         }
@@ -592,6 +615,7 @@ impl<'db> Driver<'db> {
             ty,
             base_name: name,
             origin: MonoFunctionOrigin::Source,
+            evidence_bindings: Vec::new(),
         })
     }
 
@@ -709,6 +733,7 @@ impl<'db> Driver<'db> {
             body_map,
             pre_typeck_desugar,
             subst,
+            evidence_bindings: pending.key.evidence_bindings.clone(),
             depth: pending.depth,
             index,
             lowered_exprs: FxHashMap::default(),

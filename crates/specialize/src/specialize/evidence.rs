@@ -13,28 +13,38 @@ impl<'db> Driver<'db> {
             Evidence::Instance {
                 instance,
                 args,
-                sub_evidence: _,
+                sub_evidence,
             } => {
                 let info = self.instances.get(&instance)?.clone();
+                if info.preds.len() != sub_evidence.len() {
+                    return None;
+                }
                 let method_def = info.instance.methods(self.db).iter().find(|candidate| {
                     ident_text(self.db, &candidate.sig(self.db).name) == method
                 })?;
                 let subst = TySubst::from_args(args);
                 let head = subst.apply_pred(self.db, info.head);
+                let evidence_bindings = info
+                    .preds
+                    .iter()
+                    .zip(sub_evidence.iter())
+                    .map(|(pred, evidence)| (subst.apply_pred(self.db, *pred), evidence.clone()))
+                    .collect::<Vec<_>>();
                 let (class_name, head_tys) = class_method_name_parts(self.db, head);
                 if !self.ensure_specialization_type_size(&head_tys, Some(call_span))
                     || !self.ensure_specialization_type_size(&[target_ty], Some(call_span))
                 {
                     return None;
                 }
-                let base = specialize_name(
-                    self.db,
-                    &format!(
-                        "{class_name}_{method}_{}",
-                        def_hash_suffix(self.db, method_def.def_id_value(self.db))
-                    ),
-                    head_tys.as_slice(),
+                let mut method_base = format!(
+                    "{class_name}_{method}_{}",
+                    def_hash_suffix(self.db, method_def.def_id_value(self.db))
                 );
+                if !sub_evidence.is_empty() {
+                    method_base.push('_');
+                    method_base.push_str(&evidence_hash_suffix(self.db, &sub_evidence));
+                }
+                let base = specialize_name(self.db, &method_base, head_tys.as_slice());
                 let key = SpecKey {
                     def: method_def.def_id_value(self.db),
                     ty: target_ty,
@@ -44,6 +54,7 @@ impl<'db> Driver<'db> {
                         class: class_name,
                         method: method.to_owned(),
                     },
+                    evidence_bindings,
                 };
                 Some(self.enqueue(key, depth + 1))
             }
@@ -66,6 +77,41 @@ impl<'db> Driver<'db> {
                 };
                 let rep = args.first().copied()?;
                 self.specialize_derived_generic(adt, method, *main, rep, target_ty, call_span)
+            }
+            Evidence::Derived {
+                kind:
+                    DerivedClauseKind::Class {
+                        adt,
+                        class,
+                        target_index,
+                    },
+                pred,
+                sub_evidence,
+            } => {
+                let PredKind::InClass {
+                    class: ClassId::User(pred_class),
+                    main,
+                    args,
+                } = pred.kind(self.db)
+                else {
+                    return None;
+                };
+                if *pred_class != class || !args.is_empty() {
+                    return None;
+                }
+                self.specialize_derived_class(
+                    DerivedClassKey {
+                        adt,
+                        class,
+                        target_index,
+                        method: method.to_owned(),
+                        main: *main,
+                        target_ty,
+                        sub_evidence,
+                    },
+                    call_span,
+                    depth,
+                )
             }
             Evidence::Builtin { pred } => {
                 let method_evidence = match pred.kind(self.db) {
@@ -220,6 +266,44 @@ impl<'db> Driver<'db> {
             .or_else(|| self.derived_generic_evidence(pred))
     }
 
+    pub(super) fn close_class_method_callee_ty(
+        &mut self,
+        class: DefId<'db>,
+        method: &str,
+        partial_ty: Ty<'db>,
+        span: Option<Span<'db>>,
+    ) -> Option<Ty<'db>> {
+        let info = self.classes.get(&class)?.clone();
+        let method_sig = info
+            .class
+            .methods(self.db)
+            .iter()
+            .find(|candidate| ident_text(self.db, &candidate.name) == method)?;
+        let Some(resolution) = self.try_module_resolution(info.module) else {
+            self.push_missing_module_resolution(span);
+            return None;
+        };
+        let method_vars = hir_ty::class_method_type_vars(self.db, info.class, method_sig);
+        let lowerer = TypeLowering::from_item_resolutions(
+            self.db,
+            &resolution.item_resolutions,
+            BinderEnv::from_type_vars(&method_vars),
+        );
+        let mut normalizer =
+            AliasNormalizer::new(self.db, info.module, &resolution.item_resolutions);
+        let scheme =
+            normalizer.normalize_scheme(lowerer.lower_class_method(info.class, method_sig));
+        let pattern = scheme.body(self.db).ty(self.db);
+        let mut subst = TySubst::default();
+        if !subst.match_ty_known(self.db, pattern, partial_ty) {
+            return None;
+        }
+        let closed = subst.apply_ty(self.db, pattern);
+        (ty_is_closed(self.db, closed)
+            && !super::call_resolver::ty_has_specialization_hole(self.db, closed))
+        .then_some(closed)
+    }
+
     pub(super) fn solve_operator_method_pred(
         &mut self,
         class_name: &str,
@@ -372,5 +456,46 @@ impl<'db> Driver<'db> {
         if recovered.match_ty(self.db, extras[0], concrete_rep) {
             subst.extend_consistent(recovered);
         }
+    }
+}
+
+pub(super) fn replay_evidence_bindings<'db>(
+    evidence: Evidence<'db>,
+    bindings: &[(Pred<'db>, Evidence<'db>)],
+) -> Evidence<'db> {
+    match evidence {
+        Evidence::Builtin { pred } => bindings
+            .iter()
+            .find_map(|(given, replacement)| (*given == pred).then(|| replacement.clone()))
+            .unwrap_or(Evidence::Builtin { pred }),
+        Evidence::Instance {
+            instance,
+            args,
+            sub_evidence,
+        } => Evidence::Instance {
+            instance,
+            args,
+            sub_evidence: sub_evidence
+                .into_iter()
+                .map(|evidence| replay_evidence_bindings(evidence, bindings))
+                .collect(),
+        },
+        Evidence::Superclass { class, pred, child } => Evidence::Superclass {
+            class,
+            pred,
+            child: Box::new(replay_evidence_bindings(*child, bindings)),
+        },
+        Evidence::Derived {
+            kind,
+            pred,
+            sub_evidence,
+        } => Evidence::Derived {
+            kind,
+            pred,
+            sub_evidence: sub_evidence
+                .into_iter()
+                .map(|evidence| replay_evidence_bindings(evidence, bindings))
+                .collect(),
+        },
     }
 }

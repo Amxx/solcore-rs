@@ -8,6 +8,7 @@ pub(super) struct BodyCtx<'a, 'db> {
     pub(super) body_map: hir_nameres::BodyResolutionMap<'db>,
     pub(super) pre_typeck_desugar: Vec<BodyPreTypeckDesugarPlan<'db>>,
     pub(super) subst: TySubst<'db>,
+    pub(super) evidence_bindings: Vec<(Pred<'db>, Evidence<'db>)>,
     pub(super) depth: usize,
     pub(super) index: Arc<BodyIndex<'db>>,
     pub(super) lowered_exprs: FxHashMap<Id<Expr<'db>>, MonoExpr<'db>>,
@@ -244,6 +245,11 @@ pub(super) struct BinOpExpr<'db> {
 }
 
 impl<'a, 'db> BodyCtx<'a, 'db> {
+    pub(super) fn specialize_evidence(&self, evidence: Evidence<'db>) -> Evidence<'db> {
+        let evidence = self.subst.apply_evidence(self.driver.db, evidence);
+        replay_evidence_bindings(evidence, &self.evidence_bindings)
+    }
+
     pub(super) fn stmt(&mut self, stmt_id: Id<Stmt<'db>>) -> Option<MonoStmt<'db>> {
         let stmt = self.body.stmts(self.driver.db).get(stmt_id);
         let span = stmt.span;
@@ -375,7 +381,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             .expr_ty(expr_id)
             .map(|ty| self.subst.apply_ty(self.driver.db, ty))
             .unwrap_or_else(|| Ty::unknown(self.driver.db));
-        if matches!(ty.kind(self.driver.db), TyKind::Unknown)
+        if matches!(ty.kind(self.driver.db), TyKind::Unknown | TyKind::Error)
             && let ExprKind::Ident(name) = &expr.kind
             && let Some(local_ty) = self.locals.get(ident_text(self.driver.db, name).as_str())
         {
@@ -454,7 +460,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                         hir_nameres::Resolution::ClassMethod { class, name } => {
                             let evidence = self
                                 .class_method_value_evidence(expr_id, class)
-                                .map(|evidence| self.subst.apply_evidence(self.driver.db, evidence))
+                                .map(|evidence| self.specialize_evidence(evidence))
                                 .or_else(|| {
                                     self.driver.solve_class_method_pred(
                                         class,
@@ -702,6 +708,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             body_map,
             pre_typeck_desugar: self.pre_typeck_desugar.clone(),
             subst,
+            evidence_bindings: self.evidence_bindings.clone(),
             depth,
             index: Arc::clone(&self.index),
             lowered_exprs: FxHashMap::default(),
