@@ -8,7 +8,7 @@ use hir::{
     nameres::{
         DefResolutionKind, EmptyImportedNames, ImportedNames, ModuleRef, NameresDiagnostic,
         NameresDiagnosticPolicy, Namespace, Resolution, UndefinedNameKind, item_scope,
-        resolve_module, resolve_module_with_imports_and_policy,
+        resolve_module, resolve_module_with_imports, resolve_module_with_imports_and_policy,
     },
 };
 use solcore_parser::{parse_diagnostics, parse_file_to_hir};
@@ -114,6 +114,10 @@ struct ModuleOnlyImports<'db> {
 
 struct UnknownWildcardImports;
 
+struct QualifiedClassImports<'db> {
+    class: hir::anchor::DefId<'db>,
+}
+
 impl<'db> ImportedNames<'db> for UnknownWildcardImports {
     fn imported(
         &self,
@@ -148,6 +152,105 @@ impl<'db> ImportedNames<'db> for ModuleOnlyImports<'db> {
             })
         })
     }
+}
+
+impl<'db> ImportedNames<'db> for QualifiedClassImports<'db> {
+    fn imported(
+        &self,
+        _db: &'db dyn hir::Db,
+        namespace: Namespace,
+        name: &str,
+    ) -> Option<Resolution<'db>> {
+        (namespace == Namespace::Type && name == "pkg.Eq").then(|| Resolution::Def {
+            def: self.class,
+            kind: DefResolutionKind::Class,
+        })
+    }
+}
+
+#[test]
+fn derive_targets_resolve_in_source_order_for_top_level_and_contract_adts() {
+    let db = TestDb::default();
+    let module = parse_module(
+        &db,
+        "class a:Eq {}\n\
+         #[derive(Eq, Eq)] data Top;\n\
+         contract C { #[derive(Eq)] data Local; }",
+    );
+    let resolution = resolve_module(&db, module);
+    assert!(resolution.diagnostics.is_empty());
+    let derives = &resolution.item_resolutions.derives;
+    assert_eq!(derives.len(), 3);
+    assert_eq!(
+        derives
+            .iter()
+            .map(|derive| derive.index)
+            .collect::<Vec<_>>(),
+        [0, 1, 0]
+    );
+    assert_ne!(derives[0].adt, derives[2].adt);
+    let class = derives[0].resolution.clone();
+    assert!(matches!(
+        class,
+        Resolution::Def {
+            kind: DefResolutionKind::Class,
+            ..
+        }
+    ));
+    assert_eq!(derives[1].resolution, class);
+    assert_eq!(derives[2].resolution, class);
+}
+
+#[test]
+fn derive_targets_report_unknown_and_wrong_kind_names() {
+    let db = TestDb::default();
+    let module = parse_module(
+        &db,
+        "data NotAClass; #[derive(Missing, NotAClass)] data Target;",
+    );
+    let resolution = resolve_module(&db, module);
+    let undefined = resolution
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| match diagnostic {
+            NameresDiagnostic::UndefinedClass { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(undefined, ["Missing", "NotAClass"]);
+    assert!(
+        resolution
+            .item_resolutions
+            .derives
+            .iter()
+            .all(|derive| matches!(derive.resolution, Resolution::Err))
+    );
+}
+
+#[test]
+fn qualified_derive_target_uses_the_exact_imported_class_path() {
+    let db = TestDb::default();
+    let module = parse_module(&db, "class a:Eq {} #[derive(pkg.Eq)] data Target;");
+    let class = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ClassDef(class) => Some(class.def_id_value(&db)),
+            _ => None,
+        })
+        .expect("class");
+    let scope = item_scope(&db, module);
+    let imports = QualifiedClassImports { class };
+    let resolution = resolve_module_with_imports(&db, module, scope, &imports);
+    assert!(resolution.diagnostics.is_empty());
+    assert_eq!(resolution.item_resolutions.derives.len(), 1);
+    assert!(matches!(
+        resolution.item_resolutions.derives[0].resolution,
+        Resolution::Def {
+            def,
+            kind: DefResolutionKind::Class,
+        } if def == class
+    ));
 }
 
 #[test]
