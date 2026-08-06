@@ -90,9 +90,11 @@ export {
   lt,
   mapping(*),
   maxVal,
+  maxWord,
   memberAccessBase,
   memory(*),
   memory_ref,
+  minWord,
   mulmod,
   ne,
   not,
@@ -419,6 +421,20 @@ function eqWord(x:word, y:word) -> bool {
 
 function gtWord(x:word, y:word) -> bool {
     return tobool(gt_(x, y));
+}
+
+function maxWord(a : word, b : word) -> word {
+    match gtWord(a, b) {
+    | true  => return a;
+    | false => return b;
+    }
+}
+
+function minWord(a : word, b : word) -> word {
+    match gtWord(a, b) {
+    | true  => return b;
+    | false => return a;
+    }
 }
 
 function addWord(l: word, r: word) -> word {
@@ -2195,6 +2211,12 @@ function ecrecover(hash: bytes32, v: uint256, r: bytes32, s: bytes32) -> address
     mstore(ptr + 32, v_);
     mstore(ptr + 64, r_);
     mstore(ptr + 96, s_);
+    // Clear the [0, 32] scratch space that receives the return data. On a
+    // failed recovery (e.g. v not in {27, 28}, or the generic could-not-recover
+    // case) the precompile still reports success but returns no data, leaving
+    // the output area untouched. Without this, a stale non-zero value would
+    // slip past the `res != 0` check below and yield a bogus address.
+    mstore(0, 0);
     let ret = staticcall(gas(), 1, ptr, 128, 0, 32);
     require(ret != 0, Error(0x578763f7)); // ECRecoverCallFailed()
     let res = mload(0);
