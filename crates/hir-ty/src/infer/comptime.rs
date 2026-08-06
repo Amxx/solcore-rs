@@ -98,12 +98,16 @@ struct ComptimeChecker<'db> {
     db: &'db dyn Db,
     entry_module: ModuleId<'db>,
     hir_module: Module<'db>,
+    body_resolutions: hir_nameres::BodyResolutionMap<'db>,
+    item_resolutions: hir_nameres::ItemResolutionFacts<'db>,
+    type_vars: Vec<hir_nameres::TypeVarBinding<'db>>,
     expr_resolutions: FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), hir_nameres::Resolution<'db>>,
     pre_typeck_desugar: Vec<BodyPreTypeckDesugarPlan<'db>>,
     scopes: Vec<FxHashMap<String, ComptimeBindingKey<'db>>>,
     bindings: FxHashMap<ComptimeBindingKey<'db>, ComptimeValue>,
     diagnostics: Vec<TypeckDiagnostic>,
     obligations: Vec<ComptimeObligation<'db>>,
+    root_sig: ComptimeCallableSig,
     current_function: String,
     current_return_comptime: bool,
 }
@@ -114,8 +118,11 @@ impl<'db> ComptimeChecker<'db> {
         entry_module: ModuleId<'db>,
         hir_module: Module<'db>,
         body_map: &hir_nameres::BodyResolutionMap<'db>,
+        item_resolutions: hir_nameres::ItemResolutionFacts<'db>,
+        type_vars: Vec<hir_nameres::TypeVarBinding<'db>>,
         pre_typeck_desugar: Vec<BodyPreTypeckDesugarPlan<'db>>,
         function: FunctionDef<'db>,
+        root_sig: ComptimeCallableSig,
     ) -> Self {
         let sig = function.sig(db);
         let expr_resolutions = body_map
@@ -127,14 +134,18 @@ impl<'db> ComptimeChecker<'db> {
             db,
             entry_module,
             hir_module,
+            body_resolutions: body_map.clone(),
+            item_resolutions,
+            type_vars,
             expr_resolutions,
             pre_typeck_desugar,
             scopes: vec![FxHashMap::default()],
             bindings: FxHashMap::default(),
             diagnostics: Vec::new(),
             obligations: Vec::new(),
+            current_return_comptime: root_sig.ret_comptime,
+            root_sig,
             current_function: ident_text(db, &sig.name),
-            current_return_comptime: type_ref_is_comptime(db, sig.ret.as_ref()),
         }
     }
 
@@ -159,7 +170,17 @@ impl<'db> ComptimeChecker<'db> {
         function: FunctionDef<'db>,
         body: FuncBody<'db>,
     ) -> ComptimeCheckResult<'db> {
-        self.bind_params(body, function.sig(self.db).params.atom());
+        let param_requirements = self
+            .root_sig
+            .params
+            .iter()
+            .map(|param| param.is_comptime)
+            .collect::<Vec<_>>();
+        self.bind_params(
+            body,
+            function.sig(self.db).params.atom(),
+            &param_requirements,
+        );
         self.check_stmt_sequence(body, body.top_level_stmts(self.db));
         ComptimeCheckResult {
             diagnostics: self.diagnostics,
@@ -167,7 +188,12 @@ impl<'db> ComptimeChecker<'db> {
         }
     }
 
-    fn bind_params(&mut self, body: FuncBody<'db>, params: &[FuncParam<'db>]) {
+    fn bind_params(
+        &mut self,
+        body: FuncBody<'db>,
+        params: &[FuncParam<'db>],
+        requirements: &[bool],
+    ) {
         for (index, param) in params.iter().enumerate() {
             let Some(name) = param_name(self.db, param).map(str::to_owned) else {
                 continue;
@@ -176,7 +202,9 @@ impl<'db> ComptimeChecker<'db> {
                 body,
                 index: hir_nameres::ParamIndex::from_usize(index),
             });
-            let value = if param_is_comptime(self.db, param) || self.current_return_comptime {
+            let value = if requirements.get(index).copied().unwrap_or(false)
+                || self.current_return_comptime
+            {
                 ComptimeValue::Comptime
             } else {
                 ComptimeValue::Runtime
@@ -212,10 +240,7 @@ impl<'db> ComptimeChecker<'db> {
                 init,
             } => {
                 let declared_comptime = comptime.is_some()
-                    || type_ref_is_comptime(self.db, ty.as_ref())
-                    || ty
-                        .as_ref()
-                        .is_some_and(|ty| type_ref_is_integer(self.db, *ty));
+                    || self.semantic_type_ref_requires_comptime(ty.as_ref().copied());
                 let init_value = init
                     .map(|expr| self.classify_expr(body, expr))
                     .unwrap_or(ComptimeValue::Deferred);
@@ -491,17 +516,40 @@ impl<'db> ComptimeChecker<'db> {
         params: &[FuncParam<'db>],
         ret: Option<TypeRef<'db>>,
     ) {
+        let param_requirements = params
+            .iter()
+            .map(|param| match param {
+                FuncParam::Typed { comptime, ty, .. } => {
+                    comptime.is_some() || self.semantic_type_ref_requires_comptime(Some(*ty))
+                }
+                FuncParam::Untyped { comptime, .. } => comptime.is_some(),
+                FuncParam::Error { .. } => false,
+            })
+            .collect::<Vec<_>>();
+        let return_requirement = self.semantic_type_ref_requires_comptime(ret);
         let previous_function = std::mem::replace(&mut self.current_function, "lambda".to_owned());
-        let previous_return = std::mem::replace(
-            &mut self.current_return_comptime,
-            type_ref_is_comptime(self.db, ret.as_ref()),
-        );
+        let previous_return =
+            std::mem::replace(&mut self.current_return_comptime, return_requirement);
         self.push_scope();
-        self.bind_params(lambda_body, params);
+        self.bind_params(lambda_body, params, &param_requirements);
         self.check_stmt_sequence(lambda_body, lambda_body.top_level_stmts(self.db));
         self.pop_scope();
         self.current_function = previous_function;
         self.current_return_comptime = previous_return;
+    }
+
+    fn semantic_type_ref_requires_comptime(&self, ty: Option<TypeRef<'db>>) -> bool {
+        let Some(ty) = ty else {
+            return false;
+        };
+        let lowerer = TypeLowering::from_body_resolutions(
+            self.db,
+            &self.body_resolutions,
+            BinderEnv::from_type_vars(&self.type_vars),
+        );
+        let lowered = lowerer.lower_type(ty);
+        let mut normalizer = AliasNormalizer::new(self.db, self.hir_module, &self.item_resolutions);
+        ty_requires_comptime(self.db, normalizer.normalize_ty(lowered))
     }
 
     fn check_comptime_return(&mut self, span: LabelSpan, value: ComptimeValue) {
@@ -602,13 +650,11 @@ impl<'db> ComptimeChecker<'db> {
             hir_nameres::Resolution::Def {
                 def,
                 kind: hir_nameres::DefResolutionKind::Function,
-            } => self.function_info(*def).map(|function| {
-                callable_sig_from_func_sig(
-                    self.db,
-                    function.function.sig(self.db),
-                    &function.type_vars,
-                )
-            }),
+            } => {
+                let function = self.function_info(*def)?;
+                let scheme = function_scheme_for_entry(self.db, self.entry_module, *def)?;
+                callable_sig_from_semantic_scheme(self.db, function.function.sig(self.db), scheme)
+            }
             hir_nameres::Resolution::ClassMethod { class, name } => {
                 self.class_method_sig(*class, name)
             }
@@ -634,8 +680,9 @@ impl<'db> ComptimeChecker<'db> {
             .methods(self.db)
             .iter()
             .find(|method| ident_text(self.db, &method.name) == name)?;
-        let type_vars = class_method_type_vars(self.db, class_info.class, method);
-        let mut sig = callable_sig_from_func_sig(self.db, method, &type_vars);
+        let scheme =
+            class_method_scheme_for_entry(self.db, self.entry_module, class, name.to_owned())?;
+        let mut sig = callable_sig_from_semantic_scheme(self.db, method, scheme)?;
         let class_name = class.name(self.db).unwrap_or_else(|| "class".to_owned());
         sig.name = format!("{class_name}.{name}");
         Some(sig)
@@ -677,28 +724,35 @@ impl<'db> ComptimeChecker<'db> {
     }
 }
 
-fn callable_sig_from_func_sig<'db>(
-    db: &'db dyn HirDb,
+fn callable_sig_from_semantic_scheme<'db>(
+    db: &'db dyn Db,
     sig: &FuncSig<'db>,
-    type_vars: &[hir_nameres::TypeVarBinding<'db>],
-) -> ComptimeCallableSig {
-    ComptimeCallableSig {
+    scheme: TyScheme<'db>,
+) -> Option<ComptimeCallableSig> {
+    let TyKind::Function { params, ret } = scheme.body(db).ty(db).kind(db) else {
+        return None;
+    };
+    if params.len() != sig.params.atom().len() {
+        return None;
+    }
+    Some(ComptimeCallableSig {
         name: ident_text(db, &sig.name),
         params: sig
             .params
             .atom()
             .iter()
+            .zip(params)
             .enumerate()
-            .map(|(index, param)| ComptimeParamInfo {
+            .map(|(index, (param, ty))| ComptimeParamInfo {
                 name: param_name(db, param)
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("arg{index}")),
-                is_comptime: param_is_comptime(db, param),
-                has_type_var: param_mentions_type_var(db, param, type_vars),
+                is_comptime: ty_requires_comptime(db, *ty),
+                has_type_var: ty_mentions_bound_var(db, *ty),
             })
             .collect(),
-        ret_comptime: type_ref_is_comptime(db, sig.ret.as_ref()),
-    }
+        ret_comptime: ty_requires_comptime(db, *ret),
+    })
 }
 
 fn builtin_comptime_sig(kind: hir_nameres::BuiltinKind) -> Option<ComptimeCallableSig> {
@@ -717,7 +771,7 @@ fn builtin_comptime_sig(kind: hir_nameres::BuiltinKind) -> Option<ComptimeCallab
             name: "wordFromInteger".to_owned(),
             params: vec![ComptimeParamInfo {
                 name: "x".to_owned(),
-                is_comptime: false,
+                is_comptime: true,
                 has_type_var: false,
             }],
             ret_comptime: true,
@@ -733,12 +787,12 @@ fn builtin_comptime_sig(kind: hir_nameres::BuiltinKind) -> Option<ComptimeCallab
             params: vec![
                 ComptimeParamInfo {
                     name: "lhs".to_owned(),
-                    is_comptime: false,
+                    is_comptime: true,
                     has_type_var: false,
                 },
                 ComptimeParamInfo {
                     name: "rhs".to_owned(),
-                    is_comptime: false,
+                    is_comptime: true,
                     has_type_var: false,
                 },
             ],
@@ -748,7 +802,7 @@ fn builtin_comptime_sig(kind: hir_nameres::BuiltinKind) -> Option<ComptimeCallab
             name: "Int.fromInteger".to_owned(),
             params: vec![ComptimeParamInfo {
                 name: "x".to_owned(),
-                is_comptime: false,
+                is_comptime: true,
                 has_type_var: false,
             }],
             ret_comptime: true,
@@ -763,70 +817,48 @@ fn builtin_comptime_sig(kind: hir_nameres::BuiltinKind) -> Option<ComptimeCallab
     Some(sig)
 }
 
-fn param_is_comptime<'db>(db: &'db dyn HirDb, param: &FuncParam<'db>) -> bool {
-    match param {
-        FuncParam::Typed { comptime, ty, .. } => {
-            comptime.is_some() || type_ref_is_comptime(db, Some(ty))
-        }
-        FuncParam::Untyped { comptime, .. } => comptime.is_some(),
-        FuncParam::Error { .. } => false,
-    }
-}
-
-fn param_mentions_type_var<'db>(
-    db: &'db dyn HirDb,
-    param: &FuncParam<'db>,
-    type_vars: &[hir_nameres::TypeVarBinding<'db>],
-) -> bool {
-    match param {
-        FuncParam::Typed { ty, .. } => type_ref_mentions_type_var(db, *ty, type_vars),
-        FuncParam::Untyped { .. } | FuncParam::Error { .. } => false,
-    }
-}
-
-fn type_ref_mentions_type_var<'db>(
-    db: &'db dyn HirDb,
-    ty: TypeRef<'db>,
-    type_vars: &[hir_nameres::TypeVarBinding<'db>],
-) -> bool {
-    match ty.kind(db) {
-        TypeRefKind::Named { name, args, .. } => {
-            let text = (*name.atom()).text(db);
-            type_vars
-                .iter()
-                .any(|var| (*var.name.atom()).text(db) == text)
-                || args
-                    .atom()
-                    .iter()
-                    .any(|arg| type_ref_mentions_type_var(db, *arg, type_vars))
-        }
-        TypeRefKind::Fn { params, ret } => {
-            params
-                .atom()
-                .iter()
-                .any(|param| type_ref_mentions_type_var(db, *param, type_vars))
-                || type_ref_mentions_type_var(db, *ret, type_vars)
-        }
-        TypeRefKind::Comptime { inner, .. } => type_ref_mentions_type_var(db, *inner, type_vars),
-        TypeRefKind::Tuple { elems } => elems
-            .atom()
-            .iter()
-            .any(|elem| type_ref_mentions_type_var(db, *elem, type_vars)),
-        TypeRefKind::Error { .. } => false,
-    }
-}
-
-pub(super) fn type_ref_is_comptime<'db>(db: &'db dyn HirDb, ty: Option<&TypeRef<'db>>) -> bool {
-    ty.is_some_and(|ty| matches!(ty.kind(db), TypeRefKind::Comptime { .. }))
-}
-
-pub(super) fn type_ref_is_integer<'db>(db: &'db dyn HirDb, ty: TypeRef<'db>) -> bool {
-    match ty.kind(db) {
-        TypeRefKind::Comptime { inner, .. } => type_ref_is_integer(db, *inner),
-        TypeRefKind::Named { name, args, .. } => {
-            (*name.atom()).text(db) == "integer" && args.atom().is_empty()
-        }
+pub(super) fn infer_ty_requires_comptime<'db>(db: &'db dyn Db, ty: &InferTy<'db>) -> bool {
+    match ty {
+        InferTy::Comptime(_) => true,
+        InferTy::Named { ctor, args } => args.is_empty() && ty_ctor_is_comptime_only(db, *ctor),
         _ => false,
+    }
+}
+
+pub(super) fn ty_requires_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    match ty.kind(db) {
+        TyKind::Comptime(_) => true,
+        TyKind::Named { ctor, args } => args.is_empty() && ty_ctor_is_comptime_only(db, *ctor),
+        _ => false,
+    }
+}
+
+fn ty_ctor_is_comptime_only<'db>(db: &'db dyn Db, ctor: TyCtor<'db>) -> bool {
+    match ctor {
+        TyCtor::Builtin(BuiltinTyCtor::String | BuiltinTyCtor::Integer) => true,
+        TyCtor::User(user) if matches!(user.kind, UserTyCtorKind::Adt) => {
+            let Some(name) = user.def.name(db) else {
+                return false;
+            };
+            matches!(name.as_str(), "string" | "integer")
+                && crate::support::is_canonical_std_def_named(db, user.def, &name)
+        }
+        TyCtor::Builtin(_) | TyCtor::User(_) => false,
+    }
+}
+
+fn ty_mentions_bound_var(db: &dyn HirDb, ty: Ty<'_>) -> bool {
+    match ty.kind(db) {
+        TyKind::BoundVar(_) => true,
+        TyKind::Named { args, .. } | TyKind::Tuple(args) => {
+            args.iter().any(|arg| ty_mentions_bound_var(db, *arg))
+        }
+        TyKind::Function { params, ret } => {
+            params.iter().any(|param| ty_mentions_bound_var(db, *param))
+                || ty_mentions_bound_var(db, *ret)
+        }
+        TyKind::Comptime(inner) => ty_mentions_bound_var(db, *inner),
+        TyKind::Error | TyKind::Unknown => false,
     }
 }
 
@@ -1079,23 +1111,28 @@ impl<'db> TypeckDiagnosticCollector<'db> {
             );
             return;
         }
-        let ComptimeCheckResult {
-            diagnostics,
-            obligations: _obligations,
-        } = ComptimeChecker::new(
-            self.db,
-            self.module,
-            self.hir_module,
-            &body_map,
-            pre_typeck_desugar.clone(),
-            function,
-        )
-        .check_function(function, body);
-        self.diagnostics.extend(
-            diagnostics
-                .into_iter()
-                .map(|diagnostic| AnyDiagnostic::Typeck(diagnostic.lower())),
-        );
+        if let Some(root_sig) = callable_sig_from_semantic_scheme(self.db, sig, lowered.scheme) {
+            let ComptimeCheckResult {
+                diagnostics,
+                obligations: _obligations,
+            } = ComptimeChecker::new(
+                self.db,
+                self.module,
+                self.hir_module,
+                &body_map,
+                self.item_resolutions.facts(),
+                type_vars.clone(),
+                pre_typeck_desugar.clone(),
+                function,
+                root_sig,
+            )
+            .check_function(function, body);
+            self.diagnostics.extend(
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| AnyDiagnostic::Typeck(diagnostic.lower())),
+            );
+        }
         let mut givens = lowered.scheme.body(self.db).preds(self.db).clone();
         givens.extend(extra_givens.iter().copied());
         let trait_env = trait_env_with_givens(self.db, self.trait_env, givens);
@@ -1182,9 +1219,24 @@ impl<'db> TypeckDiagnosticCollector<'db> {
         let Some(body) = info.function.body(self.db) else {
             return Vec::new();
         };
-        let module = module_for_def(self.db, self.module, def)
-            .and_then(|module| module_hir(self.db, module))
-            .unwrap_or(self.hir_module);
+        let Some(target_module) = module_for_def(self.db, self.module, def) else {
+            return Vec::new();
+        };
+        let Some(module) = module_hir(self.db, target_module) else {
+            return Vec::new();
+        };
+        let Some(item_resolutions) = item_resolution_facts_for_module(self.db, target_module)
+        else {
+            return Vec::new();
+        };
+        let Some(scheme) = function_scheme_for_entry(self.db, self.module, def) else {
+            return Vec::new();
+        };
+        let Some(root_sig) =
+            callable_sig_from_semantic_scheme(self.db, info.function.sig(self.db), scheme)
+        else {
+            return Vec::new();
+        };
         let Some(body_map) =
             body_resolution_for_function_with_imports(self.db, module, &info, Some(&self.env))
         else {
@@ -1202,8 +1254,11 @@ impl<'db> TypeckDiagnosticCollector<'db> {
             self.module,
             module,
             &body_map,
+            item_resolutions,
+            info.type_vars.clone(),
             pre_typeck_desugar,
             info.function,
+            root_sig,
         )
         .check_function(info.function, body);
         let param_names = param_names(self.db, info.function.sig(self.db).params.atom());

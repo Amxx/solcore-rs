@@ -375,24 +375,10 @@ impl<'db> InferCtx<'db> {
             return InferTy::Error;
         }
         let callee_name = self.comptime_callee_name(body, site.callee_expr);
-        let args = args
+        let inferred_args = args
             .iter()
             .enumerate()
             .map(|(index, arg)| {
-                if let Some(param) = params.as_ref().and_then(|params| params.get(index))
-                    && infer_ty_has_comptime_wrapper(&self.engine.resolve(param.clone()))
-                {
-                    self.comptime_obligations.push(ComptimeObligation {
-                        body,
-                        expr: *arg,
-                        kind: ComptimeObligationKind::CallParam {
-                            call_expr: site.call_expr,
-                            callee_expr: site.callee_expr,
-                            function: callee_name.clone(),
-                            param: format!("arg{index}"),
-                        },
-                    });
-                }
                 self.infer_call_arg_expected(
                     body,
                     *arg,
@@ -410,10 +396,28 @@ impl<'db> InferCtx<'db> {
             site.call_expr,
             callee_ty,
             InferTy::Function {
-                params: args,
+                params: inferred_args,
                 ret: Box::new(ret.clone()),
             },
         );
+        if let Some(params) = &params {
+            for (index, (param, arg)) in params.iter().zip(args).enumerate() {
+                let resolved_param = self.engine.resolve(param.clone());
+                let normalized_param = self.normalize_aliases(resolved_param);
+                if infer_ty_requires_comptime(self.db, &normalized_param) {
+                    self.comptime_obligations.push(ComptimeObligation {
+                        body,
+                        expr: *arg,
+                        kind: ComptimeObligationKind::CallParam {
+                            call_expr: site.call_expr,
+                            callee_expr: site.callee_expr,
+                            function: callee_name.clone(),
+                            param: format!("arg{index}"),
+                        },
+                    });
+                }
+            }
+        }
         ret
     }
 

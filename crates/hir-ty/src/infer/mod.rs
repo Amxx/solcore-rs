@@ -275,14 +275,14 @@ pub struct ComptimeObligation<'db> {
 /// Source of a deferred comptime obligation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
 pub enum ComptimeObligationKind<'db> {
-    /// Initializer of a comptime or inferred-`integer` let binding.
+    /// Initializer of a comptime or comptime-only (`integer`/`string`) let binding.
     LetInit {
         /// Let statement.
         stmt: Id<Stmt<'db>>,
         /// Binding name.
         name: String,
     },
-    /// Return expression of a `-> comptime` body.
+    /// Return expression of a `-> comptime` body or a comptime-only return type.
     Return {
         /// Function or lambda context.
         context: String,

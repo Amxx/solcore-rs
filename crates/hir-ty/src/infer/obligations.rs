@@ -1,20 +1,5 @@
 use super::*;
 
-pub(super) fn infer_ty_has_comptime_wrapper<'db>(ty: &InferTy<'db>) -> bool {
-    matches!(ty, InferTy::Comptime(_))
-}
-
-pub(super) fn ty_requires_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
-    match ty.kind(db) {
-        TyKind::Comptime(_) => true,
-        TyKind::Named {
-            ctor: TyCtor::Builtin(crate::BuiltinTyCtor::Integer),
-            args,
-        } => args.is_empty(),
-        _ => false,
-    }
-}
-
 struct CanonicalizedPending<'db> {
     pred: Pred<'db>,
     allowed_vars: Vec<u32>,

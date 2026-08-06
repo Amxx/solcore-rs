@@ -6,7 +6,9 @@ use hir::{
 use nameres::{LibraryId, module_id_for_source_file};
 use parser::parse_file_to_hir;
 
-use crate::{BuiltinTyCtor, Db, Ty, TyCtor, TyKind, UserTyCtor};
+use crate::{
+    BuiltinTyCtor, Db, Ty, TyCtor, TyKind, UserTyCtor, support::is_canonical_std_def_named,
+};
 
 /// ABI parameter or tuple component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
@@ -353,13 +355,6 @@ fn canonical_location_abi_name<'db>(
         "{} (only memory(string) and memory(bytes) have canonical ABI evidence)",
         inner.display(db)
     ))
-}
-
-fn is_canonical_std_def_named(db: &dyn Db, def: DefId<'_>, name: &str) -> bool {
-    def.name(db).as_deref() == Some(name)
-        && module_id_for_source_file(db, def.file(db)).is_some_and(|module| {
-            module.library(db) == &LibraryId::Std && module.logical_path(db).as_slice() == ["std"]
-        })
 }
 
 fn reject_structural_std_abi_fallback<'db>(

@@ -140,6 +140,21 @@ impl<'db> InferCtx<'db> {
         let poisoned_exprs = self.poisoned_exprs.clone();
         let poisoned_pats = self.poisoned_pats.clone();
         let root_scheme = self.inferred_root_scheme();
+        let mut comptime_obligations = std::mem::take(&mut self.comptime_obligations);
+        for pending in std::mem::take(&mut self.pending_comptime_lets) {
+            let normalized_ty = self.normalize_aliases(pending.ty);
+            let ty = self.engine.ground_ty(normalized_ty);
+            if pending.declared || ty_requires_comptime(self.db, ty) {
+                comptime_obligations.push(ComptimeObligation {
+                    body: pending.body,
+                    expr: pending.expr,
+                    kind: ComptimeObligationKind::LetInit {
+                        stmt: pending.stmt,
+                        name: pending.name,
+                    },
+                });
+            }
+        }
         let expr_tys = self
             .expr_tys
             .into_iter()
@@ -195,20 +210,6 @@ impl<'db> InferCtx<'db> {
                 }
             })
             .collect();
-        let mut comptime_obligations = self.comptime_obligations;
-        for pending in self.pending_comptime_lets {
-            let ty = self.engine.ground_ty(pending.ty);
-            if pending.declared || ty_requires_comptime(self.db, ty) {
-                comptime_obligations.push(ComptimeObligation {
-                    body: pending.body,
-                    expr: pending.expr,
-                    kind: ComptimeObligationKind::LetInit {
-                        stmt: pending.stmt,
-                        name: pending.name,
-                    },
-                });
-            }
-        }
         let mut result = InferenceResult {
             root_scheme,
             expr_tys,

@@ -299,6 +299,50 @@ fn infer_function<'db>(
     (body, infer_body(db, body, ctx))
 }
 
+fn infer_module_function<'db>(
+    db: &'db TestDb,
+    module_id: ModuleId<'db>,
+    name: &str,
+) -> (FuncBody<'db>, InferenceResult<'db>) {
+    let module = module_hir(db, module_id).expect("module hir");
+    let info = function_infos(db, module)
+        .into_iter()
+        .find(|info| function_name(db, info.function) == name)
+        .expect("function");
+    let function = info.function;
+    let body = function.body(db).expect("body");
+    let env = nameres::module_env_for_hir_module(db, module_id, module);
+    let scope = env.item_scope.clone().expect("item scope");
+    let module_resolution = hir_nameres::resolve_module_with_imports(db, module, scope, &env);
+    let lowerer = TypeLowering::from_item_resolutions(
+        db,
+        &module_resolution.item_resolutions,
+        BinderEnv::from_type_vars(&info.type_vars),
+    );
+    let mut lowered = lowerer.lower_function(function);
+    let mut normalizer = AliasNormalizer::new(db, module, &module_resolution.item_resolutions);
+    lowered.scheme = normalizer.normalize_scheme(lowered.scheme);
+    lowered.params = lowered
+        .params
+        .into_iter()
+        .map(|param| normalizer.normalize_ty(param))
+        .collect();
+    lowered.ret = normalizer.normalize_ty(lowered.ret);
+    let lookup = find_function_info(db, module, function.def_id_value(db)).expect("lookup");
+    let body_map = body_resolution_for_function_with_imports(db, module, &lookup, Some(&env))
+        .expect("body map");
+    let ctx = BodyTyContext::new(
+        module,
+        body_map,
+        info.type_vars,
+        lowered.params,
+        Some(lowered.ret),
+    )
+    .with_param_names(param_names(db, function.sig(db).params.atom()))
+    .with_entry_module(module_id);
+    (body, infer_body(db, body, ctx))
+}
+
 fn infer_all_functions_with_solver<'db>(
     db: &'db TestDb,
     module: Module<'db>,
@@ -625,6 +669,207 @@ function f() -> word {
             .any(|obligation| matches!(
                 &obligation.kind,
                 ComptimeObligationKind::LetInit { name, .. } if name == "x"
+            )),
+        "{:?}",
+        result.comptime_obligations
+    );
+}
+
+#[test]
+fn comptime_only_types_cover_params_returns_typed_lets_and_call_args() {
+    let mut db = TestDb::default();
+    let std_path = PathBuf::from("/std/std.solc");
+    let main_path = PathBuf::from("/main/main.solc");
+    let std_file = source_file_at_path(
+        &db,
+        &std_path,
+        r#"
+export { string };
+data string;
+"#,
+    );
+    let main_file = source_file_at_path(
+        &db,
+        &main_path,
+        r#"
+import std.{string};
+
+type Text = string;
+type Big = integer;
+
+function explicitlyNeedsText(comptime value: Text) -> () {
+  return ();
+}
+
+function explicitlyNeedsBig(comptime value: Big) -> () {
+  return ();
+}
+
+function textParamIsComptime(value: Text) -> () {
+  return explicitlyNeedsText(value);
+}
+
+function bigParamIsComptime(value: Big) -> () {
+  return explicitlyNeedsBig(value);
+}
+
+function takesText(value: Text) -> () {
+  return ();
+}
+
+function takesBig(value: Big) -> () {
+  return ();
+}
+
+function exerciseText(value: Text) -> Text {
+  let copy: Text = value;
+  takesText(copy);
+  return copy;
+}
+
+function exerciseBig(value: Big) -> Big {
+  let copy: Big = value;
+  takesBig(copy);
+  return copy;
+}
+"#,
+    );
+    let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
+    let main_key =
+        module_key_for_path(LibraryId::Main, &PathBuf::from("/main"), &main_path).unwrap();
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key.clone(), main_file);
+    let main_module = module_id_from_key(&db, &main_key);
+
+    for name in ["textParamIsComptime", "bigParamIsComptime"] {
+        let (_, result) = infer_module_function(&db, main_module, name);
+        assert_no_typeck(&result);
+    }
+
+    for name in ["exerciseText", "exerciseBig"] {
+        let (_, result) = infer_module_function(&db, main_module, name);
+        assert_no_typeck(&result);
+        assert!(
+            result
+                .comptime_obligations
+                .iter()
+                .any(|obligation| matches!(
+                    obligation.kind,
+                    ComptimeObligationKind::LetInit { .. }
+                )),
+            "{name}: {:?}",
+            result.comptime_obligations
+        );
+        assert!(
+            result
+                .comptime_obligations
+                .iter()
+                .any(|obligation| matches!(
+                    obligation.kind,
+                    ComptimeObligationKind::CallParam { .. }
+                )),
+            "{name}: {:?}",
+            result.comptime_obligations
+        );
+        assert!(
+            result
+                .comptime_obligations
+                .iter()
+                .any(|obligation| matches!(obligation.kind, ComptimeObligationKind::Return { .. })),
+            "{name}: {:?}",
+            result.comptime_obligations
+        );
+    }
+
+    let diagnostics = module_typeck_diagnostics(&db, main_module)
+        .iter()
+        .map(|diagnostic| diagnostic.lower(&db))
+        .collect::<Vec<_>>();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn module_local_string_and_integer_adts_remain_runtime_types() {
+    let diagnostics = lowered_module_typeck_diagnostics(
+        r#"
+data string = RuntimeString(word);
+data integer = RuntimeInteger(word);
+
+function takesString(value: string) -> () {
+  return ();
+}
+
+function takesInteger(value: integer) -> () {
+  return ();
+}
+
+function exercise(value: word) -> () {
+  takesString(string.RuntimeString(value));
+  takesInteger(integer.RuntimeInteger(value));
+  return ();
+}
+"#,
+    );
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn contract_local_string_and_integer_adts_remain_runtime_types() {
+    let diagnostics = lowered_module_typeck_diagnostics(
+        r#"
+contract RuntimeNames {
+  data string = RuntimeString(word);
+  data integer = RuntimeInteger(word);
+
+  function takesString(value: string) -> () {
+    return ();
+  }
+
+  function takesInteger(value: integer) -> () {
+    return ();
+  }
+
+  function exercise(value: word) -> () {
+    takesString(string.RuntimeString(value));
+    takesInteger(integer.RuntimeInteger(value));
+    return ();
+  }
+}
+"#,
+    );
+
+    // The bare test module has no standard contract-default classes; those
+    // unrelated resolution errors must not hide an identity-based SC0240.
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("SC0240")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn inferred_string_let_records_comptime_obligation() {
+    let db = TestDb::default();
+    let module = parse_module(
+        &db,
+        r#"
+function f() -> word {
+  let message = "hello";
+  return 0;
+}
+"#,
+    );
+    let (_, result) = infer_function(&db, module, "f");
+
+    assert!(
+        result
+            .comptime_obligations
+            .iter()
+            .any(|obligation| matches!(
+                &obligation.kind,
+                ComptimeObligationKind::LetInit { name, .. } if name == "message"
             )),
         "{:?}",
         result.comptime_obligations

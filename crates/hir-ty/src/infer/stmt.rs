@@ -61,15 +61,14 @@ impl<'db> InferCtx<'db> {
                 ty,
                 init,
             } => {
-                let declared_comptime = comptime.is_some()
-                    || type_ref_is_comptime(self.db, ty.as_ref())
-                    || ty
-                        .as_ref()
-                        .is_some_and(|ty| type_ref_is_integer(self.db, *ty));
                 let local_ty = ty
                     .map(|ty| self.lower_type_ref(ty))
                     .unwrap_or_else(|| self.engine.fresh_var());
                 let local_ty = self.maybe_comptime(*comptime, local_ty);
+                let resolved_local_ty = self.engine.resolve(local_ty.clone());
+                let normalized_local_ty = self.normalize_aliases(resolved_local_ty);
+                let declared_comptime =
+                    comptime.is_some() || infer_ty_requires_comptime(self.db, &normalized_local_ty);
                 let mut local_ty = local_ty;
                 if let Some(init) = init {
                     let init_ty = if ty.is_none()
@@ -101,23 +100,23 @@ impl<'db> InferCtx<'db> {
             }
             StmtKind::Return(expr) => {
                 if let Some(expected) = self.return_stack.last().cloned() {
-                    if infer_ty_has_comptime_wrapper(&self.engine.resolve(expected.clone()))
-                        && let Some(expr) = expr
-                    {
-                        self.comptime_obligations.push(ComptimeObligation {
-                            body,
-                            expr: *expr,
-                            kind: ComptimeObligationKind::Return {
-                                context: self.body_context(body),
-                            },
-                        });
-                    }
                     if let Some(expr) = expr {
                         if let Some(display) = self.return_display_stack.last().cloned().flatten() {
                             self.expected_expr_displays.insert((body, *expr), display);
                         }
                         let actual = self.infer_expr_expected(body, *expr, Some(expected.clone()));
-                        self.unify_expr(body, *expr, expected, actual.clone());
+                        self.unify_expr(body, *expr, expected.clone(), actual.clone());
+                        let resolved_expected = self.engine.resolve(expected);
+                        let normalized_expected = self.normalize_aliases(resolved_expected);
+                        if infer_ty_requires_comptime(self.db, &normalized_expected) {
+                            self.comptime_obligations.push(ComptimeObligation {
+                                body,
+                                expr: *expr,
+                                kind: ComptimeObligationKind::Return {
+                                    context: self.body_context(body),
+                                },
+                            });
+                        }
                         actual
                     } else {
                         let actual = self.unit();
