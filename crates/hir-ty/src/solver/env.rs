@@ -33,6 +33,7 @@ pub fn trait_env_for_module<'db>(db: &'db dyn Db, module: ModuleId<'db>) -> Trai
         instance_origins: env.instances.clone(),
         derived_generic: visible_generic_class(db, &env)
             .map(|generic| DerivedGenericClauseSource { module, generic }),
+        derived_class_modules: nameres::instance_import_modules(db, module),
     };
     TraitEnvId::new(
         db,
@@ -75,6 +76,9 @@ pub fn trait_env_from_module_resolution<'db>(
         );
         clause_sets.push(derived_builder.finish());
     }
+    let mut derived_builder = TraitClauseBuilder::new(db);
+    derived_builder.add_derived_class_instances(module, &module_resolution.item_resolutions);
+    clause_sets.push(derived_builder.finish());
     TraitEnvId::new(
         db,
         BaseTraitEnvId::new(db, BaseTraitEnvSource::Resolved { clause_sets }),
@@ -164,6 +168,16 @@ fn trait_env_from_module_resolution_and_imports_impl<'db>(
         );
         clause_sets.push(derived_builder.finish());
     }
+    let mut derived_builder = TraitClauseBuilder::new(db);
+    derived_builder.add_derived_class_instances(module, &module_resolution.item_resolutions);
+    clause_sets.push(derived_builder.finish());
+    if let Some(module_id) = module_id {
+        for imported in nameres::instance_import_modules_for_hir_module(db, module_id, module) {
+            if imported != module_id {
+                clause_sets.push(derived_class_clause_set(db, imported));
+            }
+        }
+    }
     TraitEnvId::new(
         db,
         BaseTraitEnvId::new(db, BaseTraitEnvSource::Resolved { clause_sets }),
@@ -209,6 +223,9 @@ pub(super) fn base_trait_env_clauses<'db>(
                     db,
                     derived_generic_clause_set(db, source.module, source.generic),
                 );
+            }
+            for module in &source.derived_class_modules {
+                extend_clause_set(&mut clauses, db, derived_class_clause_set(db, *module));
             }
             clauses
         }
@@ -297,6 +314,15 @@ fn derived_generic_clause_set<'db>(
     let mut builder = TraitClauseBuilder::new(db);
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
         builder.add_derived_generic_instances(scope.module, &item_resolutions, generic);
+    }
+    builder.finish()
+}
+
+#[salsa::tracked]
+fn derived_class_clause_set<'db>(db: &'db dyn Db, module: ModuleId<'db>) -> TraitClauseSetId<'db> {
+    let mut builder = TraitClauseBuilder::new(db);
+    if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
+        builder.add_derived_class_instances(scope.module, &item_resolutions);
     }
     builder.finish()
 }
@@ -538,6 +564,25 @@ impl<'db> TraitClauseBuilder<'db> {
             };
             collect_adt_defs_from_ty(self.db, plan.rep, &mut pending);
             self.push_derived_generic_clause(&info, &plan, generic);
+        }
+    }
+
+    fn add_derived_class_instances(
+        &mut self,
+        module: Module<'db>,
+        item_resolutions: &hir_nameres::ItemResolutionFacts<'db>,
+    ) {
+        for plan in derived_class_plans_with_resolutions(self.db, module, item_resolutions) {
+            self.clauses.push(ProgramClause {
+                binder_count: plan.binder_count,
+                head: plan.head,
+                conditions: plan.conditions,
+                origin: ClauseOrigin::Derived(DerivedClauseKind::Class {
+                    adt: plan.adt,
+                    class: plan.class,
+                    target_index: plan.target_index,
+                }),
+            });
         }
     }
 

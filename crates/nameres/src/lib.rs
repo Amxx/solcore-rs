@@ -77,7 +77,8 @@ use env::module_has_parse_errors;
 pub use env::{module_env, module_env_for_hir_module, module_import_surface, resolve_module_full};
 pub use graph::{module_graph, module_imports, reachable_modules, resolve_reachable_full};
 pub use instances::{
-    instance_imports, instance_imports_for_file, instance_imports_for_hir_module, module_instances,
+    instance_import_modules, instance_import_modules_for_hir_module, instance_imports,
+    instance_imports_for_file, instance_imports_for_hir_module, module_instances,
 };
 pub use interface::public_interface;
 use interface::{

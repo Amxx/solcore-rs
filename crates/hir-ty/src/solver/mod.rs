@@ -57,6 +57,7 @@ use crate::{
 const DEFAULT_SOLVER_FUEL: usize = 16_384;
 
 mod canonical;
+mod derived_class;
 mod derived_generic;
 mod display;
 mod engine;
@@ -70,6 +71,10 @@ mod soundness;
 use canonical::{
     GoalRenaming, RigidVar, TableKey, actualize_answer, canonicalize_goal, canonicalize_local_given,
 };
+pub(crate) use derived_class::class_derivation_diagnostics;
+pub use derived_class::derived_class_plans;
+use derived_class::derived_class_plans_with_resolutions;
+use derived_class::derived_class_target_span;
 pub use derived_generic::{
     derived_generic_instance_plan, derived_generic_plan, generic_derivation_diagnostics,
 };
@@ -124,6 +129,8 @@ pub struct ModuleTraitEnvSource<'db> {
     pub instance_origins: Vec<nameres::Origin<'db>>,
     /// Local source for derived `Generic` clauses, when `Generic` is visible.
     pub derived_generic: Option<DerivedGenericClauseSource<'db>>,
+    /// Instance-visible modules whose ADTs contribute derived class clauses.
+    pub derived_class_modules: Vec<ModuleId<'db>>,
 }
 
 /// Stable source of synthesized `Generic` clauses.
@@ -216,8 +223,36 @@ pub enum DerivedClauseKind<'db> {
         /// ADT whose `Generic` instance was synthesized.
         adt: DefId<'db>,
     },
+    /// Class instance requested by an ADT `derive` attribute.
+    Class {
+        /// ADT whose class instance was synthesized.
+        adt: DefId<'db>,
+        /// Derived class definition.
+        class: DefId<'db>,
+        /// Target index in the source attribute, preserving duplicates.
+        target_index: u32,
+    },
     /// Lambda closure `invokable` instance.
     Closure,
+}
+
+/// Solver-facing plan for one class requested by an ADT `derive` attribute.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
+pub struct DerivedClassPlan<'db> {
+    /// ADT whose instance is synthesized.
+    pub adt: DefId<'db>,
+    /// Derived class definition.
+    pub class: DefId<'db>,
+    /// Target index in source order.
+    pub target_index: u32,
+    /// Number of type binders in the synthesized clause.
+    pub binder_count: u32,
+    /// Synthesized instance head.
+    pub head: Pred<'db>,
+    /// Class constraints placed on every ADT type parameter.
+    pub conditions: Vec<Pred<'db>>,
+    /// Whether the ADT has no constructors and will use `absurd` methods.
+    pub empty: bool,
 }
 
 /// Queryable plan for an automatically derived `Generic` instance.

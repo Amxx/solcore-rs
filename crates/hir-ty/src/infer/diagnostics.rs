@@ -352,6 +352,17 @@ pub enum TypeckDiagnostic {
         /// Type name with the conflicting manual instance.
         ty: String,
     },
+    /// `SC0230`: a resolved class cannot be derived for this data declaration.
+    InvalidDerive {
+        /// Source span for the rejected class target.
+        span: LabelSpan,
+        /// Data type carrying the derive attribute.
+        ty: String,
+        /// Requested class name.
+        class: String,
+        /// Reason the synthesized instance would be invalid.
+        reason: String,
+    },
     /// `SC0240`: a runtime expression was supplied to a comptime parameter.
     RuntimeToComptimeParam {
         /// Source span for the runtime argument.
@@ -802,6 +813,16 @@ impl TypeckDiagnostic {
             ))
             .with_code(DiagnosticCode::TYPECK_GENERIC_DERIVE_CONFLICT)
             .with_primary_label_span(span.clone(), Some("manual Generic instance conflicts with auto-derivation")),
+            TypeckDiagnostic::InvalidDerive {
+                span,
+                ty,
+                class,
+                reason,
+            } => Diagnostic::error(format!(
+                "cannot derive '{class}' for type '{ty}': {reason}"
+            ))
+            .with_code(DiagnosticCode::TYPECK_INVALID_DERIVE)
+            .with_primary_label_span(span.clone(), Some("invalid derive target")),
             TypeckDiagnostic::RuntimeToComptimeParam {
                 span,
                 function,

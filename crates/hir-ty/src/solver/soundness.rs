@@ -13,11 +13,14 @@ pub fn instance_soundness_diagnostics<'db>(
     }
     let source = parse_file_to_hir(db, file).module(db);
     let hir_module = crate::prepare_module(db, source).module(db);
-    if !hir_module
+    let has_instances = hir_module
         .items(db)
         .iter()
-        .any(|item| matches!(item, Item::InstanceDef(_)))
-    {
+        .any(|item| matches!(item, Item::InstanceDef(_)));
+    let has_derives = local_adt_infos(db, hir_module)
+        .iter()
+        .any(|info| !info.adt.derives(db).is_empty());
+    if !has_instances && !has_derives {
         return Vec::new();
     }
     let Some(facts) = module_instance_facts(db, module).as_ref() else {
@@ -33,7 +36,7 @@ pub fn instance_soundness_diagnostics<'db>(
             .into_iter()
             .map(alias_error_to_diagnostic)
             .collect::<Vec<_>>();
-    let mut prior_heads = imported_non_default_heads(db, module, &facts.imports);
+    let mut prior_heads = imported_non_default_heads(db, module, facts.module, &facts.imports);
     for fact in &facts.instances {
         let class = fact.class(db);
         let same_class_prior = class
@@ -56,6 +59,20 @@ pub fn instance_soundness_diagnostics<'db>(
                 span: fact.head_span.clone(),
             });
         }
+    }
+    for plan in derived_class_plans_with_resolutions(db, facts.module, &facts.item_resolutions) {
+        let class = ClassId::User(plan.class);
+        let prior = prior_heads
+            .get(&class)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let span = derived_class_target_span(db, facts.module, plan.adt, plan.target_index)
+            .unwrap_or_else(|| LabelSpan::from_span(db, facts.module.span(db)));
+        check_overlapping_instance(db, plan.head, span.clone(), prior, &[], &mut diagnostics);
+        prior_heads.entry(class).or_default().push(InstanceHead {
+            pred: plan.head,
+            span,
+        });
     }
     diagnostics
 }
@@ -240,6 +257,7 @@ fn alias_error_to_diagnostic(error: AliasError) -> TypeckDiagnostic {
 fn imported_non_default_heads<'db>(
     db: &'db dyn Db,
     module: ModuleId<'db>,
+    hir_module: Module<'db>,
     env: &nameres::ModuleImportSurface<'db>,
 ) -> FxHashMap<ClassId<'db>, Vec<InstanceHead<'db>>> {
     let mut heads = FxHashMap::<ClassId<'db>, Vec<InstanceHead<'db>>>::default();
@@ -265,6 +283,28 @@ fn imported_non_default_heads<'db>(
                 pred: fact.head,
                 span: fact.head_span.clone(),
             });
+        }
+    }
+    for imported in nameres::instance_import_modules_for_hir_module(db, module, hir_module) {
+        if imported == module {
+            continue;
+        }
+        let Some((scope, _)) = scope_resolution_for_module_id(db, imported) else {
+            continue;
+        };
+        for plan in derived_class_plans(db, imported) {
+            let Some(span) =
+                derived_class_target_span(db, scope.module, plan.adt, plan.target_index)
+            else {
+                continue;
+            };
+            heads
+                .entry(ClassId::User(plan.class))
+                .or_default()
+                .push(InstanceHead {
+                    pred: plan.head,
+                    span,
+                });
         }
     }
     heads
