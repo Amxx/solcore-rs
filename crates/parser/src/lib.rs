@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn validates_identifiers_with_the_source_lexer() {
-        for valid in ["value", "value_2", "λ", "fλ2"] {
+        for valid in ["value", "value_2", "λ", "fλ2", "derive"] {
             assert!(is_valid_identifier(valid), "expected {valid:?} to be valid");
         }
         for invalid in [

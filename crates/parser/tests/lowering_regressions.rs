@@ -1026,3 +1026,15 @@ contract C {
         ["Ord"]
     );
 }
+
+#[test]
+fn derive_remains_an_ordinary_identifier_outside_attributes() {
+    let db = TestDb::default();
+    let src = "data derive; function derive() -> derive { return derive; }";
+    let (file, module) = parse_module(&db, "derive-soft-keyword", src);
+    assert!(diagnostics(&db, file).is_empty());
+    assert!(module.items(&db).iter().any(|item| {
+        matches!(item, Item::AdtDef(adt) if (*adt.name(&db).atom()).text(&db) == "derive")
+    }));
+    assert!(top_function(&db, module, "derive").body(&db).is_some());
+}
