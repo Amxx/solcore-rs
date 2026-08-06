@@ -447,7 +447,7 @@ mod tests {
         parse_body_statements, parse_supported_items,
         recovery::suppress_body_cascades,
         tokenize::{tokenize, tokenize_with_base},
-        yul::parsed_yul_expr_parser,
+        yul::{parsed_yul_expr_parser, parsed_yul_stmt_parser},
     };
     use crate::{lexer::Token, types::*};
 
@@ -493,6 +493,65 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(output.is_some(), "expected parsed output");
+    }
+
+    #[test]
+    fn yul_switch_requires_a_case_before_optional_default() {
+        for source in ["switch x", "switch x default {}"] {
+            let (tokens, errors) = tokenize(source);
+            assert!(errors.is_empty(), "token errors: {errors:?}");
+            let stream = chumsky::input::Stream::from_iter(tokens)
+                .map((0..source.len()).into(), |(tok, span): (_, _)| (tok, span));
+            let (output, parse_errors) =
+                parsed_yul_stmt_parser().parse(stream).into_output_errors();
+            let errors = parse_errors
+                .into_iter()
+                .map(parse_error_from_rich)
+                .collect::<Vec<_>>();
+
+            assert!(
+                !errors.is_empty(),
+                "invalid switch produced no diagnostic: {source}"
+            );
+            assert!(
+                matches!(
+                    output,
+                    Some(ParsedYulStmt {
+                        kind: ParsedYulStmtKind::Error,
+                        ..
+                    })
+                ),
+                "invalid switch was not lowered to parser recovery: {source}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.message == "Yul switch requires at least one `case` arm"),
+                "missing required-case diagnostic for `{source}`: {errors:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn yul_switch_accepts_a_case_without_default() {
+        let source = "switch x case 0 {}";
+        let (tokens, errors) = tokenize(source);
+        assert!(errors.is_empty(), "token errors: {errors:?}");
+        let stream = chumsky::input::Stream::from_iter(tokens)
+            .map((0..source.len()).into(), |(tok, span): (_, _)| (tok, span));
+        let (output, parse_errors) = parsed_yul_stmt_parser().parse(stream).into_output_errors();
+
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:#?}");
+        assert!(
+            matches!(
+                &output,
+                Some(ParsedYulStmt {
+                    kind: ParsedYulStmtKind::Switch { cases, default: None, .. },
+                    ..
+                }) if cases.len() == 1
+            ),
+            "unexpected switch parse output: {output:#?}"
+        );
     }
 
     #[test]
@@ -693,13 +752,13 @@ mod tests {
 
     #[test]
     fn lexical_error_does_not_hide_independent_top_level_parse_error() {
-        let parsed = parse_supported_items("~\nfunction ok() {}\nfunction broken( { }\n");
+        let parsed = parse_supported_items("§\nfunction ok() {}\nfunction broken( { }\n");
 
         assert!(
             parsed
                 .errors
                 .iter()
-                .any(|error| error.message.contains("invalid token `~`")),
+                .any(|error| error.message.contains("invalid token `§`")),
             "missing lexer diagnostic: {:#?}",
             parsed.errors
         );
@@ -715,7 +774,7 @@ mod tests {
 
     #[test]
     fn lexical_error_does_not_hide_independent_body_parse_error() {
-        let source = "{\n~\nlet broken = ;\n}";
+        let source = "{\n§\nlet broken = ;\n}";
         let parsed = parse_body_statements(source, (0..source.len()).into());
 
         assert!(
@@ -730,7 +789,7 @@ mod tests {
 
     #[test]
     fn lexical_error_suppresses_only_its_adjacent_body_cascade() {
-        let source = "{ let value = ~; return 0; }";
+        let source = "{ let value = §; return 0; }";
         let parsed = parse_body_statements(source, (0..source.len()).into());
 
         let semicolon = source.find(';').expect("initializer semicolon");
@@ -758,7 +817,7 @@ mod tests {
 
     #[test]
     fn lexical_error_does_not_hide_a_next_line_top_level_error() {
-        let source = "~\n;\n";
+        let source = "§\n;\n";
         let parsed = parse_supported_items(source);
         let semicolon = source.find(';').expect("standalone semicolon");
 
@@ -766,7 +825,7 @@ mod tests {
             parsed
                 .errors
                 .iter()
-                .any(|error| error.message.contains("invalid token `~`")),
+                .any(|error| error.message.contains("invalid token `§`")),
             "missing lexer diagnostic: {:#?}",
             parsed.errors
         );

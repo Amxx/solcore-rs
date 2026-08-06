@@ -492,6 +492,25 @@ contract StorageContract {
 }
 
 #[test]
+fn source_bit_not_lowers_to_verified_evm_not() {
+    let (_, ir) = lower_source(
+        r#"
+import std.{*};
+
+contract BitNotContract {
+  public function main() -> word {
+    let value:word;
+    assembly { value := callvalue() }
+    return ~value;
+  }
+}
+"#,
+    );
+
+    assert!(ir.contains(" = not "), "{ir}");
+}
+
+#[test]
 fn inline_yul_for_init_binding_remains_in_loop_scope() {
     let (_, ir) = lower_source(
         r#"
@@ -512,6 +531,47 @@ contract LoopContract {
 
     assert!(ir.contains("phi"), "{ir}");
     assert!(ir.contains("jump"), "{ir}");
+}
+
+#[test]
+fn polymorphic_yul_terminators_end_value_returning_functions() {
+    let (_, ir) = lower_source(
+        r#"
+forall a . function viaStop() -> a {
+  assembly { stop() }
+}
+
+forall a . function viaInvalid() -> a {
+  assembly { invalid() }
+}
+
+forall a . function viaSelfdestruct(beneficiary : word) -> a {
+  assembly { selfdestruct(beneficiary) }
+}
+
+forall a . function viaRevert() -> a {
+  assembly { revert(0, 0) }
+}
+
+function useWord(value : word) -> () {}
+
+contract Terminators {
+  public function main() -> () {
+    useWord(viaStop());
+    useWord(viaInvalid());
+    useWord(viaSelfdestruct(0));
+    useWord(viaRevert());
+  }
+}
+"#,
+    );
+
+    for terminator in ["evm_stop", "evm_invalid", "evm_self_destruct", "evm_revert"] {
+        assert!(
+            ir.contains(terminator),
+            "missing `{terminator}` in IR:\n{ir}"
+        );
+    }
 }
 
 fn lower_source(source: &str) -> (Module, String) {

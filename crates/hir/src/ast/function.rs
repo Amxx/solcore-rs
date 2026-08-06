@@ -107,6 +107,10 @@ pub enum AssignOp {
     Add,
     /// `-=` assignment.
     Sub,
+    /// `*=` assignment.
+    Mul,
+    /// `/=` assignment.
+    Div,
     /// `^=` assignment.
     BitXor,
     /// `&=` assignment.
@@ -437,6 +441,8 @@ pub enum BinOp {
 pub enum UnOp {
     /// Logical negation.
     Not,
+    /// Bitwise complement.
+    BitNot,
     /// Parser recovery placeholder.
     Error,
 }

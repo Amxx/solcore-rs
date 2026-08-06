@@ -247,6 +247,16 @@ impl<'db> Emitter<'db> {
                 rhs,
             } => self.emit_assign_op(stmt.span, lhs, "sub", rhs),
             MonoStmtKind::Assign {
+                op: AssignOp::Mul,
+                lhs,
+                rhs,
+            } => self.emit_assign_op(stmt.span, lhs, "mul", rhs),
+            MonoStmtKind::Assign {
+                op: AssignOp::Div,
+                lhs,
+                rhs,
+            } => self.emit_assign_op(stmt.span, lhs, "div", rhs),
+            MonoStmtKind::Assign {
                 op: AssignOp::BitXor,
                 lhs,
                 rhs,
@@ -937,6 +947,14 @@ impl<'db> Emitter<'db> {
                     },
                 }
             }
+            UnOp::BitNot => Expr {
+                span,
+                ty,
+                kind: ExprKind::Call {
+                    callee: "not".into(),
+                    args: vec![self.emit_expr(expr)],
+                },
+            },
             UnOp::Error => {
                 self.push(
                     span,
@@ -1070,6 +1088,7 @@ fn intrinsic_name(intrinsic: MonoIntrinsic) -> &'static str {
         MonoIntrinsic::BxorWord => "bxorWord",
         MonoIntrinsic::BandWord => "bandWord",
         MonoIntrinsic::BorWord => "borWord",
+        MonoIntrinsic::BnotWord => "bnotWord",
         MonoIntrinsic::WordToInteger => "wordToInteger",
         MonoIntrinsic::WordFromInteger => "wordFromInteger",
         MonoIntrinsic::IntegerAdd => "integerAdd",

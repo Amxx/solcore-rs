@@ -91,7 +91,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
 
     pub(super) fn un_op_expr(
         &mut self,
-        _expr_id: Id<Expr<'db>>,
+        expr_id: Id<Expr<'db>>,
         op: UnOp,
         operand: Id<Expr<'db>>,
         result_ty: Ty<'db>,
@@ -102,9 +102,55 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             op,
             expr: Box::new(operand.clone()),
         };
-        let UnOp::Not = op else {
+        if op == UnOp::BitNot {
+            let (class_name, method) = overloaded_unary_operator_method(op)?;
+            let callee_ty = Ty::function(self.driver.db, vec![operand.ty.ty()], result_ty);
+            let mono_callee_ty = self.driver.mono_ty(callee_ty, "operator callee", span)?;
+            let evidence = self
+                .call_evidence(expr_id, expr_id)
+                .map(|evidence| self.subst.apply_evidence(self.driver.db, evidence.evidence))
+                .or_else(|| {
+                    self.driver.solve_operator_method_pred(
+                        class_name,
+                        method,
+                        callee_ty,
+                        Some(span),
+                    )
+                });
+            let Some(evidence) = evidence else {
+                self.driver.diagnostics.push(SpecializeDiagnostic {
+                    kind: SpecializeDiagnosticKind::MissingEvidence {
+                        context: method.to_owned(),
+                    },
+                    span: Some(span),
+                });
+                return Some(fallback());
+            };
+            let Some(name) = self
+                .driver
+                .resolve_class_method_call(method, evidence, callee_ty, span, self.depth)
+            else {
+                self.driver.diagnostics.push(SpecializeDiagnostic {
+                    kind: SpecializeDiagnosticKind::MissingEvidence {
+                        context: method.to_owned(),
+                    },
+                    span: Some(span),
+                });
+                return Some(fallback());
+            };
+            return Some(MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: mono_callee_ty,
+                    span,
+                },
+                origin: MonoCallOrigin::ByName,
+                args: vec![operand],
+            });
+        }
+        if op != UnOp::Not {
             return Some(fallback());
-        };
+        }
         let callee_ty = Ty::function(self.driver.db, vec![operand.ty.ty()], result_ty);
         let mono_callee_ty = self.driver.mono_ty(callee_ty, "operator callee", span)?;
         let Some(resolution) = self.lookup_operator_function("not") else {

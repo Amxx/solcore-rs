@@ -661,6 +661,20 @@ contract AssemblyFunctionShadowing {
 }
 
 #[test]
+fn polymorphic_inline_yul_terminators_render_in_value_functions() {
+    let fixture =
+        repo_root().join("crates/hir-ty/tests/fixtures/ok/yul_polymorphic_terminators/main.solc");
+    let yul = render_fixture(&fixture);
+
+    for terminator in ["stop()", "invalid()", "selfdestruct(", "revert("] {
+        assert!(
+            yul.contains(terminator),
+            "missing `{terminator}` in Yul output:\n{yul}"
+        );
+    }
+}
+
+#[test]
 fn top_level_no_object_hull_wraps_like_assemble_hs_snapshot() {
     let db = TestDb::default();
     let sp = test_span(&db);

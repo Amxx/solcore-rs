@@ -338,9 +338,12 @@ impl<'db> InferCtx<'db> {
         let unit = self.unit();
         let word_params = |count: usize| vec![word.clone(); count];
         let sig = match name {
+            // EVM terminators never return control, so their result can
+            // inhabit whichever type the surrounding Sail expression needs.
+            // This mirrors the already-polymorphic `return`/`revert` builtins.
             "stop" | "invalid" => YulFunctionSig {
                 params: Vec::new(),
-                ret: unit.clone(),
+                ret: self.engine.fresh_var(),
             },
             "add" | "mul" | "sub" | "div" | "sdiv" | "mod" | "smod" | "exp" | "signextend"
             | "lt" | "gt" | "slt" | "sgt" | "eq" | "and" | "or" | "xor" | "byte" | "shl"
@@ -355,7 +358,9 @@ impl<'db> InferCtx<'db> {
             "iszero" | "not" | "clz" | "balance" | "calldataload" | "extcodesize"
             | "extcodehash" | "blockhash" | "blobhash" | "pop" | "mload" | "sload" | "tload"
             | "selfdestruct" => {
-                let ret = if matches!(name, "pop" | "selfdestruct") {
+                let ret = if name == "selfdestruct" {
+                    self.engine.fresh_var()
+                } else if name == "pop" {
                     unit.clone()
                 } else {
                     word.clone()

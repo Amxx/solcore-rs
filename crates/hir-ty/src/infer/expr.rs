@@ -1164,6 +1164,72 @@ impl<'db> InferCtx<'db> {
         )
     }
 
+    fn infer_operator_unary_call_expected(
+        &mut self,
+        body: FuncBody<'db>,
+        expr: Id<Expr<'db>>,
+        arg: Id<Expr<'db>>,
+        class_name: &str,
+        method: &str,
+        expected: Option<InferTy<'db>>,
+    ) -> InferTy<'db> {
+        let Some((class, name)) = self.lookup_operator_class_method(class_name, method) else {
+            self.infer_expr(body, arg);
+            self.emit_expr_error(
+                body,
+                expr,
+                TypeckDiagnostic::UnsatisfiedConstraint {
+                    span: self.expr_label_span(body, expr),
+                    pred: format!("operator {class_name}.{method}"),
+                },
+            );
+            return InferTy::Error;
+        };
+
+        let source = ObligationSource::CallSite {
+            body,
+            call_expr: expr,
+            callee_expr: expr,
+            callee: CallSiteCallee::ClassMethod {
+                class,
+                name: name.clone(),
+            },
+        };
+        let callee_ty = self.instantiate_class_method(class, &name, source);
+        if let Some(expected_ty) = expected.clone() {
+            let normalized = self.normalize_aliases(callee_ty.clone());
+            if let InferTy::Function { params, .. } = self.engine.resolve(normalized) {
+                self.unify_expr(
+                    body,
+                    expr,
+                    callee_ty.clone(),
+                    InferTy::Function {
+                        params,
+                        ret: Box::new(expected_ty),
+                    },
+                );
+            }
+        }
+        let normalized = self.normalize_aliases(callee_ty.clone());
+        let resolved = self.engine.resolve(normalized);
+        let params = match resolved {
+            InferTy::Function { params, .. } => Some(params),
+            _ => None,
+        };
+        self.infer_direct_call(
+            body,
+            DirectCallSite {
+                call_expr: expr,
+                callee_expr: expr,
+                callee: Some(CallSiteCallee::ClassMethod { class, name }),
+            },
+            callee_ty,
+            params,
+            &[arg],
+            expected,
+        )
+    }
+
     fn lookup_operator_class_method(
         &self,
         class_name: &str,
@@ -1273,6 +1339,14 @@ impl<'db> InferCtx<'db> {
                 operator_expr,
                 operand,
                 "not",
+                expected,
+            ),
+            UnOp::BitNot => self.infer_operator_unary_call_expected(
+                body,
+                operator_expr,
+                operand,
+                "BitNot",
+                "bnot",
                 expected,
             ),
             UnOp::Error => InferTy::Error,

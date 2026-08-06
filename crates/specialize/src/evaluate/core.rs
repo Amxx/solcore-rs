@@ -27,7 +27,9 @@ use super::{
         literal_from_known_expr, lvalue_root_name, match_arms_with, match_expr_arms_with,
         remove_assigned, remove_comptime_assigned, string_expr,
     },
-    value::{BigInt, bitand_word, bitor_word, bitxor_word, word_div, word_low_byte, word_mod},
+    value::{
+        BigInt, bitand_word, bitor_word, bitxor_word, not_word, word_div, word_low_byte, word_mod,
+    },
     yul_const::{
         eval_yul_op, merge_yul_state, subst_yul_block, venv_to_yul_state, venv_to_yul_subst,
         yul_written_names,
@@ -436,6 +438,8 @@ impl<'db> Evaluator<'db> {
                 op:
                     op @ (AssignOp::Add
                     | AssignOp::Sub
+                    | AssignOp::Mul
+                    | AssignOp::Div
                     | AssignOp::BitXor
                     | AssignOp::BitAnd
                     | AssignOp::BitOr
@@ -1426,6 +1430,9 @@ impl<'db> Evaluator<'db> {
                 ty,
                 span,
             ),
+            (MonoIntrinsic::BnotWord, [arg]) => {
+                Some(int_expr(not_word(&known_int(arg)?), ty, span))
+            }
             (MonoIntrinsic::PrimEqWord, [lhs, rhs]) => {
                 self.eval_word_binary(WordBinaryOp::Eq, known_int(lhs)?, known_int(rhs)?, ty, span)
             }
@@ -1506,6 +1513,10 @@ impl<'db> Evaluator<'db> {
     ) -> Option<MonoExpr<'db>> {
         match op {
             UnOp::Not => known_bool(self.db, expr).map(|value| bool_expr(!value, ty, span)),
+            UnOp::BitNot if ty_is_builtin(self.db, ty.ty(), BuiltinTyCtor::Word) => {
+                known_int(expr).map(|value| int_expr(not_word(&value), ty, span))
+            }
+            UnOp::BitNot => None,
             UnOp::Error => None,
         }
     }
@@ -1911,6 +1922,8 @@ impl<'db> Evaluator<'db> {
                     op:
                         AssignOp::Add
                         | AssignOp::Sub
+                        | AssignOp::Mul
+                        | AssignOp::Div
                         | AssignOp::BitXor
                         | AssignOp::BitAnd
                         | AssignOp::BitOr

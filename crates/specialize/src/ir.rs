@@ -113,6 +113,7 @@ pub enum MonoIntrinsic {
     BxorWord,
     BandWord,
     BorWord,
+    BnotWord,
     WordToInteger,
     WordFromInteger,
     IntegerAdd,

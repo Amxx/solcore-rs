@@ -44,6 +44,8 @@ fn lower_assign_op(op: ParsedAssignOp) -> function::AssignOp {
         ParsedAssignOp::Eq => function::AssignOp::Plain,
         ParsedAssignOp::AddEq => function::AssignOp::Add,
         ParsedAssignOp::SubEq => function::AssignOp::Sub,
+        ParsedAssignOp::MulEq => function::AssignOp::Mul,
+        ParsedAssignOp::DivEq => function::AssignOp::Div,
         ParsedAssignOp::BitXorEq => function::AssignOp::BitXor,
         ParsedAssignOp::BitAndEq => function::AssignOp::BitAnd,
         ParsedAssignOp::BitOrEq => function::AssignOp::BitOr,

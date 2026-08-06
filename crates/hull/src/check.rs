@@ -956,7 +956,7 @@ fn builtin_funs<'db>(span: Span<'db>) -> BTreeMap<String, FunSig<'db>> {
         add(name, vec![word.clone(), word.clone()], bool_sum.clone());
     }
     add("iszero", vec![bool_sum.clone()], bool_sum.clone());
-    for name in ["not", "clz", "wordToInteger"] {
+    for name in ["not", "bnotWord", "clz", "wordToInteger"] {
         add(name, vec![word.clone()], word.clone());
     }
     for name in [
@@ -1198,7 +1198,10 @@ fn asm_stmt_terminates(stmt: &YulStmt<'_>, db: Option<&dyn HirDb>) -> bool {
         }) => db
             .map(|db| {
                 let name = (*name.atom()).text(db);
-                matches!(name, "return" | "revert")
+                matches!(
+                    name,
+                    "return" | "revert" | "stop" | "invalid" | "selfdestruct"
+                )
             })
             .unwrap_or(false),
         YulStmtKind::Switch { cases, default, .. } => {

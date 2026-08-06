@@ -70,7 +70,7 @@ pub use diagnostics::{SpecializeDiagnostic, SpecializeDiagnosticKind};
 use driver::{Driver, FunctionInfo, SpecKey, SyntheticKey};
 use intrinsics::{
     builtin_ctor_name, builtin_intrinsic, builtin_name, overloaded_operator_method,
-    plain_operator_function,
+    overloaded_unary_operator_method, plain_operator_function,
 };
 pub(crate) use naming::display_backend_ty;
 pub use naming::specialize_name;

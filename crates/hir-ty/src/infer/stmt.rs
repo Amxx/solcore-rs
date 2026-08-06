@@ -146,7 +146,7 @@ impl<'db> InferCtx<'db> {
                 self.unit()
             }
             StmtKind::Assign {
-                op: AssignOp::Add | AssignOp::Sub,
+                op: AssignOp::Add | AssignOp::Sub | AssignOp::Mul | AssignOp::Div,
                 lhs,
                 rhs,
             } if self.is_storage_index_expr(body, *lhs) => {
@@ -169,6 +169,8 @@ impl<'db> InferCtx<'db> {
                 op:
                     AssignOp::Add
                     | AssignOp::Sub
+                    | AssignOp::Mul
+                    | AssignOp::Div
                     | AssignOp::BitXor
                     | AssignOp::BitAnd
                     | AssignOp::BitOr

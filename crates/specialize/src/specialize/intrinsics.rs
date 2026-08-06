@@ -50,6 +50,13 @@ pub(super) fn overloaded_operator_method(op: BinOp) -> Option<(&'static str, &'s
     }
 }
 
+pub(super) fn overloaded_unary_operator_method(op: UnOp) -> Option<(&'static str, &'static str)> {
+    match op {
+        UnOp::BitNot => Some(("BitNot", "bnot")),
+        _ => None,
+    }
+}
+
 pub(super) fn plain_operator_function(op: BinOp) -> Option<&'static str> {
     match op {
         BinOp::Lt => Some("lt"),

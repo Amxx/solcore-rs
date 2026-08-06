@@ -255,6 +255,7 @@ where
 
         let unary_op = just(Token::Bang)
             .to(function::UnOp::Not)
+            .or(just(Token::Tilde).to(function::UnOp::BitNot))
             .map_with(|op, e| ParsedSpanned::new(op, e.span()));
         let unary = unary_op
             .repeated()

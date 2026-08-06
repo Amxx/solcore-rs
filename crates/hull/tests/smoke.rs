@@ -959,6 +959,81 @@ contract StorageIndexCompound {
 }
 
 #[test]
+fn new_compound_assignments_evaluate_storage_lhs_once() {
+    let hull = pretty_src_hull_with_std(
+        "storage_index_bit_not_compound",
+        r#"
+import std.{*};
+
+contract StorageIndexBitNotCompound {
+  counter: word;
+  m: mapping(word, word);
+
+  function next() -> word {
+    let cur: word = counter;
+    let res: word;
+    assembly {
+      res := add(cur, 1)
+    }
+    counter = res;
+    return res;
+  }
+
+  public function main() -> word {
+    counter = 0;
+    m[1] = 10;
+    m[next()] ~=;
+    return m[1];
+  }
+}
+"#,
+    );
+    let main = hull_function(&hull, "_main_");
+    assert_eq!(
+        main.matches("main_StorageIndexBitNotCompound_next_")
+            .count(),
+        1,
+        "compound bit-not must evaluate the storage index exactly once:\n{main}"
+    );
+
+    for (name, operator) in [("mul", "*="), ("div", "/=")] {
+        let source = format!(
+            r#"
+import std.{{*}};
+
+contract StorageIndexBinaryCompound {{
+  counter: word;
+  m: mapping(word, word);
+
+  function next() -> word {{
+    let cur: word = counter;
+    let res: word;
+    assembly {{ res := add(cur, 1) }}
+    counter = res;
+    return res;
+  }}
+
+  public function main() -> word {{
+    counter = 0;
+    m[1] = 12;
+    m[next()] {operator} next();
+    return m[1];
+  }}
+}}
+"#
+        );
+        let hull = pretty_src_hull_with_std(&format!("storage_index_{name}_compound"), &source);
+        let main = hull_function(&hull, "_main_");
+        assert_eq!(
+            main.matches("main_StorageIndexBinaryCompound_next_")
+                .count(),
+            2,
+            "{operator} must evaluate the lhs index once and the rhs once:\n{main}"
+        );
+    }
+}
+
+#[test]
 fn evaluator_invalidates_storage_bindings_after_residual_calls() {
     let hull = pretty_src_hull(
         "eval_stale_storage_call",
@@ -1491,6 +1566,23 @@ fn overloaded_binary_operators_emit_instance_results() {
     );
 }
 
+#[test]
+fn bit_not_and_new_compound_operators_emit_expected_results() {
+    let custom = pretty_src_hull_with_std("operator-custom-bit-not", OPERATOR_CUSTOM_BIT_NOT);
+    let custom_main = hull_function(&custom, "_main_");
+    assert!(
+        custom_main.contains("return 42"),
+        "custom BitNot instance was not selected:\n{custom_main}"
+    );
+
+    let compound = pretty_src_hull_with_std("operator-all-compound", OPERATOR_ALL_COMPOUND);
+    let compound_main = hull_function(&compound, "_main_");
+    assert!(
+        compound_main.contains("return 3"),
+        "compound operator result was not folded to 3:\n{compound_main}"
+    );
+}
+
 const OPERATOR_CUSTOM_UINT_ADD: &str = r#"
 import std.{*};
 
@@ -1514,6 +1606,51 @@ contract C {
     let b:uint = uint.u(2);
     let c:uint = a + b;
     return unwrap(c);
+  }
+}
+"#;
+
+const OPERATOR_CUSTOM_BIT_NOT: &str = r#"
+import std.{*};
+
+data mask = mask(word);
+
+instance mask:BitNot {
+  function bnot(x:mask) -> mask {
+    return mask(42);
+  }
+}
+
+function unwrap(x:mask) -> word {
+  match x {
+  | mask(w) => return w;
+  }
+}
+
+contract C {
+  public function main() -> word {
+    return unwrap(~mask(0));
+  }
+}
+"#;
+
+const OPERATOR_ALL_COMPOUND: &str = r#"
+import std.{*};
+
+contract C {
+  public function main() -> word {
+    let acc:word = 6;
+    acc += 4;
+    acc -= 3;
+    acc *= 6;
+    acc /= 2;
+    acc %= 8;
+    acc ^= 3;
+    acc |= 9;
+    acc &= 12;
+    acc ~=;
+    acc &= 15;
+    return acc;
   }
 }
 "#;

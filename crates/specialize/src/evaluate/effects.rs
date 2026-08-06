@@ -52,6 +52,7 @@ pub(super) fn intrinsic_is_pure(intrinsic: MonoIntrinsic) -> bool {
             | MonoIntrinsic::BxorWord
             | MonoIntrinsic::BandWord
             | MonoIntrinsic::BorWord
+            | MonoIntrinsic::BnotWord
             | MonoIntrinsic::WordToInteger
             | MonoIntrinsic::WordFromInteger
             | MonoIntrinsic::IntegerAdd

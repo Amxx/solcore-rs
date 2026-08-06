@@ -863,6 +863,7 @@ impl<'db> Driver<'db> {
             "bxorWord" => Some(MonoIntrinsic::BxorWord),
             "bandWord" => Some(MonoIntrinsic::BandWord),
             "borWord" => Some(MonoIntrinsic::BorWord),
+            "bnotWord" => Some(MonoIntrinsic::BnotWord),
             "eqWord" => Some(MonoIntrinsic::PrimEqWord),
             "concatLit" => Some(MonoIntrinsic::ConcatLit),
             "strlenLit" => Some(MonoIntrinsic::StrlenLit),

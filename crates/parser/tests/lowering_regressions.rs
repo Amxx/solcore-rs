@@ -752,10 +752,13 @@ fn compound_assignments_lower_through_binary_operator_calls() {
         "function f(x: word, y: word) {\n\
            x += y;\n\
            x -= y;\n\
+           x *= y;\n\
+           x /= y;\n\
            x ^= y;\n\
            x &= y;\n\
            x |= y;\n\
            x %= y;\n\
+           x ~=;\n\
          }",
     );
     let function = top_function(&db, module, "f");
@@ -763,13 +766,16 @@ fn compound_assignments_lower_through_binary_operator_calls() {
     let expected = [
         BinOp::Add,
         BinOp::Sub,
+        BinOp::Mul,
+        BinOp::Div,
         BinOp::BitXor,
         BinOp::BitAnd,
         BinOp::BitOr,
         BinOp::Mod,
     ];
 
-    for (stmt_id, expected_op) in body.top_level_stmts(&db).iter().zip(expected) {
+    let stmts = body.top_level_stmts(&db);
+    for (stmt_id, expected_op) in stmts.iter().zip(expected) {
         let stmt = body.stmts(&db).get(*stmt_id);
         let StmtKind::Assign {
             op: AssignOp::Plain,
@@ -784,4 +790,20 @@ fn compound_assignments_lower_through_binary_operator_calls() {
             ExprKind::BinOp { op, .. } if *op.atom() == expected_op
         ));
     }
+
+    let stmt = body
+        .stmts(&db)
+        .get(*stmts.last().expect("bit-not assignment"));
+    let StmtKind::Assign {
+        op: AssignOp::Plain,
+        rhs,
+        ..
+    } = &stmt.kind
+    else {
+        panic!("bit-not assignment should lower to plain assignment");
+    };
+    assert!(matches!(
+        &body.exprs(&db).get(*rhs).kind,
+        ExprKind::UnaryOp { op, .. } if *op.atom() == hir::ast::function::UnOp::BitNot
+    ));
 }

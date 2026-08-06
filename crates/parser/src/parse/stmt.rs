@@ -18,6 +18,8 @@ where
         .to(ParsedAssignOp::Eq)
         .or(just(Token::PlusEq).to(ParsedAssignOp::AddEq))
         .or(just(Token::MinusEq).to(ParsedAssignOp::SubEq))
+        .or(just(Token::StarEq).to(ParsedAssignOp::MulEq))
+        .or(just(Token::SlashEq).to(ParsedAssignOp::DivEq))
         .or(just(Token::CaretEq).to(ParsedAssignOp::BitXorEq))
         .or(just(Token::AmpEq).to(ParsedAssignOp::BitAndEq))
         .or(just(Token::PipeEq).to(ParsedAssignOp::BitOrEq))
@@ -25,12 +27,27 @@ where
         .map_with(|op, e| ParsedSpanned::new(op, e.span()))
 }
 
+enum ParsedAssignTail<'src> {
+    Binary(ParsedSpanned<'src, ParsedAssignOp>, ParsedExpr<'src>),
+    BitNot(LexSpan),
+}
+
+fn assign_tail_parser<'src, I>() -> impl Parser<'src, I, ParsedAssignTail<'src>, ParserErr<'src>>
+where
+    I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
+{
+    assign_op_parser()
+        .then(parsed_expr_parser())
+        .map(|(op, rhs)| ParsedAssignTail::Binary(op, rhs))
+        .or(just(Token::TildeEq).map_with(|_, e| ParsedAssignTail::BitNot(e.span())))
+}
+
 fn assign_stmt_kind<'src>(
     lhs: ParsedExpr<'src>,
-    rhs: Option<(ParsedSpanned<'src, ParsedAssignOp>, ParsedExpr<'src>)>,
+    tail: Option<ParsedAssignTail<'src>>,
 ) -> ParsedStmtKind<'src> {
-    match rhs {
-        Some((op, rhs)) => {
+    match tail {
+        Some(ParsedAssignTail::Binary(op, rhs)) => {
             // Match the reference frontend: compound assignment is ordinary
             // assignment whose right-hand side is the corresponding binary
             // operator expression. This keeps type-class resolution and
@@ -58,6 +75,22 @@ fn assign_stmt_kind<'src>(
                 rhs,
             }
         }
+        Some(ParsedAssignTail::BitNot(op_span)) => {
+            let span = LexSpan::from(lhs.span.start..op_span.end);
+            let lhs_read = lhs.clone();
+            let rhs = ParsedExpr {
+                span,
+                kind: ParsedExprKind::UnaryOp {
+                    op: ParsedSpanned::new(function::UnOp::BitNot, op_span),
+                    expr: Box::new(lhs_read),
+                },
+            };
+            ParsedStmtKind::Assign {
+                op: ParsedAssignOp::Eq,
+                lhs,
+                rhs,
+            }
+        }
         None => ParsedStmtKind::Expr(lhs),
     }
 }
@@ -67,6 +100,8 @@ fn compound_bin_op(op: ParsedAssignOp) -> Option<function::BinOp> {
         ParsedAssignOp::Eq => None,
         ParsedAssignOp::AddEq => Some(function::BinOp::Add),
         ParsedAssignOp::SubEq => Some(function::BinOp::Sub),
+        ParsedAssignOp::MulEq => Some(function::BinOp::Mul),
+        ParsedAssignOp::DivEq => Some(function::BinOp::Div),
         ParsedAssignOp::BitXorEq => Some(function::BinOp::BitXor),
         ParsedAssignOp::BitAndEq => Some(function::BinOp::BitAnd),
         ParsedAssignOp::BitOrEq => Some(function::BinOp::BitOr),
@@ -104,10 +139,10 @@ where
     I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
 {
     parsed_expr_parser()
-        .then(assign_op_parser().then(parsed_expr_parser()).or_not())
-        .map_with(|(lhs, rhs), e| ParsedStmt {
+        .then(assign_tail_parser().or_not())
+        .map_with(|(lhs, tail), e| ParsedStmt {
             span: e.span(),
-            kind: assign_stmt_kind(lhs, rhs),
+            kind: assign_stmt_kind(lhs, tail),
         })
 }
 
@@ -285,10 +320,10 @@ where
             })
             .boxed();
         let assign_or_expr = parsed_expr_parser()
-            .then(assign_op_parser().then(parsed_expr_parser()).or_not())
+            .then(assign_tail_parser().or_not())
             .then(just(Token::Semi).or_not())
-            .validate(|((lhs, rhs), semi), e, emitter| {
-                if rhs.is_some() && semi.is_none() {
+            .validate(|((lhs, tail), semi), e, emitter| {
+                if tail.is_some() && semi.is_none() {
                     emitter.emit(Rich::custom(
                         e.span(),
                         "assignment statement requires trailing `;`",
@@ -296,7 +331,7 @@ where
                 }
                 ParsedStmt {
                     span: e.span(),
-                    kind: assign_stmt_kind(lhs, rhs),
+                    kind: assign_stmt_kind(lhs, tail),
                 }
             })
             .boxed();

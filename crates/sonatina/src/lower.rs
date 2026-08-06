@@ -2184,7 +2184,7 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                 self.fb
                     .insert_inst(Xor::new(self.module.inst_set(), lhs, rhs), Type::I256)
             }
-            "not" => {
+            "not" | "bnotWord" => {
                 let value = *args
                     .first()
                     .ok_or_else(|| TranslationError::new("not expects one argument"))?;
@@ -2318,6 +2318,7 @@ fn is_primitive_name(name: &str) -> bool {
             | "xor"
             | "bxorWord"
             | "not"
+            | "bnotWord"
             | "iszero"
             | "shl"
             | "shr"

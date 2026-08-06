@@ -683,6 +683,10 @@ pub(crate) enum ParsedAssignOp {
     AddEq,
     /// `-=` assignment.
     SubEq,
+    /// `*=` assignment.
+    MulEq,
+    /// `/=` assignment.
+    DivEq,
     /// `^=` assignment.
     BitXorEq,
     /// `&=` assignment.
