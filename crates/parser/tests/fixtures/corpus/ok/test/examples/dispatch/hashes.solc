@@ -25,7 +25,19 @@ contract C {
         return ripemd160(abcBytes());
     }
 
-    public function erc7201_(id: memory(bytes)) -> bytes32 {
-        return erc7201(id);
+    public function keccakWord() -> bytes32 {
+        return bytes32(keccakWordLit(0));
+    }
+
+    public function erc7201Example() -> bytes32 {
+        return erc7201("example.main");
+    }
+
+    public function erc7201Ownable() -> bytes32 {
+        return erc7201("openzeppelin.storage.Ownable");
+    }
+
+    public function erc7201Empty() -> bytes32 {
+        return erc7201("");
     }
 }

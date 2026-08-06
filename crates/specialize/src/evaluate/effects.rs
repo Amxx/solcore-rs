@@ -63,6 +63,7 @@ pub(super) fn intrinsic_is_pure(intrinsic: MonoIntrinsic) -> bool {
             | MonoIntrinsic::ConcatLit
             | MonoIntrinsic::StrlenLit
             | MonoIntrinsic::KeccakLit
+            | MonoIntrinsic::KeccakWordLit
     )
 }
 

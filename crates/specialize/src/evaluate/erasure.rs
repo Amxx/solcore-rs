@@ -94,10 +94,37 @@ fn ty_needs_erasure<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
     }
 }
 
-fn strip_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
+pub(super) fn strip_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
     match ty.kind(db) {
         TyKind::Comptime(inner) => strip_comptime(db, *inner),
         _ => ty,
+    }
+}
+
+pub(super) fn erase_comptime_ty<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
+    match ty.kind(db) {
+        TyKind::Comptime(inner) => erase_comptime_ty(db, *inner),
+        TyKind::Named { ctor, args } => Ty::named(
+            db,
+            *ctor,
+            args.iter().map(|arg| erase_comptime_ty(db, *arg)).collect(),
+        ),
+        TyKind::Function { params, ret } => Ty::function(
+            db,
+            params
+                .iter()
+                .map(|param| erase_comptime_ty(db, *param))
+                .collect(),
+            erase_comptime_ty(db, *ret),
+        ),
+        TyKind::Tuple(elems) => Ty::tuple(
+            db,
+            elems
+                .iter()
+                .map(|elem| erase_comptime_ty(db, *elem))
+                .collect(),
+        ),
+        TyKind::Error | TyKind::Unknown | TyKind::BoundVar(_) => ty,
     }
 }
 

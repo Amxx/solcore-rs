@@ -1,0 +1,11 @@
+import std.{*};
+
+contract Erc7201Lit {
+  public function main() -> bytes32 {
+    return erc7201("example.main");
+  }
+
+  public function wordHash() -> word {
+    return keccakWordLit(0);
+  }
+}

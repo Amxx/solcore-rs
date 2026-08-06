@@ -1099,6 +1099,7 @@ fn intrinsic_name(intrinsic: MonoIntrinsic) -> &'static str {
         MonoIntrinsic::ConcatLit => "concatLit",
         MonoIntrinsic::StrlenLit => "strlenLit",
         MonoIntrinsic::KeccakLit => "keccakLit",
+        MonoIntrinsic::KeccakWordLit => "keccakWordLit",
     }
 }
 

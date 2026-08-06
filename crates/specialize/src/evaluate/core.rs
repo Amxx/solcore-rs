@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::BTreeMap};
 
 use hir::{
     ast::function::{
-        AssignOp, BinOp, UnOp, YulExpr, YulExprKind, YulLitKind, YulStmt, YulStmtKind,
+        AssignOp, BinOp, LitKind, UnOp, YulExpr, YulExprKind, YulLitKind, YulStmt, YulStmtKind,
     },
     span::Span,
 };
@@ -18,8 +18,8 @@ use super::{
         intrinsic_is_pure, storage_field_names,
     },
     erasure::{
-        display_backend_symbol, display_mono_function_name, lambda_ret_is_comptime,
-        param_is_comptime, ty_is_builtin, ty_is_comptime, ty_is_function,
+        display_backend_symbol, display_mono_function_name, erase_comptime_ty,
+        lambda_ret_is_comptime, param_is_comptime, ty_is_builtin, ty_is_comptime, ty_is_function,
     },
     ident_text,
     known::{
@@ -1385,6 +1385,10 @@ impl<'db> Evaluator<'db> {
                 let hash = hir::keccak::keccak256(known_string(arg)?.as_bytes());
                 Some(int_expr(BigInt::from_be_bytes(&hash), ty, span))
             }
+            (MonoIntrinsic::KeccakWordLit, [arg]) => {
+                let hash = hir::keccak::keccak256(&known_int(arg)?.to_word_be_bytes());
+                Some(int_expr(BigInt::from_be_bytes(&hash), ty, span))
+            }
             (MonoIntrinsic::PrimAddWord, [lhs, rhs]) => self.eval_word_binary(
                 WordBinaryOp::Add,
                 known_int(lhs)?,
@@ -1600,7 +1604,16 @@ impl<'db> Evaluator<'db> {
         let frame = self.inline_stack.pop();
         debug_assert!(frame.is_some_and(|frame| frame.name == name));
         match result {
-            FoldOutcome::ReturnedKnown(expr) => Some(expr),
+            FoldOutcome::ReturnedKnown(mut expr) => {
+                // A comptime return is a promise that the call will disappear.
+                // Once inlining has produced a concrete value, materialize that
+                // value at the corresponding runtime type so the comptime marker
+                // cannot leak into backend IR.
+                if ret_comptime {
+                    expr = materialize_comptime_value(self.db, expr);
+                }
+                Some(expr)
+            }
             FoldOutcome::ReturnedUnknownAbort | FoldOutcome::FellThroughContinue(_, _) => None,
         }
     }
@@ -2142,6 +2155,57 @@ impl<'db> Evaluator<'db> {
             },
             span,
         });
+    }
+}
+
+fn materialize_comptime_value<'db>(db: &'db dyn Db, expr: MonoExpr<'db>) -> MonoExpr<'db> {
+    let MonoExpr { span, ty, kind } = expr;
+    let runtime_ty = || MonoTy::new_unchecked(erase_comptime_ty(db, ty.ty()));
+    match kind {
+        MonoExprKind::Lit(lit @ (LitKind::Number(_) | LitKind::Hex(_))) => MonoExpr {
+            span,
+            ty: runtime_ty(),
+            kind: MonoExprKind::Lit(lit),
+        },
+        MonoExprKind::Tuple(elems) => MonoExpr {
+            span,
+            ty: runtime_ty(),
+            kind: MonoExprKind::Tuple(
+                elems
+                    .into_iter()
+                    .map(|elem| materialize_comptime_value(db, elem))
+                    .collect(),
+            ),
+        },
+        MonoExprKind::Con { mut ctor, args } => {
+            ctor.ty = MonoTy::new_unchecked(erase_comptime_ty(db, ctor.ty.ty()));
+            MonoExpr {
+                span,
+                ty: runtime_ty(),
+                kind: MonoExprKind::Con {
+                    ctor,
+                    args: args
+                        .into_iter()
+                        .map(|arg| materialize_comptime_value(db, arg))
+                        .collect(),
+                },
+            }
+        }
+        MonoExprKind::TypeAnnot {
+            expr: inner,
+            ty: annotation,
+        } => MonoExpr {
+            span,
+            ty: runtime_ty(),
+            kind: MonoExprKind::TypeAnnot {
+                expr: Box::new(materialize_comptime_value(db, *inner)),
+                ty: MonoTy::new_unchecked(erase_comptime_ty(db, annotation.ty())),
+            },
+        },
+        // String literals and function-like values have no direct backend
+        // representation. Keep their comptime marker so the erasure check
+        // rejects them unless a surrounding comptime operation consumes them.
+        kind => MonoExpr { span, ty, kind },
     }
 }
 

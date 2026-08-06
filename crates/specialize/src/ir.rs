@@ -124,6 +124,7 @@ pub enum MonoIntrinsic {
     ConcatLit,
     StrlenLit,
     KeccakLit,
+    KeccakWordLit,
 }
 
 /// Resolved origin for a monomorphic call expression.

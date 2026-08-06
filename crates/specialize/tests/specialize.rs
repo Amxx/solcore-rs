@@ -2077,6 +2077,56 @@ fn folds_resolved_std_string_keccak_literal_intrinsic() {
 }
 
 #[test]
+fn folds_resolved_std_word_keccak_literal_intrinsic() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract C {
+  public function main() -> word {
+    return keccakWordLit(0);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    assert_eq!(
+        main_return_number(&output),
+        Some(
+            "18569430475105882587588266137607568536673111973893317399460219858819262702947"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn folds_erc7201_namespace_to_a_single_constant() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract C {
+  public function main() -> bytes32 {
+    return erc7201("example.main");
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    assert_eq!(
+        main_return_number(&output),
+        Some(
+            "10958655983261152271848436692291137275443024275653522991983264966744321209600"
+                .to_owned()
+        )
+    );
+    let returned = main_return_expr(&output).expect("specialized main return");
+    assert!(!expr_has_call(returned), "{returned:#?}");
+}
+
+#[test]
 fn does_not_fold_user_addword_shadowing_builtin_wrapper_name() {
     let (_db, output) = specialize_src(
         r#"
@@ -2318,7 +2368,7 @@ fn folds_qualified_constructor_matches_before_wildcard_defaults() {
     }
 }
 
-fn main_return_number(output: &SpecializeOutput<'_>) -> Option<String> {
+fn main_return_expr<'a, 'db>(output: &'a SpecializeOutput<'db>) -> Option<&'a MonoExpr<'db>> {
     let mut main_names = output
         .module
         .items
@@ -2353,16 +2403,56 @@ fn main_return_number(output: &SpecializeOutput<'_>) -> Option<String> {
         };
         main_names.contains(&function.name).then(|| {
             function.body.iter().find_map(|stmt| match &stmt.kind {
-                MonoStmtKind::Return(Some(expr)) => match &expr.kind {
-                    MonoExprKind::Lit(hir::ast::function::LitKind::Number(value)) => {
-                        Some(value.clone())
-                    }
-                    _ => None,
-                },
+                MonoStmtKind::Return(Some(expr)) => Some(expr),
                 _ => None,
             })
         })?
     })
+}
+
+fn main_return_number(output: &SpecializeOutput<'_>) -> Option<String> {
+    constant_value_number(main_return_expr(output)?)
+}
+
+fn constant_value_number(expr: &MonoExpr<'_>) -> Option<String> {
+    match &expr.kind {
+        MonoExprKind::Lit(hir::ast::function::LitKind::Number(value)) => Some(value.clone()),
+        MonoExprKind::Con { args, .. } | MonoExprKind::Tuple(args) if args.len() == 1 => {
+            constant_value_number(&args[0])
+        }
+        MonoExprKind::TypeAnnot { expr, .. } => constant_value_number(expr),
+        _ => None,
+    }
+}
+
+fn expr_has_call(expr: &MonoExpr<'_>) -> bool {
+    match &expr.kind {
+        MonoExprKind::Call { .. } | MonoExprKind::ClosureDispatch { .. } => true,
+        MonoExprKind::Tuple(elems) | MonoExprKind::Con { args: elems, .. } => {
+            elems.iter().any(expr_has_call)
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. } => expr_has_call(lhs) || expr_has_call(rhs),
+        MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
+            expr_has_call(expr)
+        }
+        MonoExprKind::Index { base, index } | MonoExprKind::StorageIndex { base, index } => {
+            expr_has_call(base) || expr_has_call(index)
+        }
+        MonoExprKind::Field { base, .. } => expr_has_call(base),
+        MonoExprKind::Match { scrutinee, arms } => {
+            expr_has_call(scrutinee) || arms.iter().any(|arm| expr_has_call(&arm.expr))
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => expr_has_call(cond) || expr_has_call(then_expr) || expr_has_call(else_expr),
+        MonoExprKind::Lambda { .. } => true,
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Error => false,
+    }
 }
 
 fn function_return_ctor(output: &SpecializeOutput<'_>, name: &str) -> Option<String> {
