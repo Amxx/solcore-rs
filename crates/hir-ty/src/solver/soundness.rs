@@ -90,24 +90,42 @@ fn add_builtin_str_heads<'db>(
 ) {
     let class = ClassId::Builtin(BuiltinClassId::Str);
     let entries = heads.entry(class).or_default();
-    let source = crate::support::source_string_ty(db);
     entries.push(InstanceHead {
-        pred: Pred::in_class(db, class, source, Vec::new()),
+        pred: Pred::in_class(db, class, Ty::string(db), Vec::new()),
         span: None,
     });
-    if let Some(memory) = crate::support::canonical_std_adt_def(db, "memory") {
-        let memory_string = Ty::named(
+    let memories = crate::support::canonical_std_adt_defs(db, "memory");
+    for string in crate::support::canonical_std_adt_defs(db, "string") {
+        let source = Ty::named(
             db,
             TyCtor::User(crate::UserTyCtor {
-                def: memory,
+                def: string,
                 kind: crate::UserTyCtorKind::Adt,
             }),
-            vec![source],
+            Vec::new(),
         );
         entries.push(InstanceHead {
-            pred: Pred::in_class(db, class, memory_string, Vec::new()),
+            pred: Pred::in_class(db, class, source, Vec::new()),
             span: None,
         });
+        if let Some(memory) = memories
+            .iter()
+            .copied()
+            .find(|memory| memory.file(db) == string.file(db))
+        {
+            let memory_string = Ty::named(
+                db,
+                TyCtor::User(crate::UserTyCtor {
+                    def: memory,
+                    kind: crate::UserTyCtorKind::Adt,
+                }),
+                vec![source],
+            );
+            entries.push(InstanceHead {
+                pred: Pred::in_class(db, class, memory_string, Vec::new()),
+                span: None,
+            });
+        }
     }
 }
 

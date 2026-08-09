@@ -418,7 +418,10 @@ impl<'db> InferCtx<'db> {
 
     pub(super) fn source_string(&mut self) -> InferTy<'db> {
         self.engine
-            .from_ty(crate::support::source_string_ty(self.db))
+            .from_ty(crate::support::source_string_ty_for_module(
+                self.db,
+                self.module,
+            ))
     }
 
     pub(super) fn poison_expr(&mut self, body: FuncBody<'db>, expr: Id<Expr<'db>>) {

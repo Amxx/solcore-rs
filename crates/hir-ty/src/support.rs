@@ -1,4 +1,7 @@
-use hir::{anchor::DefId, ast::item::Item};
+use hir::{
+    anchor::DefId,
+    ast::item::{Item, Module},
+};
 use nameres::{
     LibraryId, ModuleId, module_id_for_source_file, module_id_from_key, module_key_for_path,
     reachable_modules,
@@ -7,25 +10,44 @@ use parser::parse_file_to_hir;
 
 use crate::{Db, Ty, TyCtor, UserTyCtor, UserTyCtorKind};
 
-pub(crate) fn canonical_std_adt_def<'db>(db: &'db dyn Db, name: &str) -> Option<DefId<'db>> {
-    let module = module_id_from_key(
+pub(crate) fn canonical_std_adt_defs<'db>(db: &'db dyn Db, name: &str) -> Vec<DefId<'db>> {
+    let std_module = module_id_from_key(
         db,
         &nameres::ModuleKey {
             library: LibraryId::Std,
             logical_path: vec!["std".to_owned()],
         },
     );
-    let file = db.module_file(module)?;
-    parse_file_to_hir(db, file)
-        .module(db)
-        .items(db)
-        .iter()
-        .find_map(|item| match item {
-            Item::AdtDef(adt) if adt.def_id_value(db).name(db).as_deref() == Some(name) => {
-                Some(adt.def_id_value(db))
-            }
-            _ => None,
+    let tree = db.module_tree();
+    let main_std_module = module_key_for_path(
+        LibraryId::Main,
+        tree.main_root(db),
+        &tree.std_root(db).join("std.solc"),
+    )
+    .map(|key| module_id_from_key(db, &key));
+
+    let mut defs = std::iter::once(std_module)
+        .chain(main_std_module)
+        .filter_map(|module| {
+            let file = db.module_file(module)?;
+            parse_file_to_hir(db, file)
+                .module(db)
+                .items(db)
+                .iter()
+                .find_map(|item| match item {
+                    Item::AdtDef(adt) if adt.def_id_value(db).name(db).as_deref() == Some(name) => {
+                        Some(adt.def_id_value(db))
+                    }
+                    _ => None,
+                })
         })
+        .collect::<Vec<_>>();
+    defs.dedup();
+    defs
+}
+
+pub(crate) fn canonical_std_adt_def<'db>(db: &'db dyn Db, name: &str) -> Option<DefId<'db>> {
+    canonical_std_adt_defs(db, name).into_iter().next()
 }
 
 pub(crate) fn source_string_ty<'db>(db: &'db dyn Db) -> Ty<'db> {
@@ -41,6 +63,32 @@ pub(crate) fn source_string_ty<'db>(db: &'db dyn Db) -> Ty<'db> {
             )
         })
         .unwrap_or_else(|| Ty::string(db))
+}
+
+pub(crate) fn source_string_ty_for_module<'db>(db: &'db dyn Db, module: Module<'db>) -> Ty<'db> {
+    module
+        .items(db)
+        .iter()
+        .find_map(|item| match item {
+            Item::AdtDef(adt)
+                if adt.def_id_value(db).name(db).as_deref() == Some("string")
+                    && is_canonical_std_def_named(db, adt.def_id_value(db), "string") =>
+            {
+                Some(adt.def_id_value(db))
+            }
+            _ => None,
+        })
+        .map(|def| {
+            Ty::named(
+                db,
+                TyCtor::User(UserTyCtor {
+                    def,
+                    kind: UserTyCtorKind::Adt,
+                }),
+                Vec::new(),
+            )
+        })
+        .unwrap_or_else(|| source_string_ty(db))
 }
 
 pub(crate) fn module_for_def_via_graph<'db>(

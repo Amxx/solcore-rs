@@ -356,7 +356,7 @@ impl<'db> TraitClauseBuilder<'db> {
         }
         let str_class = ClassId::Builtin(BuiltinClassId::Str);
         self.add_builtin_ground_instance(str_class, Ty::string(self.db));
-        if let Some((source_string, memory_string)) = canonical_std_string_types(self.db) {
+        for (source_string, memory_string) in canonical_std_string_types(self.db) {
             self.add_builtin_ground_instance(str_class, source_string);
             if let Some(memory_string) = memory_string {
                 self.add_builtin_ground_instance(str_class, memory_string);
@@ -635,27 +635,36 @@ impl<'db> TraitClauseBuilder<'db> {
     }
 }
 
-fn canonical_std_string_types<'db>(db: &'db dyn Db) -> Option<(Ty<'db>, Option<Ty<'db>>)> {
-    let string = crate::support::canonical_std_adt_def(db, "string")?;
-    let source_string = Ty::named(
-        db,
-        TyCtor::User(crate::UserTyCtor {
-            def: string,
-            kind: crate::UserTyCtorKind::Adt,
-        }),
-        Vec::new(),
-    );
-    let memory_string = crate::support::canonical_std_adt_def(db, "memory").map(|memory| {
-        Ty::named(
-            db,
-            TyCtor::User(crate::UserTyCtor {
-                def: memory,
-                kind: crate::UserTyCtorKind::Adt,
-            }),
-            vec![source_string],
-        )
-    });
-    Some((source_string, memory_string))
+fn canonical_std_string_types<'db>(db: &'db dyn Db) -> Vec<(Ty<'db>, Option<Ty<'db>>)> {
+    let memories = crate::support::canonical_std_adt_defs(db, "memory");
+    crate::support::canonical_std_adt_defs(db, "string")
+        .into_iter()
+        .map(|string| {
+            let source_string = Ty::named(
+                db,
+                TyCtor::User(crate::UserTyCtor {
+                    def: string,
+                    kind: crate::UserTyCtorKind::Adt,
+                }),
+                Vec::new(),
+            );
+            let memory_string = memories
+                .iter()
+                .copied()
+                .find(|memory| memory.file(db) == string.file(db))
+                .map(|memory| {
+                    Ty::named(
+                        db,
+                        TyCtor::User(crate::UserTyCtor {
+                            def: memory,
+                            kind: crate::UserTyCtorKind::Adt,
+                        }),
+                        vec![source_string],
+                    )
+                });
+            (source_string, memory_string)
+        })
+        .collect()
 }
 
 fn type_alias_binder_count<'db>(
