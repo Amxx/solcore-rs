@@ -398,6 +398,12 @@ impl<'db> ComptimeChecker<'db> {
             ExprKind::DotCtor { args, .. } | ExprKind::Tuple(args) => {
                 ComptimeValue::from_all(args.iter().map(|arg| self.classify_expr(body, *arg)))
             }
+            ExprKind::Array(elems) => {
+                for elem in elems {
+                    self.classify_expr(body, *elem);
+                }
+                ComptimeValue::Runtime
+            }
             ExprKind::Lambda {
                 params,
                 ret,

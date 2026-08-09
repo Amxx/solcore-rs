@@ -24,7 +24,7 @@ pub use ir::{
     MonoComptimeObligationKind, MonoConstructor, MonoContract, MonoEntry, MonoExpr, MonoExprArm,
     MonoExprKind, MonoFallback, MonoFunction, MonoFunctionOrigin, MonoId, MonoIntrinsic, MonoItem,
     MonoModule, MonoParam, MonoPat, MonoPatKind, MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind,
-    MonoTy, ParamMode,
+    MonoStorageIndexKind, MonoTy, ParamMode,
 };
 pub use specialize::{
     SpecializeDiagnostic, SpecializeDiagnosticKind, SpecializeOptions, SpecializeOutput,

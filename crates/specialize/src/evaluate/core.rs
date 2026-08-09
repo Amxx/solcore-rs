@@ -870,7 +870,26 @@ impl<'db> Evaluator<'db> {
                     target,
                 )
             }
-            MonoExprKind::StorageIndex { base, index } => {
+            MonoExprKind::MemoryArrayIndex { base, index } => {
+                let base = self.eval_expr(env, comptime_env, *base);
+                let index = self.eval_expr(env, comptime_env, *index);
+                (
+                    MonoExpr {
+                        span,
+                        ty,
+                        kind: MonoExprKind::MemoryArrayIndex {
+                            base: Box::new(base),
+                            index: Box::new(index),
+                        },
+                    },
+                    None,
+                )
+            }
+            MonoExprKind::StorageIndex {
+                storage_kind,
+                base,
+                index,
+            } => {
                 let (base, target) = self.eval_lvalue(env, comptime_env, *base);
                 let index = self.eval_expr(env, comptime_env, *index);
                 (
@@ -878,6 +897,7 @@ impl<'db> Evaluator<'db> {
                         span,
                         ty,
                         kind: MonoExprKind::StorageIndex {
+                            storage_kind,
                             base: Box::new(base),
                             index: Box::new(index),
                         },
@@ -1062,10 +1082,23 @@ impl<'db> Evaluator<'db> {
                     index: Box::new(self.eval_expr(env, comptime_env, *index)),
                 },
             },
-            MonoExprKind::StorageIndex { base, index } => MonoExpr {
+            MonoExprKind::MemoryArrayIndex { base, index } => MonoExpr {
+                span,
+                ty,
+                kind: MonoExprKind::MemoryArrayIndex {
+                    base: Box::new(self.eval_expr(env, comptime_env, *base)),
+                    index: Box::new(self.eval_expr(env, comptime_env, *index)),
+                },
+            },
+            MonoExprKind::StorageIndex {
+                storage_kind,
+                base,
+                index,
+            } => MonoExpr {
                 span,
                 ty,
                 kind: MonoExprKind::StorageIndex {
+                    storage_kind,
                     base: Box::new(self.eval_expr(env, comptime_env, *base)),
                     index: Box::new(self.eval_expr(env, comptime_env, *index)),
                 },
@@ -2210,7 +2243,7 @@ impl<'db> Evaluator<'db> {
                 self.expr_is_comptime(base, comptime_env)
                     && self.expr_is_comptime(index, comptime_env)
             }
-            MonoExprKind::StorageIndex { .. } => false,
+            MonoExprKind::MemoryArrayIndex { .. } | MonoExprKind::StorageIndex { .. } => false,
             MonoExprKind::Field { base, .. } => self.expr_is_comptime(base, comptime_env),
             MonoExprKind::TypeAnnot { expr, .. } => self.expr_is_comptime(expr, comptime_env),
             MonoExprKind::Match { scrutinee, arms } => {

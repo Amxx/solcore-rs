@@ -134,6 +134,101 @@ fn db_with_main_typeck(src: &str) -> (TestDb, ModuleKey) {
     (db, key)
 }
 
+fn db_with_array_std(main_src: &str) -> (TestDb, ModuleKey) {
+    let mut db = TestDb::default();
+    let std_path = PathBuf::from("/std/std.solc");
+    let main_path = PathBuf::from("/main/main.solc");
+    let std_file = source_file_at_path(
+        &db,
+        &std_path,
+        r#"
+export { memory(*), storage(*), DynArray, array(*), uint256(*), address(*), string, concatLit, Add, Typedef, CanStore };
+
+data memory(t) = memory(word);
+data storage(t) = storage(word);
+data DynArray(t);
+data array(t) = array(word);
+data uint256 = uint256(word);
+data address = address(word);
+data string;
+
+function concatLit(comptime lhs:string, comptime rhs:string) -> string { return lhs; }
+
+forall self . class self:Add {
+  function add(lhs:self, rhs:self) -> self;
+}
+
+instance uint256:Add {
+  function add(lhs:uint256, rhs:uint256) -> uint256 { return lhs; }
+}
+
+forall abs rep . class abs:Typedef(rep) {
+  function abs(x:rep) -> abs;
+  function rep(x:abs) -> rep;
+}
+
+forall t . default instance t:Typedef(t) {
+  function abs(x:t) -> t { return x; }
+  function rep(x:t) -> t { return x; }
+}
+
+instance uint256:Typedef(word) {
+  function abs(x:word) -> uint256 { return uint256(x); }
+  function rep(x:uint256) -> word { return 0; }
+}
+
+instance memory(string):Typedef(word) {
+  function abs(x:word) -> memory(string) { return memory(x); }
+  function rep(x:memory(string)) -> word { return 0; }
+}
+
+forall dst value . class dst:CanStore(value) {
+  function store(dst:dst, value:value) -> ();
+  function load(dst:dst) -> value;
+}
+
+instance storage(word):CanStore(word) {
+  function store(dst:storage(word), value:word) -> () { return (); }
+  function load(dst:storage(word)) -> word { return 0; }
+}
+
+instance storage(uint256):CanStore(uint256) {
+  function store(dst:storage(uint256), value:uint256) -> () { return (); }
+  function load(dst:storage(uint256)) -> uint256 { return uint256(0); }
+}
+
+instance storage(string):CanStore(memory(string)) {
+  function store(dst:storage(string), value:memory(string)) -> () { return (); }
+  function load(dst:storage(string)) -> memory(string) { return memory(0); }
+}
+
+instance storage(array(word)):CanStore(storage(array(word))) {
+  function store(dst:storage(array(word)), value:storage(array(word))) -> () { return (); }
+  function load(dst:storage(array(word))) -> storage(array(word)) { return dst; }
+}
+"#,
+    );
+    let main_file = source_file_at_path(&db, &main_path, main_src);
+    let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
+    let main_key =
+        module_key_for_path(LibraryId::Main, &PathBuf::from("/main"), &main_path).unwrap();
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key.clone(), main_file);
+    (db, main_key)
+}
+
+fn canonical_std_adt_ty<'db>(db: &'db TestDb, name: &str, args: Vec<Ty<'db>>) -> Ty<'db> {
+    let def = crate::support::canonical_std_adt_def(db, name).expect("canonical std type");
+    Ty::named(
+        db,
+        TyCtor::User(UserTyCtor {
+            def,
+            kind: UserTyCtorKind::Adt,
+        }),
+        args,
+    )
+}
+
 fn lowered_module_typeck_diagnostics(src: &str) -> Vec<Diagnostic> {
     let (db, key) = db_with_main_typeck(src);
     let module = module_id_from_key(&db, &key);
@@ -304,6 +399,23 @@ fn infer_module_function<'db>(
     module_id: ModuleId<'db>,
     name: &str,
 ) -> (FuncBody<'db>, InferenceResult<'db>) {
+    infer_module_function_impl(db, module_id, name, false)
+}
+
+fn infer_module_function_with_solver<'db>(
+    db: &'db TestDb,
+    module_id: ModuleId<'db>,
+    name: &str,
+) -> (FuncBody<'db>, InferenceResult<'db>) {
+    infer_module_function_impl(db, module_id, name, true)
+}
+
+fn infer_module_function_impl<'db>(
+    db: &'db TestDb,
+    module_id: ModuleId<'db>,
+    name: &str,
+    solve_obligations: bool,
+) -> (FuncBody<'db>, InferenceResult<'db>) {
     let module = module_hir(db, module_id).expect("module hir");
     let info = function_infos(db, module)
         .into_iter()
@@ -331,7 +443,7 @@ fn infer_module_function<'db>(
     let lookup = find_function_info(db, module, function.def_id_value(db)).expect("lookup");
     let body_map = body_resolution_for_function_with_imports(db, module, &lookup, Some(&env))
         .expect("body map");
-    let ctx = BodyTyContext::new(
+    let mut ctx = BodyTyContext::new(
         module,
         body_map,
         info.type_vars,
@@ -340,6 +452,20 @@ fn infer_module_function<'db>(
     )
     .with_param_names(param_names(db, function.sig(db).params.atom()))
     .with_entry_module(module_id);
+    if solve_obligations {
+        let base_trait_env = crate::solver::trait_env_from_module_resolution_and_imports(
+            db,
+            module,
+            &module_resolution,
+            &env.import_surface(),
+        );
+        let trait_env = trait_env_with_givens(
+            db,
+            base_trait_env,
+            lowered.scheme.body(db).preds(db).clone(),
+        );
+        ctx = ctx.with_trait_env(trait_env);
+    }
     (body, infer_body(db, body, ctx))
 }
 
@@ -528,6 +654,27 @@ fn assert_no_typeck(result: &InferenceResult<'_>) {
         "unexpected type diagnostics: {:?}",
         result.diagnostics
     );
+}
+
+fn has_user_obligation<'db>(
+    db: &'db TestDb,
+    result: &InferenceResult<'db>,
+    class_name: &str,
+    main: Ty<'db>,
+    args: &[Ty<'db>],
+) -> bool {
+    result.obligations.iter().any(|obligation| {
+        matches!(
+            obligation.pred.kind(db),
+            PredKind::InClass {
+                class: ClassId::User(class),
+                main: obligation_main,
+                args: obligation_args,
+            } if class.name(db).as_deref() == Some(class_name)
+                && *obligation_main == main
+                && obligation_args.as_slice() == args
+        )
+    })
 }
 
 #[test]
@@ -917,6 +1064,572 @@ function runtime(value: string) -> memory(string) { return value; }
         let (_, result) = infer_module_function(&db, main_module, name);
         assert_no_typeck(&result);
     }
+}
+
+#[test]
+fn array_literals_infer_canonical_memory_dyn_array_and_empty_uses_context() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{memory, DynArray};
+
+function filled(x:word, y:word) -> memory(DynArray(word)) { return [x, y]; }
+function empty() -> memory(DynArray(word)) { return []; }
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let word = Ty::word(&db);
+    let dyn_array = canonical_std_adt_ty(&db, "DynArray", vec![word]);
+    let expected = canonical_std_adt_ty(&db, "memory", vec![dyn_array]);
+
+    for name in ["filled", "empty"] {
+        let (body, result) = infer_module_function(&db, module, name);
+        assert_no_typeck(&result);
+        let expr = return_expr(&db, body);
+        assert!(matches!(body.exprs(&db).get(expr).kind, ExprKind::Array(_)));
+        assert_eq!(result.expr_ty(body, expr), Some(expected), "{name}");
+    }
+}
+
+#[test]
+fn array_literal_rejects_mixed_element_types() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{memory, DynArray};
+
+function mixed(x:word, flag:bool) -> memory(DynArray(word)) {
+  return [x, flag];
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function(&db, module, "mixed");
+
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn array_string_literals_use_memory_string_from_memory_and_storage_contexts() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std;
+import std.{memory, storage, DynArray, array, string, Typedef, CanStore};
+
+function inMemory() -> memory(DynArray(memory(string))) {
+  return ["hello"];
+}
+
+function explicitConversion() -> memory(DynArray(memory(string))) {
+  return [Str.fromString("hello")];
+}
+
+function concatenated() -> memory(DynArray(memory(string))) {
+  return [std.concatLit("hel", "lo")];
+}
+
+function conditional(flag:bool) -> memory(DynArray(memory(string))) {
+  return [if (flag) then "yes" else "no"];
+}
+
+contract C {
+  names:array(string);
+
+  function setNames() -> () {
+    names = ["alice", "bob"];
+    return ();
+  }
+
+  function clearNames() -> () {
+    names = [];
+    return ();
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let string = canonical_std_adt_ty(&db, "string", Vec::new());
+    let memory_string = canonical_std_adt_ty(&db, "memory", vec![string]);
+    let dyn_array = canonical_std_adt_ty(&db, "DynArray", vec![memory_string]);
+    let memory_array = canonical_std_adt_ty(&db, "memory", vec![dyn_array]);
+
+    for name in [
+        "inMemory",
+        "explicitConversion",
+        "concatenated",
+        "conditional",
+    ] {
+        let (body, result) = infer_module_function_with_solver(&db, module, name);
+        assert_no_typeck(&result);
+        let array = return_expr(&db, body);
+        assert_eq!(result.expr_ty(body, array), Some(memory_array), "{name}");
+        let ExprKind::Array(elems) = &body.exprs(&db).get(array).kind else {
+            panic!("array literal");
+        };
+        let actual_elem = result.expr_ty(body, elems[0]).expect("array element type");
+        assert_eq!(
+            actual_elem,
+            memory_string,
+            "{name}: {}",
+            Pred::in_class(
+                &db,
+                ClassId::Builtin(BuiltinClassId::Str),
+                actual_elem,
+                Vec::new(),
+            )
+            .display(&db)
+        );
+    }
+
+    let storage_string = canonical_std_adt_ty(&db, "storage", vec![string]);
+    let word = Ty::word(&db);
+    for name in ["setNames", "clearNames"] {
+        let (body, result) = infer_module_function_with_solver(&db, module, name);
+        assert_no_typeck(&result);
+        let rhs = body
+            .top_level_stmts(&db)
+            .iter()
+            .find_map(|stmt| match body.stmts(&db).get(*stmt).kind {
+                StmtKind::Assign { rhs, .. } => Some(rhs),
+                _ => None,
+            })
+            .expect("array field assignment");
+        let actual_rhs = result.expr_ty(body, rhs).expect("array literal type");
+        assert_eq!(
+            actual_rhs,
+            memory_array,
+            "{name}: actual={}, obligations={:?}",
+            Pred::in_class(
+                &db,
+                ClassId::Builtin(BuiltinClassId::Str),
+                actual_rhs,
+                Vec::new(),
+            )
+            .display(&db),
+            result
+                .obligations
+                .iter()
+                .map(|obligation| obligation.pred.display(&db))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            has_user_obligation(&db, &result, "CanStore", storage_string, &[memory_string],),
+            "{name}: {:?}",
+            result.obligations
+        );
+        assert!(
+            has_user_obligation(&db, &result, "Typedef", memory_string, &[word]),
+            "{name}: {:?}",
+            result.obligations
+        );
+    }
+}
+
+#[test]
+fn memory_dyn_array_index_returns_element_and_requires_word_typedefs() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{memory, DynArray, uint256, Typedef};
+
+function read(xs:memory(DynArray(word)), i:uint256) -> word {
+  return xs[i];
+}
+
+function write(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+  xs[i] = value;
+  return ();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (body, result) = infer_module_function(&db, module, "read");
+    assert_no_typeck(&result);
+    let indexed = return_expr(&db, body);
+    assert!(matches!(
+        body.exprs(&db).get(indexed).kind,
+        ExprKind::Index { .. }
+    ));
+    assert_eq!(result.expr_ty(body, indexed), Some(Ty::word(&db)));
+
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let word = Ty::word(&db);
+    assert!(
+        has_user_obligation(&db, &result, "Typedef", uint256, &[word]),
+        "{:?}",
+        result.obligations
+    );
+    assert!(
+        has_user_obligation(&db, &result, "Typedef", word, &[word]),
+        "{:?}",
+        result.obligations
+    );
+
+    let (_, write) = infer_module_function(&db, module, "write");
+    assert!(
+        write.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            TypeckDiagnostic::Mismatch { expected, .. }
+                if expected == "assignable storage-backed index"
+        )),
+        "{:?}",
+        write.diagnostics
+    );
+}
+
+#[test]
+fn direct_storage_array_handle_assignment_is_a_raw_rebind() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{storage, array, string, CanStore};
+
+function rebind(
+  lhs:storage(array(string)),
+  rhs:storage(array(string))
+) -> () {
+  lhs = rhs;
+  return ();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function_with_solver(&db, module, "rebind");
+    assert_no_typeck(&result);
+
+    let string = canonical_std_adt_ty(&db, "string", Vec::new());
+    let array = canonical_std_adt_ty(&db, "array", vec![string]);
+    let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
+    assert!(
+        !has_user_obligation(&db, &result, "CanStore", storage_array, &[storage_array],),
+        "{:?}",
+        result.obligations
+    );
+}
+
+#[test]
+fn storage_load_and_assign_use_can_store_result_improvement() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{memory, storage, CanStore};
+
+data Blob;
+
+instance storage(Blob):CanStore(memory(Blob)) {
+  function store(dst:storage(Blob), value:memory(Blob)) -> () { return (); }
+  function load(dst:storage(Blob)) -> memory(Blob) { return memory(0); }
+}
+
+contract C {
+  value:Blob;
+
+  function write(src:memory(Blob)) -> () {
+    value = src;
+    return ();
+  }
+
+  function read() -> memory(Blob) {
+    return value;
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    for name in ["write", "read"] {
+        let (_, result) = infer_module_function_with_solver(&db, module, name);
+        assert_no_typeck(&result);
+    }
+}
+
+#[test]
+fn compound_storage_array_index_recognizes_parameter_handles() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{*};
+
+function bump(
+  values:storage(array(uint256)),
+  index:uint256,
+  delta:uint256
+) -> () {
+  values[index] += delta;
+  return ();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function_with_solver(&db, module, "bump");
+    assert_no_typeck(&result);
+
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let storage_uint256 = canonical_std_adt_ty(&db, "storage", vec![uint256]);
+    assert!(
+        has_user_obligation(&db, &result, "CanStore", storage_uint256, &[uint256],),
+        "{:?}",
+        result.obligations
+    );
+}
+
+#[test]
+fn storage_index_numeric_guard_rejects_shadowed_uint_names() {
+    let (db, key) = db_with_array_std(
+        r#"
+data uint;
+data uint256;
+"#,
+    );
+    let module_id = module_id_from_key(&db, &key);
+    let module = module_hir(&db, module_id).expect("module hir");
+
+    assert!(super::expr::is_storage_index_word_numeric_shape(
+        &db,
+        TyCtor::Builtin(BuiltinTyCtor::Word),
+        0,
+    ));
+    let canonical_uint256 =
+        crate::support::canonical_std_adt_def(&db, "uint256").expect("std uint256");
+    assert!(super::expr::is_storage_index_word_numeric_shape(
+        &db,
+        TyCtor::User(UserTyCtor {
+            def: canonical_uint256,
+            kind: UserTyCtorKind::Adt,
+        }),
+        0,
+    ));
+
+    for name in ["uint", "uint256"] {
+        let shadow = adt_def(&db, module, name);
+        assert!(
+            !super::expr::is_storage_index_word_numeric_shape(
+                &db,
+                TyCtor::User(UserTyCtor {
+                    def: shadow,
+                    kind: UserTyCtorKind::Adt,
+                }),
+                0,
+            ),
+            "shadowed {name} must not be treated as a storage index numeric type"
+        );
+    }
+}
+
+#[test]
+fn storage_ref_annotations_are_checked_without_widening_array_literal_routing() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{*};
+
+contract C {
+  xs:array(uint256);
+
+  function good(i:uint256, value:uint256) -> () {
+    (xs : storage(array(uint256)))[i] = value;
+    return ();
+  }
+
+  function bad(i:uint256) -> () {
+    (xs : storage(array(address)))[i] = uint256(1);
+    return ();
+  }
+
+  function annotatedLiteral() -> () {
+    xs = ([uint256(1)] : memory(DynArray(uint256)));
+    return ();
+  }
+}
+"#,
+    );
+    let module_id = module_id_from_key(&db, &key);
+
+    let (body, good) = infer_module_function_with_solver(&db, module_id, "good");
+    assert_no_typeck(&good);
+    let annotation = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(id, expr)| matches!(expr.kind, ExprKind::TypeAnnot { .. }).then_some(id))
+        .expect("storage array annotation");
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let array = canonical_std_adt_ty(&db, "array", vec![uint256]);
+    let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
+    assert_eq!(good.expr_ty(body, annotation), Some(storage_array));
+
+    let (body, bad) = infer_module_function_with_solver(&db, module_id, "bad");
+    assert!(
+        bad.diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        bad.diagnostics
+    );
+    let annotation = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(id, expr)| matches!(expr.kind, ExprKind::TypeAnnot { .. }).then_some(id))
+        .expect("mismatched storage array annotation");
+    assert_eq!(bad.expr_ty(body, annotation), Some(Ty::error(&db)));
+
+    let (_, annotated_literal) =
+        infer_module_function_with_solver(&db, module_id, "annotatedLiteral");
+    assert!(
+        annotated_literal
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        annotated_literal.diagnostics
+    );
+
+    let module = module_hir(&db, module_id).expect("module hir");
+    let plan = crate::frontend_desugar_plan(&db, module);
+    let annotated_literal = plan
+        .bodies
+        .iter()
+        .find(|body| body.function_name == "annotatedLiteral")
+        .expect("annotatedLiteral desugar plan");
+    assert!(
+        annotated_literal
+            .transforms
+            .iter()
+            .any(|transform| matches!(
+                transform,
+                crate::FrontendTransform::FieldWrite { hook, .. }
+                    if hook.starts_with("Assign.assign(")
+            )),
+        "{:?}",
+        annotated_literal.transforms
+    );
+}
+
+#[test]
+fn storage_array_index_alias_and_literal_assignment_preserve_reference_types() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{storage, array, uint256, Typedef, CanStore};
+
+contract C {
+  xs:array(word);
+  n:word;
+
+  function read(i:uint256) -> word { return xs[i]; }
+
+  function aliasRead(i:uint256) -> word {
+    let ys = xs;
+    return ys[i];
+  }
+
+  function aliasWrite(i:uint256, value:word) -> () {
+    let ys = xs;
+    ys[i] = value;
+    return ();
+  }
+
+  function set(x:word) -> () {
+    xs = [x, x];
+    return ();
+  }
+
+  function bad(x:word) -> () {
+    n = [x];
+    return ();
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+
+    for name in ["read", "aliasRead"] {
+        let (body, result) = infer_module_function(&db, module, name);
+        assert_no_typeck(&result);
+        let indexed = body
+            .exprs(&db)
+            .iter()
+            .find_map(|(id, expr)| matches!(expr.kind, ExprKind::Index { .. }).then_some(id))
+            .expect("indexed expression");
+        assert_eq!(result.expr_ty(body, indexed), Some(Ty::word(&db)), "{name}");
+    }
+
+    let (_, alias_write) = infer_module_function_with_solver(&db, module, "aliasWrite");
+    assert_no_typeck(&alias_write);
+    let storage_word = canonical_std_adt_ty(&db, "storage", vec![Ty::word(&db)]);
+    let word = Ty::word(&db);
+    assert!(
+        has_user_obligation(&db, &alias_write, "CanStore", storage_word, &[word],),
+        "{:?}",
+        alias_write.obligations
+    );
+
+    let (body, result) = infer_module_function(&db, module, "set");
+    assert_no_typeck(&result);
+    let lhs = body
+        .top_level_stmts(&db)
+        .iter()
+        .find_map(|stmt| match body.stmts(&db).get(*stmt).kind {
+            StmtKind::Assign { lhs, .. } => Some(lhs),
+            _ => None,
+        })
+        .expect("field assignment");
+    let array = canonical_std_adt_ty(&db, "array", vec![Ty::word(&db)]);
+    let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
+    assert_eq!(result.expr_ty(body, lhs), Some(storage_array));
+    let storage_word = canonical_std_adt_ty(&db, "storage", vec![Ty::word(&db)]);
+    let word = Ty::word(&db);
+    assert!(
+        has_user_obligation(&db, &result, "CanStore", storage_word, &[word]),
+        "{:?}",
+        result.obligations
+    );
+    assert!(
+        has_user_obligation(&db, &result, "Typedef", word, &[word]),
+        "{:?}",
+        result.obligations
+    );
+
+    let (_, bad) = infer_module_function(&db, module, "bad");
+    assert!(
+        bad.diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        bad.diagnostics
+    );
+}
+
+#[test]
+fn array_literal_contract_field_write_plan_uses_store_array_lit() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{storage, array};
+
+contract C {
+  xs:array(word);
+
+  function set(x:word) -> () {
+    xs = [x];
+    return ();
+  }
+}
+"#,
+    );
+    let module_id = module_id_from_key(&db, &key);
+    let module = module_hir(&db, module_id).expect("module hir");
+    let plan = crate::frontend_desugar_plan(&db, module);
+    let set = plan
+        .bodies
+        .iter()
+        .find(|body| body.function_name == "set")
+        .expect("set desugar plan");
+    assert!(
+        set.transforms.iter().any(|transform| matches!(
+            transform,
+            crate::FrontendTransform::FieldWrite { hook, .. }
+                if hook.starts_with("storeArrayLit(")
+        )),
+        "{:?}",
+        set.transforms
+    );
 }
 
 #[test]

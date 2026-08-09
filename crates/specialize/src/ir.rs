@@ -395,6 +395,15 @@ pub struct MonoExpr<'db> {
     pub kind: MonoExprKind<'db>,
 }
 
+/// Storage slot formula used by a source index expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MonoStorageIndexKind {
+    /// Mapping element slot: `keccak256(key, base)`.
+    Mapping,
+    /// Dynamic array element slot: `keccak256(base) + index`.
+    Array,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonoExprKind<'db> {
     Var(MonoId<'db>),
@@ -426,7 +435,13 @@ pub enum MonoExprKind<'db> {
         base: Box<MonoExpr<'db>>,
         index: Box<MonoExpr<'db>>,
     },
+    /// Checked read from a `memory(DynArray(t))` value.
+    MemoryArrayIndex {
+        base: Box<MonoExpr<'db>>,
+        index: Box<MonoExpr<'db>>,
+    },
     StorageIndex {
+        storage_kind: MonoStorageIndexKind,
         base: Box<MonoExpr<'db>>,
         index: Box<MonoExpr<'db>>,
     },

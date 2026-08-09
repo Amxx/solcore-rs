@@ -50,7 +50,7 @@ use crate::{
         MonoComptimeObligationKind, MonoConstructor, MonoContract, MonoEntry, MonoExpr,
         MonoExprArm, MonoExprKind, MonoFallback, MonoFunction, MonoFunctionOrigin, MonoId,
         MonoIntrinsic, MonoItem, MonoModule, MonoParam, MonoPat, MonoPatKind,
-        MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, MonoTy, ParamMode,
+        MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, MonoStorageIndexKind, MonoTy, ParamMode,
     },
 };
 

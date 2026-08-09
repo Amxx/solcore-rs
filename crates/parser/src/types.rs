@@ -630,6 +630,8 @@ pub(crate) enum ParsedExprKind<'src> {
     },
     /// Tuple expression.
     Tuple(Vec<ParsedExpr<'src>>),
+    /// Array literal expression.
+    Array(Vec<ParsedExpr<'src>>),
     /// Parser recovery placeholder.
     Error,
 }

@@ -744,6 +744,47 @@ fn ternary_expression_lowers_to_conditional_expression() {
 }
 
 #[test]
+fn array_literals_lower_with_empty_nested_and_postfix_index_forms() {
+    let db = TestDb::default();
+    let (file, module) = parse_module(
+        &db,
+        "array-literals",
+        r#"
+function f(a: word, b: word) -> word {
+  let empty = [];
+  let nested = [[a], [b]];
+  return [a, b][0];
+}
+"#,
+    );
+    assert!(diagnostics(&db, file).is_empty());
+
+    let body = top_function(&db, module, "f").body(&db).expect("body");
+    let mut lengths = body
+        .exprs(&db)
+        .iter()
+        .filter_map(|(_, expr)| match &expr.kind {
+            ExprKind::Array(elems) => Some(elems.len()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    lengths.sort_unstable();
+    assert_eq!(lengths, [0, 1, 1, 2, 2]);
+
+    let indexed_array = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(_, expr)| match &expr.kind {
+            ExprKind::Index { base, .. } => Some(body.exprs(&db).get(*base)),
+            _ => None,
+        });
+    assert!(matches!(
+        indexed_array.map(|expr| &expr.kind),
+        Some(ExprKind::Array(elems)) if elems.len() == 2
+    ));
+}
+
+#[test]
 fn compound_assignments_lower_through_binary_operator_calls() {
     let db = TestDb::default();
     let (_, module) = parse_module(

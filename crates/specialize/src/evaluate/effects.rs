@@ -238,6 +238,7 @@ impl<'pure, 'db> Visitor<'db> for ExprPurityVisitor<'pure> {
                 }
             }
             MonoExprKind::ClosureDispatch { .. }
+            | MonoExprKind::MemoryArrayIndex { .. }
             | MonoExprKind::StorageIndex { .. }
             | MonoExprKind::Error => {
                 self.is_pure = false;

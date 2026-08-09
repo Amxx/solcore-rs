@@ -9,6 +9,7 @@ pub(super) struct StorageField {
 pub(super) enum StorageFieldKind {
     DirectWord,
     Mapping,
+    ArrayRef,
 }
 
 impl<'db> Emitter<'db> {
@@ -20,13 +21,14 @@ impl<'db> Emitter<'db> {
         let Some(contract) = find_contract(self.db, module, def) else {
             return BTreeMap::new();
         };
-        let resolutions = hir::nameres::resolve_item_types(self.db, module);
+        let resolutions = storage_item_type_facts(self.db, module);
         let lowerer =
             TypeLowering::from_item_resolutions(self.db, &resolutions, BinderEnv::empty());
+        let mut normalizer = AliasNormalizer::new(self.db, module, &resolutions);
         let mut fields = BTreeMap::new();
         for (slot, field) in contract.fields(self.db).iter().enumerate() {
             let kind = field_storage_kind(self.db, field.ty()).or_else(|| {
-                let ty = lowerer.lower_field(field).ty;
+                let ty = normalizer.normalize_ty(lowerer.lower_field(field).ty);
                 self.user_adt_storage_field_kind(ty, field.ty().span(self.db))
             });
             if let Some(kind) = kind {
@@ -53,6 +55,9 @@ impl<'db> Emitter<'db> {
         };
         if !matches!(user.kind, UserTyCtorKind::Adt) {
             return None;
+        }
+        if is_canonical_std_def_named(self.db, user.def, "array") {
+            return Some(StorageFieldKind::ArrayRef);
         }
         let ty = self.try_hull_ty(ty, span)?;
         (hull_ty_word_slots(&ty) == Some(1)).then_some(StorageFieldKind::DirectWord)
@@ -126,6 +131,116 @@ impl<'db> Emitter<'db> {
                                 span,
                                 "keccak256",
                                 vec![self.yul_number(span, "0"), self.yul_number(span, "64")],
+                            ),
+                        ),
+                    ],
+                ),
+                Stmt {
+                    span,
+                    kind: StmtKind::Return(Expr::var(span, "out", word)),
+                },
+            ],
+        }
+    }
+
+    /// Computes the checked element slot for a dynamic storage array.
+    /// Length is stored at `base`; elements start at `keccak256(base)`.
+    pub(super) fn storage_array_slot_function(&self, span: Span<'db>, name: &str) -> Function<'db> {
+        let word = Ty::word(span);
+        let out_of_bounds = YulStmt {
+            span,
+            kind: YulStmtKind::If {
+                cond: self.yul_call(
+                    span,
+                    "iszero",
+                    vec![self.yul_call(
+                        span,
+                        "lt",
+                        vec![
+                            self.yul_ident_expr(span, "index"),
+                            self.yul_call(span, "sload", vec![self.yul_ident_expr(span, "base")]),
+                        ],
+                    )],
+                ),
+                body: vec![
+                    self.yul_expr_stmt(
+                        span,
+                        self.yul_call(
+                            span,
+                            "mstore",
+                            vec![
+                                self.yul_number(span, "0"),
+                                self.yul_number(span, OUT_OF_BOUNDS_SELECTOR),
+                            ],
+                        ),
+                    ),
+                    self.yul_expr_stmt(
+                        span,
+                        self.yul_call(
+                            span,
+                            "revert",
+                            vec![self.yul_number(span, "28"), self.yul_number(span, "4")],
+                        ),
+                    ),
+                ],
+            },
+        };
+        Function {
+            span,
+            name: name.into(),
+            args: vec![
+                Arg {
+                    span,
+                    name: "base".into(),
+                    ty: word.clone(),
+                },
+                Arg {
+                    span,
+                    name: "index".into(),
+                    ty: word.clone(),
+                },
+            ],
+            ret: word.clone(),
+            body: vec![
+                Stmt {
+                    span,
+                    kind: StmtKind::Let {
+                        name: "out".into(),
+                        ty: word.clone(),
+                    },
+                },
+                self.assembly_stmt(
+                    span,
+                    vec![
+                        out_of_bounds,
+                        self.yul_expr_stmt(
+                            span,
+                            self.yul_call(
+                                span,
+                                "mstore",
+                                vec![
+                                    self.yul_number(span, "0"),
+                                    self.yul_ident_expr(span, "base"),
+                                ],
+                            ),
+                        ),
+                        self.yul_assign(
+                            span,
+                            "out",
+                            self.yul_call(
+                                span,
+                                "add",
+                                vec![
+                                    self.yul_call(
+                                        span,
+                                        "keccak256",
+                                        vec![
+                                            self.yul_number(span, "0"),
+                                            self.yul_number(span, "32"),
+                                        ],
+                                    ),
+                                    self.yul_ident_expr(span, "index"),
+                                ],
                             ),
                         ),
                     ],
@@ -491,6 +606,11 @@ impl<'a, 'db> StorageLowerer<'a, 'db> {
                             args: vec![Expr::word(expr.span, slot.to_string())],
                         },
                     }
+                } else if let Some(slot) = self.array_field(name.as_str()).map(|field| field.slot) {
+                    // A storage array value is its field slot, not the length
+                    // stored at that slot. Std array helpers consume this
+                    // reference and load length/elements explicitly.
+                    Expr::word(expr.span, slot.to_string())
                 } else {
                     Expr {
                         span: expr.span,
@@ -607,6 +727,11 @@ impl<'a, 'db> StorageLowerer<'a, 'db> {
     fn mapping_field(&self, name: &str) -> Option<&StorageField> {
         self.field(name)
             .filter(|field| field.kind == StorageFieldKind::Mapping)
+    }
+
+    fn array_field(&self, name: &str) -> Option<&StorageField> {
+        self.field(name)
+            .filter(|field| field.kind == StorageFieldKind::ArrayRef)
     }
 
     fn storage_index_read_slot(&self, expr: &Expr<'db>) -> Option<Expr<'db>> {
@@ -773,6 +898,21 @@ fn field_storage_kind<'db>(
         return Some(StorageFieldKind::Mapping);
     }
     None
+}
+
+fn storage_item_type_facts<'db>(
+    db: &'db dyn hir_ty::Db,
+    module: Module<'db>,
+) -> hir::nameres::ItemResolutionFacts<'db> {
+    let file = module.def_id_value(db).file(db);
+    let Some(module_id) = nameres::module_id_for_source_file(db, file) else {
+        return hir::nameres::resolve_item_type_facts(db, module);
+    };
+    let env = nameres::module_import_surface(db, module_id);
+    let Some(item_scope) = env.item_scope.as_ref() else {
+        return hir::nameres::resolve_item_type_facts(db, module);
+    };
+    hir::nameres::resolve_item_type_facts_with_imports(db, module, item_scope, &env)
 }
 
 fn find_contract<'db>(

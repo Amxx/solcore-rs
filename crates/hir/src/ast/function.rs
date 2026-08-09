@@ -294,6 +294,8 @@ pub enum ExprKind<'db> {
     },
     /// Tuple expression; an empty tuple is the unit value.
     Tuple(Vec<Id<Expr<'db>>>),
+    /// Array literal expression, including an empty literal.
+    Array(Vec<Id<Expr<'db>>>),
     /// Parser recovery placeholder.
     Error,
 }

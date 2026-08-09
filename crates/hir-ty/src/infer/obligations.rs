@@ -380,7 +380,16 @@ impl<'db> InferCtx<'db> {
             let obligation = &pending[index];
             if obligation.class != ClassId::Builtin(BuiltinClassId::Str)
                 || !obligation.args.is_empty()
-                || !matches!(obligation.source, ObligationSource::StringCoercion { .. })
+                || !matches!(
+                    obligation.source,
+                    ObligationSource::StringCoercion { .. }
+                        | ObligationSource::CallSite {
+                            callee: CallSiteCallee::Builtin(hir_nameres::BuiltinKind::ClassMethod(
+                                hir_nameres::BuiltinClassMethod::StrFromString,
+                            ),),
+                            ..
+                        }
+                )
                 || !self.open_string_coercion_main(obligation.main.clone())
             {
                 continue;

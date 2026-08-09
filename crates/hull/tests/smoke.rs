@@ -891,7 +891,8 @@ contract MappingWriter {
     );
     assert!(mapping_hull.contains("sstore("), "{mapping_hull}");
     assert!(
-        mapping_main.contains("sload(__solcore_storage_hash2(0, 1))"),
+        mapping_main.contains("CanStore_load_")
+            && mapping_main.contains("(__solcore_storage_hash2(0, 1))"),
         "{mapping_main}\n{mapping_hull}"
     );
 
@@ -965,10 +966,17 @@ contract StorageIndexOrder {
         "storage index assignment order",
         main,
         &[
-            "storage_store_storage_index_slot_1 := __solcore_storage_hash2(1, main_StorageIndexOrder_next_",
-            "storage_store_storage_index_2 := main_StorageIndexOrder_next_",
-            "sstore(storage_store_storage_index_slot_1, storage_store_storage_index_2)",
+            "$storage_index_slot_",
+            ":= __solcore_storage_hash2(1, main_StorageIndexOrder_next_",
+            "CanStore_store_",
+            "($storage_index_slot_",
+            ", main_StorageIndexOrder_next_",
         ],
+    );
+    assert_eq!(
+        main.matches("main_StorageIndexOrder_next_").count(),
+        2,
+        "{main}"
     );
 
     let compound_hull = pretty_src_hull_with_std(
@@ -1004,10 +1012,13 @@ contract StorageIndexCompound {
         "compound storage index assignment order",
         compound_main,
         &[
-            "storage_store_storage_index_slot_3 := __solcore_storage_hash2(1, main_StorageIndexCompound_next_",
-            "storage_store_storage_index_4 := Add_add_",
-            "(sload(storage_store_storage_index_slot_3), main_StorageIndexCompound_next_",
-            "sstore(storage_store_storage_index_slot_3, storage_store_storage_index_4)",
+            ":= __solcore_storage_hash2(1, main_StorageIndexCompound_next_",
+            "CanStore_store_",
+            "($storage_index_slot_",
+            ", Add_add_",
+            "(CanStore_load_",
+            "($storage_index_slot_",
+            ", main_StorageIndexCompound_next_",
         ],
     );
     assert_eq!(
@@ -1642,6 +1653,161 @@ fn bit_not_and_new_compound_operators_emit_expected_results() {
         compound_main.contains("return 3"),
         "compound operator result was not folded to 3:\n{compound_main}"
     );
+}
+
+#[test]
+fn dynamic_array_helpers_check_bounds_and_preserve_typedef_representations() {
+    let hull = pretty_src_hull_with_std(
+        "array-checked-typedef",
+        r#"
+import std.{*};
+
+data Shifted = Shifted(word);
+instance Shifted:Typedef(word) {
+  function rep(x:Shifted) -> word {
+    match x { | Shifted(w) => return w + 100; }
+  }
+  function abs(w:word) -> Shifted { return Shifted(w - 100); }
+}
+
+data Second = Second(word);
+instance Second:Typedef(word) {
+  function rep(x:Second) -> word {
+    match x { | Second(w) => return w + 1; }
+  }
+  function abs(w:word) -> Second { return Second(w - 1); }
+}
+
+type Numbers = array(uint256);
+
+contract CheckedArrays {
+  xs : Numbers;
+  seed : word;
+
+  function main() -> word {
+    let m : memory(DynArray(Shifted)) = [Shifted(3), Shifted(4)];
+    xs = [10, 20];
+    let p : storage(Numbers) = xs;
+    let idx : Second = Second(seed);
+    p[idx] += uint256(1);
+    let picked : Shifted = m[idx];
+    return Typedef.rep(picked) + Typedef.rep(p[idx]);
+  }
+}
+"#,
+    );
+
+    let memory_helper = hull_function(&hull, "__solcore_memory_array_index");
+    assert!(
+        memory_helper.contains("lt(index, mload(base))"),
+        "{memory_helper}"
+    );
+    assert!(memory_helper.contains("0xb4120f14"), "{memory_helper}");
+    assert!(
+        memory_helper.contains("mload(add(add(base, 32), mul(index, 32)))"),
+        "{memory_helper}"
+    );
+
+    let storage_helper = hull_function(&hull, "__solcore_storage_array_slot");
+    assert!(
+        storage_helper.contains("lt(index, sload(base))"),
+        "{storage_helper}"
+    );
+    assert!(storage_helper.contains("0xb4120f14"), "{storage_helper}");
+    assert!(
+        storage_helper.contains("keccak256(0, 32)"),
+        "{storage_helper}"
+    );
+}
+
+#[test]
+fn storage_array_slot_helper_is_reachable_without_array_fields() {
+    let hull = pretty_src_hull_with_std(
+        "array-local-storage-ref",
+        r#"
+import std.{*};
+
+function main() -> uint256 {
+  let xs : storage(array(uint256)) = storage(0x100);
+  return xs[uint256(0)];
+}
+"#,
+    );
+
+    assert!(
+        hull.contains("function __solcore_storage_array_slot"),
+        "{hull}"
+    );
+    assert!(hull.contains("__solcore_storage_array_slot("), "{hull}");
+}
+
+#[test]
+fn nested_and_dynamic_storage_array_values_emit_deep_conversion_paths() {
+    let hull = pretty_src_hull_with_std(
+        "array-nested-dynamic",
+        r#"
+import std.{*};
+
+contract CollectionArray {
+  flags : array(bool);
+  grid : array(array(uint256));
+  names : array(string);
+  backup : array(string);
+
+  function main() -> uint256 {
+    Array.setLength(flags, uint256(0));
+    ArrayPush.push(flags, true);
+    let flag : bool = flags[uint256(0)];
+
+    Array.setLength(grid, uint256(1));
+    ArrayPush.push(grid[uint256(0)], uint256(7));
+    grid[uint256(0)][uint256(0)] = uint256(9);
+    let row : storage(array(uint256)) = grid[uint256(0)];
+    ArrayPush.push(row, uint256(11));
+
+    let s : memory(string) = "hello";
+    ArrayPush.push(names, s);
+    names[uint256(0)] = s;
+    let loaded : memory(string) = names[uint256(0)];
+    backup = names;
+    let copied : memory(string) = backup[uint256(0)];
+
+    if flag {
+      return row[uint256(1)] + uint256(strlen(loaded)) + uint256(strlen(copied));
+    }
+    return uint256(0);
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("__solcore_storage_array_slot"), "{hull}");
+    assert!(hull.contains("storeBytesFromMemory"), "{hull}");
+    assert!(hull.contains("loadBytesFromStorage"), "{hull}");
+    assert!(hull.contains("frombool"), "{hull}");
+    assert!(hull.contains("tobool"), "{hull}");
+}
+
+#[test]
+fn public_dynamic_array_return_emits_abi_copy() {
+    let hull = pretty_src_hull_with_std(
+        "array-public-return",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract PublicArray {
+  constructor() {}
+
+  public function values() -> memory(DynArray(uint256)) {
+    return [1, 2, 3];
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("ABIEncode"), "{hull}");
+    assert!(hull.contains("mcopy"), "{hull}");
 }
 
 const OPERATOR_CUSTOM_UINT_ADD: &str = r#"

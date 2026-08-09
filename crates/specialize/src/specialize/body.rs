@@ -316,6 +316,37 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 None => None,
             }),
             StmtKind::Expr(expr) => MonoStmtKind::Expr(self.expr(*expr)?),
+            StmtKind::Assign { op, lhs, rhs }
+                if *op == hir::ast::function::AssignOp::Plain
+                    && self.is_storage_index_lhs(*lhs) =>
+            {
+                MonoStmtKind::Block(self.storage_index_store(*lhs, *rhs, span)?)
+            }
+            StmtKind::Assign { op, lhs, rhs } if self.is_storage_index_lhs(*lhs) => {
+                let ExprKind::Index { base, index } =
+                    &self.body.exprs(self.driver.db).get(*lhs).kind
+                else {
+                    unreachable!("storage index lhs was checked above")
+                };
+                let result_ty = self.expr_ty(*lhs)?;
+                MonoStmtKind::Assign {
+                    op: *op,
+                    // Compound storage assignments deliberately retain the
+                    // raw indexed-value form. Hull recognizes it as an
+                    // lvalue, evaluates the checked slot once, then performs
+                    // the load/operator/store sequence. Plain assignment is
+                    // routed through CanStore above so strings and nested
+                    // collections keep their storage representation.
+                    lhs: self.storage_index_value(*base, *index, result_ty, span)?,
+                    rhs: self.expr(*rhs)?,
+                }
+            }
+            StmtKind::Assign { op, lhs, rhs }
+                if *op == hir::ast::function::AssignOp::Plain
+                    && self.is_storage_array_field(*lhs) =>
+            {
+                MonoStmtKind::Expr(self.storage_array_field_assign(*lhs, *rhs, span)?)
+            }
             StmtKind::Assign { op, lhs, rhs } => MonoStmtKind::Assign {
                 op: *op,
                 lhs: self.expr(*lhs)?,
@@ -469,6 +500,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             ExprKind::Lit(lit) => MonoExprKind::Lit(lit.clone()),
             ExprKind::Ident(name) => self.ident_expr(expr_id, name, mono_ty, expr.span),
             ExprKind::Tuple(elems) => self.tuple_expr(expr_id, elems, ty, expr.span)?.kind,
+            ExprKind::Array(elems) => self.array_lit_expr(elems, ty, expr.span)?.kind,
             ExprKind::Call { callee, args } => {
                 self.call_expr(expr_id, *callee, args, ty, expr.span)?
             }
@@ -571,10 +603,13 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             }
             ExprKind::Index { base, index } => {
                 if self.is_storage_index_expr(*base) {
-                    MonoExprKind::StorageIndex {
-                        base: Box::new(self.expr(*base)?),
-                        index: Box::new(self.expr(*index)?),
+                    if ty_is_storage_collection(self.driver.db, ty) {
+                        self.storage_index_ref(*base, *index, expr.span)?.kind
+                    } else {
+                        self.storage_index_load(*base, *index, ty, expr.span)?.kind
                     }
+                } else if self.is_memory_array_expr(*base) {
+                    self.memory_array_index(*base, *index, ty, expr.span)?.kind
                 } else {
                     MonoExprKind::Index {
                         base: Box::new(self.expr(*base)?),
@@ -1118,6 +1153,12 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
     }
 
     fn is_storage_index_expr(&self, expr: Id<Expr<'db>>) -> bool {
+        if let Some(ty) = self.expr_ty(expr) {
+            let ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty));
+            if ty_is_storage_collection(self.driver.db, ty) {
+                return true;
+            }
+        }
         if matches!(
             self.expr_resolution(expr),
             Some(hir_nameres::Resolution::Field(_))
@@ -1313,6 +1354,394 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         .normalize_ty(ty)
     }
 
+    fn array_lit_expr(
+        &mut self,
+        elems: &[Id<Expr<'db>>],
+        array_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let uint_ty = self.canonical_std_adt_ty("uint256", Vec::new())?;
+        let length = self.mono_number(elems.len(), uint_ty, span)?;
+        let mut array = self.synthetic_std_call("arrayLitNew", vec![length], array_ty, span)?;
+        for (index, elem) in elems.iter().enumerate() {
+            let value = self.expr(*elem)?;
+            let index = self.mono_number(index, uint_ty, span)?;
+            array =
+                self.synthetic_std_call("arrayLitInit", vec![array, index, value], array_ty, span)?;
+        }
+        Some(array)
+    }
+
+    fn storage_array_field_assign(
+        &mut self,
+        lhs: Id<Expr<'db>>,
+        rhs: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let lhs = self.expr(lhs)?;
+        let rhs_is_literal = matches!(
+            &self.body.exprs(self.driver.db).get(rhs).kind,
+            ExprKind::Array(_)
+        );
+        let rhs = self.expr(rhs)?;
+        let unit = Ty::unit(self.driver.db);
+        if rhs_is_literal {
+            return self.synthetic_std_call("storeArrayLit", vec![lhs, rhs], unit, span);
+        }
+
+        let callee_ty = Ty::function(self.driver.db, vec![lhs.ty.ty(), rhs.ty.ty()], unit);
+        let mono_callee_ty = self
+            .driver
+            .mono_ty(callee_ty, "array assignment callee", span)?;
+        let evidence =
+            self.driver
+                .solve_operator_method_pred("Assign", "assign", callee_ty, Some(span));
+        let Some(name) = evidence.and_then(|evidence| {
+            self.driver
+                .resolve_class_method_call("assign", evidence, callee_ty, span, self.depth)
+        }) else {
+            self.driver.diagnostics.push(SpecializeDiagnostic {
+                kind: SpecializeDiagnosticKind::MissingEvidence {
+                    context: "storage array assignment".to_owned(),
+                },
+                span: Some(span),
+            });
+            return None;
+        };
+        Some(MonoExpr {
+            span,
+            ty: self.driver.mono_ty(unit, "array assignment", span)?,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: mono_callee_ty,
+                    span,
+                },
+                args: vec![lhs, rhs],
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
+    fn storage_index_load(
+        &mut self,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let slot = self.storage_index_ref(base, index, span)?;
+        self.resolved_class_call("CanStore", "load", vec![slot], result_ty, span)
+    }
+
+    fn storage_index_store(
+        &mut self,
+        lhs: Id<Expr<'db>>,
+        rhs: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<Vec<MonoStmt<'db>>> {
+        let ExprKind::Index { base, index } = &self.body.exprs(self.driver.db).get(lhs).kind else {
+            return None;
+        };
+        let lhs_span = self.body.exprs(self.driver.db).get(lhs).span;
+        let slot = self.storage_index_ref(*base, *index, lhs_span)?;
+        let slot_id = MonoId {
+            name: format!("$storage_index_slot_{}", span.begin().as_u32()),
+            ty: slot.ty,
+            span: lhs_span,
+        };
+        let slot_var = MonoExpr {
+            span: lhs_span,
+            ty: slot.ty,
+            kind: MonoExprKind::Var(slot_id.clone()),
+        };
+        let mut value = self.expr(rhs)?;
+        replace_storage_index_at_span(&mut value, lhs_span, slot.ty, &slot_var);
+        let store = self.resolved_class_call(
+            "CanStore",
+            "store",
+            vec![slot_var.clone(), value],
+            Ty::unit(self.driver.db),
+            span,
+        )?;
+        Some(vec![
+            MonoStmt {
+                span,
+                kind: MonoStmtKind::Let {
+                    mode: LetMode::Runtime,
+                    id: slot_id,
+                    ty: Some(slot.ty),
+                    init: Some(slot),
+                },
+            },
+            MonoStmt {
+                span,
+                kind: MonoStmtKind::Expr(store),
+            },
+        ])
+    }
+
+    fn storage_index_ref(
+        &mut self,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let base_ty = self.expr_ty(base)?;
+        let base_ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, base_ty));
+        let ref_ty = storage_collection_element_ref_ty(self.driver.db, base_ty)?;
+        let base = self.storage_collection_ref_expr(base, span)?;
+        let base = self.typedef_rep(base, span)?;
+        let index = self.expr(index)?;
+        let index = self.typedef_rep(index, span)?;
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(ref_ty, "storage element reference", span)?,
+            kind: MonoExprKind::StorageIndex {
+                storage_kind: if ty_is_storage_array(self.driver.db, base_ty) {
+                    MonoStorageIndexKind::Array
+                } else {
+                    MonoStorageIndexKind::Mapping
+                },
+                base: Box::new(base),
+                index: Box::new(index),
+            },
+        })
+    }
+
+    fn storage_collection_ref_expr(
+        &mut self,
+        expr: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        match &self.body.exprs(self.driver.db).get(expr).kind {
+            ExprKind::Index { base, index } if self.is_storage_index_expr(*base) => {
+                self.storage_index_ref(*base, *index, span)
+            }
+            ExprKind::TypeAnnot { expr: inner, .. } => {
+                self.storage_collection_ref_expr(*inner, span)
+            }
+            _ => self.expr(expr),
+        }
+    }
+
+    fn storage_index_value(
+        &mut self,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let base_ty = self.expr_ty(base)?;
+        let base_ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, base_ty));
+        let result_ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, result_ty));
+        let base = self.expr(base)?;
+        let base = self.typedef_rep(base, span)?;
+        let index = self.expr(index)?;
+        let index = self.typedef_rep(index, span)?;
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(result_ty, "storage indexed value", span)?,
+            kind: MonoExprKind::StorageIndex {
+                storage_kind: if ty_is_storage_array(self.driver.db, base_ty) {
+                    MonoStorageIndexKind::Array
+                } else {
+                    MonoStorageIndexKind::Mapping
+                },
+                base: Box::new(base),
+                index: Box::new(index),
+            },
+        })
+    }
+
+    fn memory_array_index(
+        &mut self,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        // The backend helper operates on raw words. Preserve arbitrary
+        // (including non-identity) Typedef representations at both edges,
+        // matching the reference IndexAccess implementation.
+        let base = self.expr(base)?;
+        let base = self.typedef_rep(base, span)?;
+        let index = self.expr(index)?;
+        let index = self.typedef_rep(index, span)?;
+        let word = Ty::word(self.driver.db);
+        let raw = MonoExpr {
+            span,
+            ty: self.driver.mono_ty(word, "memory array word", span)?,
+            kind: MonoExprKind::MemoryArrayIndex {
+                base: Box::new(base),
+                index: Box::new(index),
+            },
+        };
+        self.typedef_abs(raw, result_ty, span)
+    }
+
+    fn typedef_rep(&mut self, value: MonoExpr<'db>, span: Span<'db>) -> Option<MonoExpr<'db>> {
+        if ty_is_builtin_word(self.driver.db, value.ty.ty())
+            || ty_is_storage_ref(self.driver.db, value.ty.ty())
+        {
+            return Some(value);
+        }
+        self.resolved_class_call(
+            "Typedef",
+            "rep",
+            vec![value],
+            Ty::word(self.driver.db),
+            span,
+        )
+    }
+
+    fn typedef_abs(
+        &mut self,
+        value: MonoExpr<'db>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        if ty_is_builtin_word(self.driver.db, result_ty) {
+            return Some(value);
+        }
+        self.resolved_class_call("Typedef", "abs", vec![value], result_ty, span)
+    }
+
+    fn resolved_class_call(
+        &mut self,
+        class: &str,
+        method: &str,
+        args: Vec<MonoExpr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let callee_ty = Ty::function(
+            self.driver.db,
+            args.iter().map(|arg| arg.ty.ty()).collect(),
+            result_ty,
+        );
+        let evidence = self
+            .driver
+            .solve_operator_method_pred(class, method, callee_ty, Some(span));
+        let Some(name) = evidence.and_then(|evidence| {
+            self.driver
+                .resolve_class_method_call(method, evidence, callee_ty, span, self.depth)
+        }) else {
+            self.driver.diagnostics.push(SpecializeDiagnostic {
+                kind: SpecializeDiagnosticKind::MissingEvidence {
+                    context: format!("{class}.{method}"),
+                },
+                span: Some(span),
+            });
+            return None;
+        };
+        Some(MonoExpr {
+            span,
+            ty: self.driver.mono_ty(result_ty, "class call result", span)?,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: self.driver.mono_ty(callee_ty, "class call callee", span)?,
+                    span,
+                },
+                args,
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
+    fn synthetic_std_call(
+        &mut self,
+        name: &str,
+        args: Vec<MonoExpr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let def = self
+            .driver
+            .functions
+            .keys()
+            .copied()
+            .find(|def| is_canonical_std_def_named(self.driver.db, *def, name))?;
+        let callee_ty = Ty::function(
+            self.driver.db,
+            args.iter().map(|arg| arg.ty.ty()).collect(),
+            result_ty,
+        );
+        let callee = MonoId {
+            name: self.specialize_direct_function(def, callee_ty, span),
+            ty: self
+                .driver
+                .mono_ty(callee_ty, "array helper callee", span)?,
+            span,
+        };
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(result_ty, "array helper result", span)?,
+            kind: MonoExprKind::Call {
+                callee,
+                args,
+                origin: MonoCallOrigin::Source(def),
+            },
+        })
+    }
+
+    fn canonical_std_adt_ty(&self, name: &str, args: Vec<Ty<'db>>) -> Option<Ty<'db>> {
+        self.driver.adts.keys().copied().find_map(|def| {
+            is_canonical_std_def_named(self.driver.db, def, name).then(|| {
+                Ty::named(
+                    self.driver.db,
+                    TyCtor::User(UserTyCtor {
+                        def,
+                        kind: UserTyCtorKind::Adt,
+                    }),
+                    args.clone(),
+                )
+            })
+        })
+    }
+
+    fn mono_number(&mut self, value: usize, ty: Ty<'db>, span: Span<'db>) -> Option<MonoExpr<'db>> {
+        Some(MonoExpr {
+            span,
+            ty: self.driver.mono_ty(ty, "array index", span)?,
+            kind: MonoExprKind::Lit(LitKind::Number(value.to_string())),
+        })
+    }
+
+    fn is_storage_array_field(&self, expr: Id<Expr<'db>>) -> bool {
+        if !matches!(
+            self.expr_resolution(expr),
+            Some(hir_nameres::Resolution::Field(_))
+        ) {
+            return false;
+        }
+        self.expr_ty(expr)
+            .map(|ty| self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty)))
+            .is_some_and(|ty| ty_is_storage_array(self.driver.db, ty))
+    }
+
+    fn is_storage_index_lhs(&self, expr: Id<Expr<'db>>) -> bool {
+        matches!(
+            &self.body.exprs(self.driver.db).get(expr).kind,
+            ExprKind::Index { base, .. } if self.is_storage_index_expr(*base)
+        )
+    }
+
+    fn is_memory_array_expr(&self, expr: Id<Expr<'db>>) -> bool {
+        let Some(ty) = self.expr_ty(expr) else {
+            return false;
+        };
+        let ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty));
+        ty_is_memory_dyn_array(self.driver.db, ty)
+    }
+
     fn stmt_has_comptime_let_obligation(&self, stmt: Id<Stmt<'db>>) -> bool {
         self.index.comptime_let_stmts.contains(&(self.body, stmt))
     }
@@ -1354,10 +1783,194 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
     }
 }
 
+/// Reuses the slot materialized for a desugared compound assignment.
+///
+/// The parser represents `lhs op= rhs` as `lhs = lhs op rhs` and preserves the
+/// source span on the cloned `lhs`. Matching that span keeps the optimization
+/// specific to the synthetic read: an explicitly written `lhs = lhs op rhs`
+/// still evaluates both source expressions independently.
+fn replace_storage_index_at_span<'db>(
+    expr: &mut MonoExpr<'db>,
+    target_span: Span<'db>,
+    target_ty: MonoTy<'db>,
+    slot_ref: &MonoExpr<'db>,
+) {
+    if expr.span == target_span
+        && expr.ty == target_ty
+        && matches!(expr.kind, MonoExprKind::StorageIndex { .. })
+    {
+        *expr = slot_ref.clone();
+        return;
+    }
+
+    match &mut expr.kind {
+        MonoExprKind::Tuple(elems) => {
+            for elem in elems {
+                replace_storage_index_at_span(elem, target_span, target_ty, slot_ref);
+            }
+        }
+        MonoExprKind::Call { args, .. } | MonoExprKind::Con { args, .. } => {
+            for arg in args {
+                replace_storage_index_at_span(arg, target_span, target_ty, slot_ref);
+            }
+        }
+        MonoExprKind::ClosureDispatch { callee, args } => {
+            replace_storage_index_at_span(callee, target_span, target_ty, slot_ref);
+            for arg in args {
+                replace_storage_index_at_span(arg, target_span, target_ty, slot_ref);
+            }
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. } => {
+            replace_storage_index_at_span(lhs, target_span, target_ty, slot_ref);
+            replace_storage_index_at_span(rhs, target_span, target_ty, slot_ref);
+        }
+        MonoExprKind::UnaryOp { expr, .. }
+        | MonoExprKind::Field { base: expr, .. }
+        | MonoExprKind::TypeAnnot { expr, .. } => {
+            replace_storage_index_at_span(expr, target_span, target_ty, slot_ref);
+        }
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
+            replace_storage_index_at_span(base, target_span, target_ty, slot_ref);
+            replace_storage_index_at_span(index, target_span, target_ty, slot_ref);
+        }
+        MonoExprKind::Match { scrutinee, arms } => {
+            replace_storage_index_at_span(scrutinee, target_span, target_ty, slot_ref);
+            for arm in arms {
+                replace_storage_index_at_span(&mut arm.expr, target_span, target_ty, slot_ref);
+            }
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            replace_storage_index_at_span(cond, target_span, target_ty, slot_ref);
+            replace_storage_index_at_span(then_expr, target_span, target_ty, slot_ref);
+            replace_storage_index_at_span(else_expr, target_span, target_ty, slot_ref);
+        }
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Lambda { .. }
+        | MonoExprKind::Error => {}
+    }
+}
+
 fn bool_ctor_name(value: bool) -> &'static str {
     if value {
         MonoBuiltinCtor::True.name()
     } else {
         MonoBuiltinCtor::False.name()
     }
+}
+
+fn ty_is_storage_array<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let TyKind::Named {
+        ctor: TyCtor::User(storage),
+        args: storage_args,
+    } = ty.kind(db)
+    else {
+        return false;
+    };
+    if storage_args.len() != 1 || !is_canonical_std_def_named(db, storage.def, "storage") {
+        return false;
+    }
+    matches!(
+        storage_args[0].kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(array),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, array.def, "array")
+    )
+}
+
+fn ty_is_storage_collection<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let TyKind::Named {
+        ctor: TyCtor::User(storage),
+        args: storage_args,
+    } = ty.kind(db)
+    else {
+        return false;
+    };
+    if storage_args.len() != 1 || !is_canonical_std_def_named(db, storage.def, "storage") {
+        return false;
+    }
+    matches!(
+        storage_args[0].kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(collection),
+            args,
+        } if ((args.len() == 1 && is_canonical_std_def_named(db, collection.def, "array"))
+            || (args.len() == 2 && is_canonical_std_def_named(db, collection.def, "mapping")))
+    )
+}
+
+fn storage_collection_element_ref_ty<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Option<Ty<'db>> {
+    let TyKind::Named {
+        ctor: storage_ctor @ TyCtor::User(storage),
+        args: storage_args,
+    } = ty.kind(db)
+    else {
+        return None;
+    };
+    if storage_args.len() != 1 || !is_canonical_std_def_named(db, storage.def, "storage") {
+        return None;
+    }
+    let TyKind::Named {
+        ctor: TyCtor::User(collection),
+        args,
+    } = storage_args[0].kind(db)
+    else {
+        return None;
+    };
+    let elem = if args.len() == 1 && is_canonical_std_def_named(db, collection.def, "array") {
+        args[0]
+    } else if args.len() == 2 && is_canonical_std_def_named(db, collection.def, "mapping") {
+        args[1]
+    } else {
+        return None;
+    };
+    Some(Ty::named(db, *storage_ctor, vec![elem]))
+}
+
+fn ty_is_builtin_word<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    matches!(
+        ty.kind(db),
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::Word),
+            args,
+        } if args.is_empty()
+    )
+}
+
+fn ty_is_storage_ref<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    matches!(
+        ty.kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(storage),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, storage.def, "storage")
+    )
+}
+
+fn ty_is_memory_dyn_array<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let TyKind::Named {
+        ctor: TyCtor::User(memory),
+        args: memory_args,
+    } = ty.kind(db)
+    else {
+        return false;
+    };
+    if memory_args.len() != 1 || !is_canonical_std_def_named(db, memory.def, "memory") {
+        return false;
+    }
+    matches!(
+        memory_args[0].kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(array),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, array.def, "DynArray")
+    )
 }

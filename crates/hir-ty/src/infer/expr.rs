@@ -82,18 +82,24 @@ impl<'db> InferCtx<'db> {
                     ret
                 } else {
                     let base_ty = self.infer_expr(body, *base);
-                    let index_ty = self.infer_expr(body, *index);
-                    let ret = expected.clone().unwrap_or_else(|| self.engine.fresh_var());
-                    self.unify_expr(
-                        body,
-                        expr_id,
-                        base_ty,
-                        InferTy::Function {
-                            params: vec![index_ty],
-                            ret: Box::new(ret.clone()),
-                        },
-                    );
-                    ret
+                    if let Some(ret) =
+                        self.infer_memory_array_index_read(body, *index, base_ty.clone())
+                    {
+                        ret
+                    } else {
+                        let index_ty = self.infer_expr(body, *index);
+                        let ret = expected.clone().unwrap_or_else(|| self.engine.fresh_var());
+                        self.unify_expr(
+                            body,
+                            expr_id,
+                            base_ty,
+                            InferTy::Function {
+                                params: vec![index_ty],
+                                ret: Box::new(ret.clone()),
+                            },
+                        );
+                        ret
+                    }
                 }
             }
             ExprKind::Call { callee, args } => {
@@ -108,7 +114,7 @@ impl<'db> InferCtx<'db> {
                     if matches!(inferred, InferTy::Error) || self.expr_is_poisoned(body, expr_id) {
                         InferTy::Error
                     } else {
-                        let target = expected.clone().unwrap_or(source);
+                        let target = expected.clone().unwrap_or_else(|| self.engine.fresh_var());
                         self.pending.push(PendingObligation {
                             class: ClassId::Builtin(BuiltinClassId::Str),
                             main: target.clone(),
@@ -181,6 +187,7 @@ impl<'db> InferCtx<'db> {
                 then_ty
             }
             ExprKind::Tuple(elems) => self.infer_tuple_expr(body, expr_id, elems, expected.clone()),
+            ExprKind::Array(elems) => self.infer_array_expr(body, expr_id, elems),
             ExprKind::Error => InferTy::Error,
         };
         if check_expected
@@ -194,6 +201,21 @@ impl<'db> InferCtx<'db> {
         }
         self.expr_tys.push((body, expr_id, ty.clone()));
         ty
+    }
+
+    fn infer_array_expr(
+        &mut self,
+        body: FuncBody<'db>,
+        _expr: Id<Expr<'db>>,
+        elems: &[Id<Expr<'db>>],
+    ) -> InferTy<'db> {
+        let elem_ty = self.engine.fresh_var();
+        for elem in elems {
+            let actual = self.infer_expr(body, *elem);
+            self.unify_expr(body, *elem, elem_ty.clone(), actual);
+        }
+
+        self.memory_dyn_array_ty(elem_ty).unwrap_or(InferTy::Error)
     }
 
     fn report_numeric_if_branch_mismatch(
@@ -725,7 +747,7 @@ impl<'db> InferCtx<'db> {
                 ty
             }
             LitKind::String(_) => {
-                let target = expected.unwrap_or_else(|| self.source_string());
+                let target = expected.unwrap_or_else(|| self.engine.fresh_var());
                 self.pending.push(PendingObligation {
                     class: ClassId::Builtin(BuiltinClassId::Str),
                     main: target.clone(),
@@ -783,7 +805,7 @@ impl<'db> InferCtx<'db> {
             return Some(InferTy::Error);
         }
 
-        let target = expected.unwrap_or_else(|| source_ty.clone());
+        let target = expected.unwrap_or_else(|| self.engine.fresh_var());
         let callee_ty = InferTy::Function {
             params: vec![source_ty],
             ret: Box::new(target.clone()),
@@ -1434,18 +1456,10 @@ impl<'db> InferCtx<'db> {
 
     pub(super) fn is_storage_index_word_numeric(&mut self, ty: InferTy<'db>) -> bool {
         let ty = self.normalize_aliases(ty);
-        let InferTy::Named {
-            ctor:
-                TyCtor::User(crate::UserTyCtor {
-                    def,
-                    kind: UserTyCtorKind::Adt,
-                }),
-            args,
-        } = self.engine.resolve(ty)
-        else {
+        let InferTy::Named { ctor, args } = self.engine.resolve(ty) else {
             return false;
         };
-        args.is_empty() && matches!(def.name(self.db).as_deref(), Some("uint") | Some("uint256"))
+        is_storage_index_word_numeric_shape(self.db, ctor, args.len())
     }
 
     fn infer_un_op(
@@ -1474,5 +1488,23 @@ impl<'db> InferCtx<'db> {
             ),
             UnOp::Error => InferTy::Error,
         }
+    }
+}
+
+pub(super) fn is_storage_index_word_numeric_shape(
+    db: &dyn Db,
+    ctor: TyCtor<'_>,
+    arity: usize,
+) -> bool {
+    if arity != 0 {
+        return false;
+    }
+    match ctor {
+        TyCtor::Builtin(BuiltinTyCtor::Word) => true,
+        TyCtor::User(user) => {
+            crate::support::is_canonical_std_def_named(db, user.def, "uint")
+                || crate::support::is_canonical_std_def_named(db, user.def, "uint256")
+        }
+        _ => false,
     }
 }

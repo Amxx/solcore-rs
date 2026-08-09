@@ -164,6 +164,9 @@ impl<'db, 'a> LoweringCtx<'db, 'a> {
             ParsedExprKind::Tuple(elems) => {
                 self.lower_tuple_expr(anchor, base_start, elems, arenas)
             }
+            ParsedExprKind::Array(elems) => {
+                function::ExprKind::Array(self.lower_exprs(anchor, base_start, elems, arenas))
+            }
             ParsedExprKind::Error => function::ExprKind::Error,
         }
     }
@@ -542,7 +545,9 @@ fn drop_parsed_expr_iteratively(root: ParsedExpr<'_>) {
     let mut pending = vec![root];
     while let Some(expr) = pending.pop() {
         match expr.kind {
-            ParsedExprKind::DotCtor { args, .. } | ParsedExprKind::Tuple(args) => {
+            ParsedExprKind::DotCtor { args, .. }
+            | ParsedExprKind::Tuple(args)
+            | ParsedExprKind::Array(args) => {
                 pending.extend(args);
             }
             ParsedExprKind::BinOp { lhs, rhs, .. } => {

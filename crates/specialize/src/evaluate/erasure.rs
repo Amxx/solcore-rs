@@ -127,14 +127,22 @@ fn is_runtime_string_location<'db>(
     def: hir::anchor::DefId<'db>,
     args: &[Ty<'db>],
 ) -> bool {
-    args.len() == 1
-        && ty_is_comptime_string(db, args[0])
-        && def.name(db).is_some_and(|name| {
-            matches!(
-                name.as_str(),
-                "memory" | "storage" | "calldata" | "returndata"
-            ) && is_canonical_std_def_named(db, def, &name)
-        })
+    if args.len() != 1 {
+        return false;
+    }
+    let Some(name) = def.name(db) else {
+        return false;
+    };
+    if name == "storage" && is_canonical_std_def_named(db, def, "storage") {
+        // Every storage reference has a one-word runtime representation. Its
+        // payload is a layout tag and may recursively contain the source-only
+        // `string` tag (for example storage(array(string))). Do not treat that
+        // nested tag as a runtime comptime-string value.
+        return true;
+    }
+    ty_is_comptime_string(db, args[0])
+        && matches!(name.as_str(), "memory" | "calldata" | "returndata")
+        && is_canonical_std_def_named(db, def, &name)
 }
 
 pub(super) fn strip_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {

@@ -223,7 +223,7 @@ impl<'db, 'a> BodyResolver<'db, 'a> {
                 self.expr(body, *then_expr);
                 self.expr(body, *else_expr);
             }
-            ExprKind::Tuple(elems) => {
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
                 for elem in elems {
                     self.expr(body, *elem);
                 }

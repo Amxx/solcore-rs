@@ -1487,7 +1487,7 @@ fn collect_uninitialized_let_type_refs_from_expr<'db>(
         } => {
             collect_uninitialized_let_type_refs(db, *lambda_body, out);
         }
-        ExprKind::Tuple(exprs) | ExprKind::DotCtor { args: exprs, .. } => {
+        ExprKind::Tuple(exprs) | ExprKind::Array(exprs) | ExprKind::DotCtor { args: exprs, .. } => {
             for expr in exprs {
                 collect_uninitialized_let_type_refs_from_expr(db, body, *expr, out);
             }

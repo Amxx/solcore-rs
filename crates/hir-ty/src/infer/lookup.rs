@@ -368,6 +368,7 @@ pub(super) fn expr_is_literal_comptime<'db>(
                 && expr_is_literal_comptime(db, body, *else_expr)
         }
         ExprKind::Ident(_)
+        | ExprKind::Array(_)
         | ExprKind::Call { .. }
         | ExprKind::Field { .. }
         | ExprKind::Index { .. }

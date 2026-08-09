@@ -522,6 +522,7 @@ fn expr_token_span<'db>(
         | ExprKind::UnaryOp { .. }
         | ExprKind::If { .. }
         | ExprKind::Tuple(_)
+        | ExprKind::Array(_)
         | ExprKind::Error => None,
     }
 }

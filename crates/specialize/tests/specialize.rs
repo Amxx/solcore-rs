@@ -23,9 +23,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use salsa::Setter;
 use solcore_specialize::{
     MonoComptimeObligationKind, MonoEntry, MonoExpr, MonoExprKind, MonoFunctionOrigin, MonoItem,
-    MonoPatKind, MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, SpecializeDiagnosticKind,
-    SpecializeOptions, SpecializeOutput, specialize_module, specialize_name,
-    specialize_prepared_module,
+    MonoPatKind, MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, MonoStorageIndexKind,
+    SpecializeDiagnosticKind, SpecializeOptions, SpecializeOutput, specialize_module,
+    specialize_name, specialize_prepared_module,
 };
 
 #[salsa::db]
@@ -3055,6 +3055,296 @@ contract C {
 }
 
 #[test]
+fn desugars_memory_and_storage_array_literals_to_runtime_builders() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract ArrayLit {
+  xs : array(uint256);
+
+  function main() -> uint256 {
+    let m : memory(DynArray(uint256)) = [1, 2, 3];
+    xs = [10, 20, 30];
+    return m[uint256(1)] + xs[uint256(2)];
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let calls = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function_call_names(function)),
+            _ => None,
+        })
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    assert!(
+        calls.iter().any(|name| name.contains("arrayLitNew")),
+        "{calls:?}"
+    );
+    assert!(
+        calls.iter().any(|name| name.contains("arrayLitInit")),
+        "{calls:?}"
+    );
+    assert!(
+        calls.iter().any(|name| name.contains("storeArrayLit")),
+        "{calls:?}"
+    );
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if stmts_have_storage_array_index(&function.body)
+        )),
+        "{:?}",
+        output.module
+    );
+}
+
+#[test]
+fn routes_whole_storage_array_assignment_through_assign_instance() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract ArrayCopy {
+  dst : array(uint256);
+  src : array(uint256);
+
+  function main() -> () {
+    dst = src;
+    return ();
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "Assign" && method == "assign"
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn array_indexes_preserve_non_identity_typedef_representations() {
+    let (db, main_file, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+
+data Shifted = Shifted(word);
+instance Shifted:Typedef(word) {
+  function rep(x:Shifted) -> word {
+    match x { | Shifted(w) => return w + 100; }
+  }
+  function abs(w:word) -> Shifted { return Shifted(w - 100); }
+}
+
+data Second = Second(word);
+instance Second:Typedef(word) {
+  function rep(x:Second) -> word {
+    match x { | Second(w) => return w + 1; }
+  }
+  function abs(w:word) -> Second { return Second(w - 1); }
+}
+
+contract ReprArray {
+  xs : array(uint256);
+  seed : word;
+
+  function main() -> word {
+    let m : memory(DynArray(Shifted)) = [Shifted(3), Shifted(4)];
+    xs = [10, 20];
+    let idx : Second = Second(seed);
+    let picked : Shifted = m[idx];
+    return Typedef.rep(picked) + Typedef.rep(xs[idx]);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let local_typedef_methods = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { instance, class, .. }
+                        if instance.file(db) == main_file && class == "Typedef"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        local_typedef_methods.iter().any(|function| matches!(
+            &function.origin,
+            MonoFunctionOrigin::InstanceMethod { method, .. } if method == "abs"
+        )),
+        "{local_typedef_methods:#?}"
+    );
+    assert!(
+        local_typedef_methods
+            .iter()
+            .filter(|function| matches!(
+                &function.origin,
+                MonoFunctionOrigin::InstanceMethod { method, .. } if method == "rep"
+            ))
+            .count()
+            >= 2,
+        "{local_typedef_methods:#?}"
+    );
+}
+
+#[test]
+fn public_dynamic_array_return_reaches_abi_encoder() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract PublicArray {
+  constructor() {}
+
+  public function values() -> memory(DynArray(uint256)) {
+    return [1, 2, 3];
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "ABIEncode" && method == "encodeInto"
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn bool_and_nested_dynamic_storage_arrays_resolve_storage_conversions() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract CollectionArray {
+  flags : array(bool);
+  grid : array(array(uint256));
+  names : array(string);
+
+  function main() -> uint256 {
+    Array.setLength(flags, uint256(0));
+    ArrayPush.push(flags, true);
+    let flag : bool = flags[uint256(0)];
+
+    Array.setLength(grid, uint256(1));
+    ArrayPush.push(grid[uint256(0)], uint256(7));
+    grid[uint256(0)][uint256(0)] = uint256(9);
+    let row : storage(array(uint256)) = grid[uint256(0)];
+    ArrayPush.push(row, uint256(11));
+
+    let s : memory(string) = "hello";
+    ArrayPush.push(names, s);
+    names[uint256(0)] = s;
+    let loaded : memory(string) = names[uint256(0)];
+
+    if flag { return row[uint256(1)] + Length.length(names); }
+    return uint256(0);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "CanStore" && (method == "load" || method == "store")
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn nested_bool_array_write_composes_storage_refs_without_intermediate_copy() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract NestedBool {
+  grid : array(array(bool));
+
+  function main(v:bool) -> () {
+    grid[uint256(0)][uint256(0)] = v;
+    return ();
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "CanStore" && method == "store"
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+    assert!(
+        !output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, .. }
+                        if class == "StorageCopy"
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
 fn folds_resolved_std_word_keccak_literal_intrinsic() {
     let output = specialize_src_with_std(
         r#"
@@ -3466,6 +3756,102 @@ fn collect_stmt_call_names(stmts: &[MonoStmt<'_>], names: &mut BTreeSet<String>)
     }
 }
 
+fn stmts_have_storage_array_index(stmts: &[MonoStmt<'_>]) -> bool {
+    stmts.iter().any(|stmt| match &stmt.kind {
+        MonoStmtKind::Let { init, .. } => init.as_ref().is_some_and(expr_has_storage_array_index),
+        MonoStmtKind::Return(expr) => expr.as_ref().is_some_and(expr_has_storage_array_index),
+        MonoStmtKind::Expr(expr) => expr_has_storage_array_index(expr),
+        MonoStmtKind::Assign { lhs, rhs, .. } => {
+            expr_has_storage_array_index(lhs) || expr_has_storage_array_index(rhs)
+        }
+        MonoStmtKind::Match { scrutinees, arms } => {
+            scrutinees.iter().any(expr_has_storage_array_index)
+                || arms
+                    .iter()
+                    .any(|arm| stmts_have_storage_array_index(&arm.body))
+        }
+        MonoStmtKind::For {
+            init,
+            cond,
+            post,
+            body,
+        } => {
+            stmts_have_storage_array_index(init)
+                || expr_has_storage_array_index(cond)
+                || stmts_have_storage_array_index(post)
+                || stmts_have_storage_array_index(body)
+        }
+        MonoStmtKind::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
+            expr_has_storage_array_index(cond)
+                || stmts_have_storage_array_index(then_body)
+                || else_body
+                    .as_deref()
+                    .is_some_and(stmts_have_storage_array_index)
+        }
+        MonoStmtKind::Block(body) => stmts_have_storage_array_index(body),
+        MonoStmtKind::Assembly(_)
+        | MonoStmtKind::Break
+        | MonoStmtKind::Continue
+        | MonoStmtKind::Error => false,
+    })
+}
+
+fn expr_has_storage_array_index(expr: &MonoExpr<'_>) -> bool {
+    match &expr.kind {
+        MonoExprKind::StorageIndex {
+            storage_kind: MonoStorageIndexKind::Array,
+            ..
+        } => true,
+        MonoExprKind::Call { args, .. }
+        | MonoExprKind::Con { args, .. }
+        | MonoExprKind::Tuple(args) => args.iter().any(expr_has_storage_array_index),
+        MonoExprKind::ClosureDispatch { callee, args } => {
+            expr_has_storage_array_index(callee) || args.iter().any(expr_has_storage_array_index)
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. }
+        | MonoExprKind::Index {
+            base: lhs,
+            index: rhs,
+        }
+        | MonoExprKind::MemoryArrayIndex {
+            base: lhs,
+            index: rhs,
+        }
+        | MonoExprKind::StorageIndex {
+            base: lhs,
+            index: rhs,
+            ..
+        } => expr_has_storage_array_index(lhs) || expr_has_storage_array_index(rhs),
+        MonoExprKind::UnaryOp { expr, .. }
+        | MonoExprKind::TypeAnnot { expr, .. }
+        | MonoExprKind::Field { base: expr, .. } => expr_has_storage_array_index(expr),
+        MonoExprKind::Match { scrutinee, arms } => {
+            expr_has_storage_array_index(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expr_has_storage_array_index(&arm.expr))
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            expr_has_storage_array_index(cond)
+                || expr_has_storage_array_index(then_expr)
+                || expr_has_storage_array_index(else_expr)
+        }
+        MonoExprKind::Lambda { body, .. } => stmts_have_storage_array_index(body),
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Error => false,
+    }
+}
+
 fn collect_expr_call_names(expr: &MonoExpr<'_>, names: &mut BTreeSet<String>) {
     match &expr.kind {
         MonoExprKind::Call { callee, args, .. } => {
@@ -3492,7 +3878,9 @@ fn collect_expr_call_names(expr: &MonoExpr<'_>, names: &mut BTreeSet<String>) {
         MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
             collect_expr_call_names(expr, names);
         }
-        MonoExprKind::Index { base, index } | MonoExprKind::StorageIndex { base, index } => {
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
             collect_expr_call_names(base, names);
             collect_expr_call_names(index, names);
         }
@@ -3530,7 +3918,9 @@ fn expr_has_call(expr: &MonoExpr<'_>) -> bool {
         MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
             expr_has_call(expr)
         }
-        MonoExprKind::Index { base, index } | MonoExprKind::StorageIndex { base, index } => {
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
             expr_has_call(base) || expr_has_call(index)
         }
         MonoExprKind::Field { base, .. } => expr_has_call(base),
@@ -3638,7 +4028,9 @@ fn expr_has_number_literal(expr: &MonoExpr<'_>, expected: &str) -> bool {
         MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
             expr_has_number_literal(expr, expected)
         }
-        MonoExprKind::Index { base, index } | MonoExprKind::StorageIndex { base, index } => {
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
             expr_has_number_literal(base, expected) || expr_has_number_literal(index, expected)
         }
         MonoExprKind::Field { base, .. } => expr_has_number_literal(base, expected),
@@ -3723,7 +4115,9 @@ fn expr_has_closure_dispatch(expr: &MonoExpr<'_>) -> bool {
         MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
             expr_has_closure_dispatch(expr)
         }
-        MonoExprKind::Index { base, index } | MonoExprKind::StorageIndex { base, index } => {
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
             expr_has_closure_dispatch(base) || expr_has_closure_dispatch(index)
         }
         MonoExprKind::Field { base, .. } => expr_has_closure_dispatch(base),

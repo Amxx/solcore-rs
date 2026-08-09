@@ -33,6 +33,8 @@ impl<'db> Emitter<'db> {
             predeclared_lets: Vec::new(),
             string_literals: BTreeMap::new(),
             next_string_literal: 0,
+            memory_array_index_used: false,
+            storage_array_index_used: false,
             fresh: 0,
         }
     }
@@ -72,6 +74,14 @@ impl<'db> Emitter<'db> {
         for (bytes, helper) in string_literals {
             let function = self.string_literal_function(helper.span, &helper.name, &bytes);
             functions.insert(helper.name, function);
+        }
+        if self.memory_array_index_used {
+            let function = self.memory_array_index_function(span, MEMORY_ARRAY_INDEX_HELPER);
+            functions.insert(MEMORY_ARRAY_INDEX_HELPER.to_owned(), function);
+        }
+        if self.storage_array_index_used {
+            let function = self.storage_array_slot_function(span, STORAGE_ARRAY_SLOT_HELPER);
+            functions.insert(STORAGE_ARRAY_SLOT_HELPER.to_owned(), function);
         }
 
         let program = if contracts.is_empty() {
@@ -546,6 +556,20 @@ impl<'db> Emitter<'db> {
             MonoExprKind::UnaryOp { op, expr: inner } => {
                 self.emit_unary_op(expr.span, ty, *op, inner)
             }
+            MonoExprKind::MemoryArrayIndex { base, index } => {
+                self.memory_array_index_used = true;
+                Expr {
+                    span: expr.span,
+                    ty,
+                    kind: ExprKind::Call {
+                        callee: MEMORY_ARRAY_INDEX_HELPER.into(),
+                        args: vec![self.emit_expr(base), self.emit_expr(index)],
+                    },
+                }
+            }
+            MonoExprKind::StorageIndex { .. } if sem_ty_is_storage_ref(self.db, expr.ty.ty()) => {
+                self.emit_storage_slot_expr(expr)
+            }
             MonoExprKind::StorageIndex { .. } => Expr {
                 span: expr.span,
                 ty,
@@ -833,16 +857,137 @@ impl<'db> Emitter<'db> {
         }
     }
 
+    fn memory_array_index_function(&self, span: Span<'db>, name: &str) -> Function<'db> {
+        let word = Ty::word(span);
+        let out_of_bounds = YulStmt {
+            span,
+            kind: YulStmtKind::If {
+                cond: self.yul_call(
+                    span,
+                    "iszero",
+                    vec![self.yul_call(
+                        span,
+                        "lt",
+                        vec![
+                            self.yul_ident_expr(span, "index"),
+                            self.yul_call(span, "mload", vec![self.yul_ident_expr(span, "base")]),
+                        ],
+                    )],
+                ),
+                body: vec![
+                    self.yul_expr_stmt(
+                        span,
+                        self.yul_call(
+                            span,
+                            "mstore",
+                            vec![
+                                self.yul_number(span, "0"),
+                                self.yul_number(span, OUT_OF_BOUNDS_SELECTOR),
+                            ],
+                        ),
+                    ),
+                    self.yul_expr_stmt(
+                        span,
+                        self.yul_call(
+                            span,
+                            "revert",
+                            vec![self.yul_number(span, "28"), self.yul_number(span, "4")],
+                        ),
+                    ),
+                ],
+            },
+        };
+        Function {
+            span,
+            name: name.into(),
+            args: vec![
+                Arg {
+                    span,
+                    name: "base".into(),
+                    ty: word.clone(),
+                },
+                Arg {
+                    span,
+                    name: "index".into(),
+                    ty: word.clone(),
+                },
+            ],
+            ret: word.clone(),
+            body: vec![
+                Stmt {
+                    span,
+                    kind: StmtKind::Let {
+                        name: "out".into(),
+                        ty: word.clone(),
+                    },
+                },
+                self.assembly_stmt(
+                    span,
+                    vec![
+                        out_of_bounds,
+                        self.yul_assign(
+                            span,
+                            "out",
+                            self.yul_call(
+                                span,
+                                "mload",
+                                vec![self.yul_call(
+                                    span,
+                                    "add",
+                                    vec![
+                                        self.yul_call(
+                                            span,
+                                            "add",
+                                            vec![
+                                                self.yul_ident_expr(span, "base"),
+                                                self.yul_number(span, "32"),
+                                            ],
+                                        ),
+                                        self.yul_call(
+                                            span,
+                                            "mul",
+                                            vec![
+                                                self.yul_ident_expr(span, "index"),
+                                                self.yul_number(span, "32"),
+                                            ],
+                                        ),
+                                    ],
+                                )],
+                            ),
+                        ),
+                    ],
+                ),
+                Stmt {
+                    span,
+                    kind: StmtKind::Return(Expr::var(span, "out", word)),
+                },
+            ],
+        }
+    }
+
     fn emit_storage_slot_expr(&mut self, expr: &MonoExpr<'db>) -> Expr<'db> {
         match &expr.kind {
-            MonoExprKind::StorageIndex { base, index } => Expr {
-                span: expr.span,
-                ty: Ty::word(expr.span),
-                kind: ExprKind::Call {
-                    callee: STORAGE_INDEX_SLOT.into(),
-                    args: vec![self.emit_storage_slot_expr(base), self.emit_expr(index)],
-                },
-            },
+            MonoExprKind::StorageIndex {
+                storage_kind,
+                base,
+                index,
+            } => {
+                let callee = match storage_kind {
+                    MonoStorageIndexKind::Mapping => STORAGE_INDEX_SLOT,
+                    MonoStorageIndexKind::Array => {
+                        self.storage_array_index_used = true;
+                        STORAGE_ARRAY_SLOT_HELPER
+                    }
+                };
+                Expr {
+                    span: expr.span,
+                    ty: Ty::word(expr.span),
+                    kind: ExprKind::Call {
+                        callee: callee.into(),
+                        args: vec![self.emit_storage_slot_expr(base), self.emit_expr(index)],
+                    },
+                }
+            }
             MonoExprKind::TypeAnnot { expr: inner, .. } => self.emit_storage_slot_expr(inner),
             _ => self.emit_expr(expr),
         }
@@ -1352,6 +1497,7 @@ fn mono_expr_name(kind: &MonoExprKind<'_>) -> &'static str {
     match kind {
         MonoExprKind::Field { .. } => "field access",
         MonoExprKind::Index { .. } => "index access",
+        MonoExprKind::MemoryArrayIndex { .. } => "memory array index access",
         MonoExprKind::StorageIndex { .. } => "storage index access",
         MonoExprKind::Match { .. } => "expression match",
         MonoExprKind::Proxy(_) => "proxy expression",
@@ -1360,6 +1506,16 @@ fn mono_expr_name(kind: &MonoExprKind<'_>) -> &'static str {
         MonoExprKind::Error => "error expression",
         _ => "expression",
     }
+}
+
+fn sem_ty_is_storage_ref<'db>(db: &'db dyn hir_ty::Db, ty: SemTy<'db>) -> bool {
+    matches!(
+        ty.kind(db),
+        SemTyKind::Named {
+            ctor: TyCtor::User(storage),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, storage.def, "storage")
+    )
 }
 
 fn bool_match_expr_arms<'a, 'db>(
