@@ -19,8 +19,10 @@ and hexadecimal `uint256` values, booleans, and static tuples are supported. An
 argument or result with the wrong type or arity is rejected while resolving the
 fixture, before any EVM call is made. The execution fixtures deliberately use
 only selector ABI types supported by the shared reference std. In particular,
-they do not expose primitive `word` or user ADTs directly; those surfaces lack
-complete dispatch evidence in the current Haskell snapshot.
+they do not expose primitive `word` or user ADTs directly. The bounded
+`calldata(array(T))` ADT surface uses raw JSON vectors instead: its selector is
+derived from `T`'s structural Generic representation, and dynamic-array values
+are outside the inline directive value grammar.
 
 State-changing calls use `#[send(arguments)]`. A send directive submits a
 transaction, waits for a successful receipt, and preserves its storage changes
@@ -68,7 +70,13 @@ Osaka must say so explicitly. Yul compilation uses that same target. The
 current Sonatina dependency only supports Osaka, so its runner rejects other
 targets explicitly instead of emitting Osaka bytecode for an older runtime.
 This is also the migration format for Solcore's dispatch fixtures with dynamic
-arrays or ADTs.
+arrays or ADTs. For a nullary, non-recursive, compiler-derived ADT `T`, the ABI
+surface intentionally follows the `e1361599` reference convention: ABI JSON
+uses the source spelling `T[]`, while the selector preimage uses the final
+Generic `SigString` (for example,
+`count(sum(uint256,uint256)[])`). Parameterized, recursive, manually represented,
+and same-named non-std array/location types are rejected before backend
+execution.
 
 Each case is lowered by the selected backend, compiled to EVM creation
 bytecode, deployed to Anvil, and called through the generated ABI selector.
