@@ -1,10 +1,10 @@
 # Solcore standard library snapshot
 
 The `.solc` files in this directory are vendored from the Haskell reference
-implementation at revision `ac6f8957`:
+implementation at revision `e13615992388cd7bfd59eef5a2b6f61ddc37da1f`:
 
 ```text
-https://github.com/argotorg/solcore/tree/ac6f8957/std
+https://github.com/argotorg/solcore/tree/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/std
 ```
 
 They are kept byte-for-byte identical to that reference snapshot. The copies
@@ -42,7 +42,8 @@ spelling, calldata decoding, and result encoding aligned.
 After every std update, verify at least:
 
 ```sh
-for file in ABIGeneric.solc Generic.solc dispatch.solc opcodes.solc std.solc; do
+for file in ABIGeneric.solc Generic.solc StorageGeneric.solc dispatch.solc \
+  eip712.solc eip7951.solc opcodes.solc std.solc; do
   cmp "std/$file" "crates/parser/tests/fixtures/corpus/ok/std/$file" || exit 1
 done
 cargo test -p solcore-parser -p solcore-hir-ty -p solcore-specialize --locked
