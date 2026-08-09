@@ -248,28 +248,34 @@ pub(super) fn wrap_sum_expr<'db>(
     wraps_inl: bool,
     span: Span<'db>,
 ) -> MonoExpr<'db> {
+    let mut inr_targets = Vec::with_capacity(inr_depth as usize);
+    let mut current = rep;
+    for _ in 0..inr_depth {
+        inr_targets.push(current);
+        current = sum_right_ty(db, current);
+    }
     if wraps_inl {
         expr = MonoExpr {
             span,
-            ty: MonoTy::new_unchecked(rep),
+            ty: MonoTy::new_unchecked(current),
             kind: MonoExprKind::Con {
                 ctor: MonoId {
                     name: MonoBuiltinCtor::Inl.name().to_owned(),
-                    ty: MonoTy::new_unchecked(rep),
+                    ty: MonoTy::new_unchecked(current),
                     span,
                 },
                 args: vec![expr],
             },
         };
     }
-    for _ in 0..inr_depth {
+    for target in inr_targets.into_iter().rev() {
         expr = MonoExpr {
             span,
-            ty: MonoTy::new_unchecked(rep),
+            ty: MonoTy::new_unchecked(target),
             kind: MonoExprKind::Con {
                 ctor: MonoId {
                     name: MonoBuiltinCtor::Inr.name().to_owned(),
-                    ty: MonoTy::new_unchecked(rep),
+                    ty: MonoTy::new_unchecked(target),
                     span,
                 },
                 args: vec![expr],
@@ -279,7 +285,6 @@ pub(super) fn wrap_sum_expr<'db>(
     if inr_depth == 0 && !wraps_inl {
         expr.ty = MonoTy::new_unchecked(rep);
     }
-    let _ = db;
     expr
 }
 
@@ -291,28 +296,34 @@ pub(super) fn unwrap_sum_pat<'db>(
     wraps_inl: bool,
     span: Span<'db>,
 ) -> MonoPat<'db> {
+    let mut inr_targets = Vec::with_capacity(inr_depth as usize);
+    let mut current = rep;
+    for _ in 0..inr_depth {
+        inr_targets.push(current);
+        current = sum_right_ty(db, current);
+    }
     if wraps_inl {
         pat = MonoPat {
             span,
-            ty: MonoTy::new_unchecked(rep),
+            ty: MonoTy::new_unchecked(current),
             kind: MonoPatKind::Con {
                 ctor: MonoId {
                     name: MonoBuiltinCtor::Inl.name().to_owned(),
-                    ty: MonoTy::new_unchecked(rep),
+                    ty: MonoTy::new_unchecked(current),
                     span,
                 },
                 args: vec![pat],
             },
         };
     }
-    for _ in 0..inr_depth {
+    for target in inr_targets.into_iter().rev() {
         pat = MonoPat {
             span,
-            ty: MonoTy::new_unchecked(rep),
+            ty: MonoTy::new_unchecked(target),
             kind: MonoPatKind::Con {
                 ctor: MonoId {
                     name: MonoBuiltinCtor::Inr.name().to_owned(),
-                    ty: MonoTy::new_unchecked(rep),
+                    ty: MonoTy::new_unchecked(target),
                     span,
                 },
                 args: vec![pat],
@@ -322,6 +333,15 @@ pub(super) fn unwrap_sum_pat<'db>(
     if inr_depth == 0 && !wraps_inl {
         pat.ty = MonoTy::new_unchecked(rep);
     }
-    let _ = db;
     pat
+}
+
+fn sum_right_ty<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
+    match ty.kind(db) {
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::Sum),
+            args,
+        } if args.len() == 2 => args[1],
+        _ => ty,
+    }
 }
