@@ -403,6 +403,96 @@ contract C {
 }
 
 #[test]
+fn field_ufcs_prepends_receiver_and_resolves_instance_method() {
+    let (db, _, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+forall a . class a:Combiner {
+  function combine(x:a, y:uint256) -> uint256;
+}
+
+instance storage(array(uint256)):Combiner {
+  function combine(x:storage(array(uint256)), y:uint256) -> uint256 { return y; }
+}
+
+contract C {
+  value:array(uint256);
+
+  constructor() {}
+
+  public function viaUfcs(y:uint256) -> uint256 {
+    return value.combine(y);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let functions = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let instance_method = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                    if class == "Combiner" && method == "combine"
+            )
+        })
+        .expect("specialized Combiner.combine instance method");
+    let caller = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(function.origin, MonoFunctionOrigin::Source)
+                && function
+                    .source
+                    .is_some_and(|source| source.name(db).as_deref() == Some("viaUfcs"))
+        })
+        .expect("specialized UFCS caller");
+    let [
+        MonoStmt {
+            kind:
+                MonoStmtKind::Return(Some(MonoExpr {
+                    kind: MonoExprKind::Call { callee, args, .. },
+                    ..
+                })),
+            ..
+        },
+    ] = caller.body.as_slice()
+    else {
+        panic!("expected a direct instance-method return call: {caller:#?}");
+    };
+    assert_eq!(callee.name, instance_method.name);
+    assert!(
+        matches!(
+            args.as_slice(),
+            [
+                MonoExpr {
+                    kind: MonoExprKind::Var(receiver),
+                    ..
+                },
+                MonoExpr {
+                    kind: MonoExprKind::Var(explicit),
+                    ..
+                }
+            ] if receiver.name == "value" && explicit.name == "y"
+        ),
+        "{args:#?}"
+    );
+}
+
+#[test]
 fn evidence_replay_resolves_imported_instance_methods() {
     let db = Box::leak(Box::new(TestDb::default()));
     let main_root = PathBuf::from("/main");

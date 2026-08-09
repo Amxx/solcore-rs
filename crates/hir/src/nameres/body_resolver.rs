@@ -463,8 +463,63 @@ impl<'db, 'a> BodyResolver<'db, 'a> {
                 let resolution = self.resolve_call_ident(name);
                 self.map.record_expr(body, expr_id, resolution);
             }
+            ExprKind::Field { base, field } => {
+                self.call_field_callee(body, expr_id, *base, field);
+            }
             _ => self.expr(body, expr_id),
         }
+    }
+
+    fn call_field_callee(
+        &mut self,
+        body: FuncBody<'db>,
+        expr_id: Id<Expr<'db>>,
+        base: Id<Expr<'db>>,
+        field: &SpannedElem<'db, Ident<'db>>,
+    ) {
+        if self.is_namespace_qualifier(body, base) {
+            self.expr(body, expr_id);
+            return;
+        }
+
+        // Qualified class/module/type interpretations keep priority over
+        // receiver-style calls. UFCS is only a fallback for a bare contract
+        // field whose dotted callee otherwise has no meaning.
+        if let Some(resolution) = self.resolve_field_expr(body, base, field) {
+            let access_path = expr_path(self.db, body, expr_id).map(|segments| segments.join("."));
+            self.expr_as_qualifier(body, base, access_path.as_deref());
+            self.map.record_expr(body, expr_id, resolution);
+            return;
+        }
+
+        let base_resolution = match &body.exprs(self.db).get(base).kind {
+            ExprKind::Ident(name) => {
+                let resolution = self.resolve_ident(name);
+                self.map.record_expr(body, base, resolution.clone());
+                Some(resolution)
+            }
+            _ => {
+                self.expr(body, base);
+                None
+            }
+        };
+
+        if !matches!(base_resolution, Some(Resolution::Field(_))) {
+            return;
+        }
+
+        let method = ident_text_str(self.db, field);
+        let resolution = self
+            .lookup_unique_visible_class_method(method)
+            .unwrap_or_else(|| {
+                self.map.diagnostics.push(self.undefined_name_diag(
+                    method,
+                    field.span(self.db),
+                    UndefinedNameKind::Field,
+                ));
+                Resolution::Err
+            });
+        self.map.record_expr(body, expr_id, resolution);
     }
 
     fn resolve_call_ident(&mut self, name: &SpannedElem<'db, Ident<'db>>) -> Resolution<'db> {
@@ -721,6 +776,42 @@ impl<'db, 'a> BodyResolver<'db, 'a> {
             return None;
         }
         Some(first)
+    }
+
+    fn lookup_unique_visible_class_method(&self, name: &str) -> Option<Resolution<'db>> {
+        let local = self
+            .scope
+            .terms
+            .iter()
+            .filter(|entry| entry.name.rsplit('.').next() == Some(name))
+            .map(|entry| entry.resolution.clone());
+        let imported = self
+            .imports
+            .candidate_names(self.db, Namespace::Term)
+            .into_iter()
+            .filter(|candidate| candidate.rsplit('.').next() == Some(name))
+            .filter_map(|candidate| self.imports.imported(self.db, Namespace::Term, &candidate));
+
+        let mut unique = None;
+        for resolution in local.chain(imported) {
+            let Resolution::ClassMethod {
+                name: method_name, ..
+            } = &resolution
+            else {
+                continue;
+            };
+            if method_name != name {
+                continue;
+            }
+            if unique
+                .as_ref()
+                .is_some_and(|candidate| candidate != &resolution)
+            {
+                return None;
+            }
+            unique = Some(resolution);
+        }
+        unique
     }
 
     fn lookup_ctor(&self, name: &str) -> Option<Resolution<'db>> {

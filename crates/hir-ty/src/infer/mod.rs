@@ -85,6 +85,63 @@ pub use self::{
     table::{InferTable, InferTy, Instantiated, TyVid, UnifyError, VarValue},
 };
 
+/// Returns the logical argument list for contract-field UFCS calls.
+///
+/// Name resolution records `field.method(args)` as a class-method resolution
+/// on the callee while preserving the bare receiver identifier's field
+/// resolution. The class-method scheme still contains the receiver parameter,
+/// so downstream consumers must prepend that identifier exactly once. Other
+/// field-shaped calls, including namespace-qualified calls and non-field
+/// receivers, retain their source argument list.
+fn field_ufcs_logical_args<'db>(
+    db: &'db dyn Db,
+    expr_resolutions: &FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), hir_nameres::Resolution<'db>>,
+    body: FuncBody<'db>,
+    callee: Id<Expr<'db>>,
+    args: &[Id<Expr<'db>>],
+) -> Vec<Id<Expr<'db>>> {
+    let Some(receiver) = field_ufcs_receiver(db, expr_resolutions, body, callee) else {
+        return args.to_vec();
+    };
+
+    std::iter::once(receiver)
+        .chain(args.iter().copied())
+        .collect()
+}
+
+fn field_ufcs_receiver<'db>(
+    db: &'db dyn Db,
+    expr_resolutions: &FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), hir_nameres::Resolution<'db>>,
+    body: FuncBody<'db>,
+    callee: Id<Expr<'db>>,
+) -> Option<Id<Expr<'db>>> {
+    let ExprKind::Field { base, .. } = &body.exprs(db).get(callee).kind else {
+        return None;
+    };
+    if !matches!(
+        expr_resolutions.get(&(body, callee)),
+        Some(hir_nameres::Resolution::ClassMethod { .. })
+    ) || !matches!(body.exprs(db).get(*base).kind, ExprKind::Ident(_))
+        || !matches!(
+            expr_resolutions.get(&(body, *base)),
+            Some(hir_nameres::Resolution::Field(_))
+        )
+    {
+        return None;
+    }
+
+    Some(*base)
+}
+
+fn is_field_ufcs_call<'db>(
+    db: &'db dyn Db,
+    expr_resolutions: &FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), hir_nameres::Resolution<'db>>,
+    body: FuncBody<'db>,
+    callee: Id<Expr<'db>>,
+) -> bool {
+    field_ufcs_receiver(db, expr_resolutions, body, callee).is_some()
+}
+
 /// Type-checking context for one body inference query.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
 pub struct BodyTyContext<'db> {

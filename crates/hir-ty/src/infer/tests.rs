@@ -142,7 +142,7 @@ fn db_with_array_std(main_src: &str) -> (TestDb, ModuleKey) {
         &db,
         &std_path,
         r#"
-export { memory(*), storage(*), DynArray, array(*), uint256(*), address(*), string, concatLit, Add, Typedef, CanStore };
+export { memory(*), storage(*), DynArray, array(*), uint256(*), address(*), string, concatLit, Add, Array, ArrayPush, Length, Typedef, CanStore };
 
 data memory(t) = memory(word);
 data storage(t) = storage(word);
@@ -205,6 +205,31 @@ instance storage(string):CanStore(memory(string)) {
 instance storage(array(word)):CanStore(storage(array(word))) {
   function store(dst:storage(array(word)), value:storage(array(word))) -> () { return (); }
   function load(dst:storage(array(word))) -> storage(array(word)) { return dst; }
+}
+
+forall self . class self:Length {
+  function length(value:self) -> uint256;
+}
+
+forall self . class self:Array {
+  function pop(value:self) -> ();
+}
+
+forall self elem . class self:ArrayPush(elem) {
+  function push(value:self, elem:elem) -> ();
+}
+
+forall t . instance storage(array(t)):Length {
+  function length(value:storage(array(t))) -> uint256 { return uint256(0); }
+}
+
+forall t . instance storage(array(t)):Array {
+  function pop(value:storage(array(t))) -> () { return (); }
+}
+
+forall t elem . storage(t):CanStore(elem) =>
+instance storage(array(t)):ArrayPush(elem) {
+  function push(value:storage(array(t)), elem:elem) -> () { return (); }
 }
 "#,
     );
@@ -1228,6 +1253,152 @@ contract C {
             result.obligations
         );
     }
+}
+
+#[test]
+fn storage_array_field_ufcs_prepends_receiver_once() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{array, storage, uint256, Array, ArrayPush, Length};
+
+contract C {
+  members:array(uint256);
+
+  function memberCount() -> uint256 {
+    return members.length();
+  }
+
+  function append(value:uint256) -> () {
+    members.push(value);
+    return ();
+  }
+
+  function removeLast() -> () {
+    members.pop();
+    return ();
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let array = canonical_std_adt_ty(&db, "array", vec![uint256]);
+    let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
+
+    for (function, class, class_args) in [
+        ("memberCount", "Length", Vec::new()),
+        ("append", "ArrayPush", vec![uint256]),
+        ("removeLast", "Array", Vec::new()),
+    ] {
+        let (body, result) = infer_module_function_with_solver(&db, module, function);
+        assert_no_typeck(&result);
+        assert!(
+            has_user_obligation(&db, &result, class, storage_array, &class_args),
+            "{function}: {:?}",
+            result.obligations
+        );
+
+        let callee = body
+            .exprs(&db)
+            .iter()
+            .find_map(|(_, expr)| match &expr.kind {
+                ExprKind::Call { callee, .. } => Some(*callee),
+                _ => None,
+            })
+            .expect("UFCS callee");
+        let ExprKind::Field { base: receiver, .. } = &body.exprs(&db).get(callee).kind else {
+            panic!("field UFCS callee");
+        };
+        let receiver = *receiver;
+        assert_eq!(
+            result
+                .expr_tys
+                .iter()
+                .filter(|entry| entry.body == body && entry.expr == receiver)
+                .count(),
+            1,
+            "{function}: receiver must be inferred exactly once: {:?}",
+            result.expr_tys
+        );
+        assert_eq!(result.expr_ty(body, receiver), Some(storage_array));
+    }
+}
+
+#[test]
+fn field_ufcs_comptime_parameter_uses_explicit_argument_position() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{array, storage};
+
+forall self . class self:Stamp {
+  function stamp(value:self, comptime tag:word) -> word;
+}
+
+instance storage(array(word)):Stamp {
+  function stamp(value:storage(array(word)), comptime tag:word) -> word { return tag; }
+}
+
+contract C {
+  stored:array(word);
+
+  function literalTag() -> word {
+    return stored.stamp(7);
+  }
+
+  function runtimeTag(tag:word) -> word {
+    return stored.stamp(tag);
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (body, result) = infer_module_function_with_solver(&db, module, "literalTag");
+    assert_no_typeck(&result);
+
+    let (callee, explicit_arg) = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(_, expr)| match &expr.kind {
+            ExprKind::Call { callee, args } => Some((*callee, args[0])),
+            _ => None,
+        })
+        .expect("UFCS call");
+    let ExprKind::Field { base: receiver, .. } = &body.exprs(&db).get(callee).kind else {
+        panic!("field UFCS callee");
+    };
+    let receiver = *receiver;
+    assert!(
+        result.comptime_obligations.iter().any(|obligation| {
+            obligation.body == body
+                && obligation.expr == explicit_arg
+                && matches!(
+                    &obligation.kind,
+                    ComptimeObligationKind::CallParam { param, .. } if param == "arg1"
+                )
+        }),
+        "{:?}",
+        result.comptime_obligations
+    );
+    assert!(
+        result
+            .comptime_obligations
+            .iter()
+            .all(|obligation| obligation.expr != receiver),
+        "receiver must not be matched with the comptime parameter: {:?}",
+        result.comptime_obligations
+    );
+
+    let diagnostics = module_typeck_diagnostics(&db, module)
+        .iter()
+        .map(|diagnostic| diagnostic.lower(&db))
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some("SC0240"))
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].message.contains("'tag'")
+            && diagnostics[0].message.contains("'Stamp.stamp'"),
+        "{diagnostics:?}"
+    );
 }
 
 #[test]

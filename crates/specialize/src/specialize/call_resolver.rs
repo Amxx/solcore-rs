@@ -308,11 +308,13 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         result_ty: Ty<'db>,
         span: Span<'db>,
     ) -> Option<MonoExprKind<'db>> {
-        let arg_exprs = args
-            .iter()
-            .map(|arg| self.expr(*arg))
-            .collect::<Option<Vec<_>>>()?;
         let resolution = self.expr_resolution(callee);
+        let ufcs_receiver = self.field_ufcs_receiver(callee, resolution.as_ref());
+        let arg_exprs = ufcs_receiver
+            .into_iter()
+            .chain(args.iter().copied())
+            .map(|arg| self.expr(arg))
+            .collect::<Option<Vec<_>>>()?;
         let mut callee_ty = self
             .expr_ty(callee)
             .map(|ty| self.subst.apply_ty(self.driver.db, ty))
@@ -574,6 +576,40 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 })
             }
         }
+    }
+
+    /// Returns the implicit receiver for field-only UFCS calls.
+    ///
+    /// Name resolution deliberately records the dotted callee as a class
+    /// method without rewriting the source HIR. Keep the recognition narrow:
+    /// only a bare contract field may supply an implicit first argument.
+    /// Qualified class/module calls and arbitrary dotted expressions retain
+    /// their existing argument lists.
+    fn field_ufcs_receiver(
+        &self,
+        callee: Id<Expr<'db>>,
+        resolution: Option<&hir_nameres::Resolution<'db>>,
+    ) -> Option<Id<Expr<'db>>> {
+        if !matches!(
+            resolution,
+            Some(hir_nameres::Resolution::ClassMethod { .. })
+        ) {
+            return None;
+        }
+        let ExprKind::Field { base, .. } = &self.body.exprs(self.driver.db).get(callee).kind else {
+            return None;
+        };
+        if !matches!(
+            &self.body.exprs(self.driver.db).get(*base).kind,
+            ExprKind::Ident(_)
+        ) {
+            return None;
+        }
+        matches!(
+            self.expr_resolution(*base),
+            Some(hir_nameres::Resolution::Field(_))
+        )
+        .then_some(*base)
     }
 
     fn qualified_class_method(&self, callee: Id<Expr<'db>>) -> Option<(DefId<'db>, String)> {
