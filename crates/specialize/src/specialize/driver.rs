@@ -20,6 +20,9 @@ pub(super) struct Driver<'db> {
     pub(super) synthetic: FxHashMap<SyntheticKey<'db>, String>,
     pub(super) synthetic_order: Vec<SyntheticKey<'db>>,
     pub(super) synthetic_funs: FxHashMap<SyntheticKey<'db>, MonoFunction<'db>>,
+    pub(super) derived_abis: FxHashMap<DerivedAbiKey<'db>, String>,
+    pub(super) derived_abi_order: Vec<DerivedAbiKey<'db>>,
+    pub(super) derived_abi_funs: FxHashMap<DerivedAbiKey<'db>, MonoFunction<'db>>,
     pub(super) derived_classes: FxHashMap<DerivedClassKey<'db>, String>,
     pub(super) derived_class_order: Vec<DerivedClassKey<'db>>,
     pub(super) derived_class_funs: FxHashMap<DerivedClassKey<'db>, MonoFunction<'db>>,
@@ -94,6 +97,24 @@ pub(super) struct DerivedClassKey<'db> {
     pub(super) sub_evidence: Vec<Evidence<'db>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum DerivedAbiFamily {
+    Attribs,
+    Decode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct DerivedAbiKey<'db> {
+    pub(super) adt: DefId<'db>,
+    pub(super) family: DerivedAbiFamily,
+    /// `WordReader` context class for ABIDecode; absent for ABIAttribs.
+    pub(super) word_reader: Option<DefId<'db>>,
+    pub(super) method: String,
+    pub(super) pred: Pred<'db>,
+    pub(super) target_ty: Ty<'db>,
+    pub(super) sub_evidence: Vec<Evidence<'db>>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PendingSpec<'db> {
     pub(super) key: SpecKey<'db>,
@@ -137,6 +158,9 @@ impl<'db> Driver<'db> {
             synthetic: FxHashMap::default(),
             synthetic_order: Vec::new(),
             synthetic_funs: FxHashMap::default(),
+            derived_abis: FxHashMap::default(),
+            derived_abi_order: Vec::new(),
+            derived_abi_funs: FxHashMap::default(),
             derived_classes: FxHashMap::default(),
             derived_class_order: Vec::new(),
             derived_class_funs: FxHashMap::default(),
@@ -176,6 +200,11 @@ impl<'db> Driver<'db> {
         }
         for key in &self.synthetic_order {
             if let Some(fun) = self.synthetic_funs.get(key) {
+                items.push(MonoItem::Function(fun.clone()));
+            }
+        }
+        for key in &self.derived_abi_order {
+            if let Some(fun) = self.derived_abi_funs.get(key) {
                 items.push(MonoItem::Function(fun.clone()));
             }
         }

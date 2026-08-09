@@ -1,9 +1,9 @@
 use super::*;
 
 #[derive(Debug, Clone)]
-struct GenericInstance<'db> {
-    rep: Ty<'db>,
-    evidence: Evidence<'db>,
+pub(super) struct GenericInstance<'db> {
+    pub(super) rep: Ty<'db>,
+    pub(super) evidence: Evidence<'db>,
 }
 
 impl<'db> Driver<'db> {
@@ -357,7 +357,7 @@ impl<'db> Driver<'db> {
         Some(replay_evidence_bindings(evidence, &bindings))
     }
 
-    fn resolve_generic_instance(
+    pub(super) fn resolve_generic_instance(
         &mut self,
         adt_info: &AdtInfo<'db>,
         main: Ty<'db>,

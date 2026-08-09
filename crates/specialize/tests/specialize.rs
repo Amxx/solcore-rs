@@ -13,7 +13,7 @@ use hir::{
     input::SourceFile,
     nameres::ident_text,
 };
-use hir_ty::{BuiltinTyCtor, Ty, prepare_module};
+use hir_ty::{BuiltinTyCtor, Ty, TyKind, prepare_module};
 use nameres::{
     LibraryId, ModuleFileSnapshot, ModuleFsSnapshot, ModuleId, ModuleKey, ModuleTree,
     module_id_from_key, module_key_for_path, module_path_display, resolve_module_path_candidate,
@@ -174,6 +174,75 @@ fn specialize_src_with_std_and_db_options(
     (db, file, output)
 }
 
+fn specialize_src_with_fake_calldata_array_std(
+    src: &str,
+) -> (&'static TestDb, SpecializeOutput<'static>) {
+    let db = Box::leak(Box::new(TestDb::default()));
+    let main_root = PathBuf::from("/main");
+    let std_root = PathBuf::from("/std");
+    db.module_tree = Some(ModuleTree::new(
+        db,
+        main_root.clone(),
+        std_root.clone(),
+        BTreeMap::new(),
+    ));
+
+    let std_path = std_root.join("std.solc");
+    let main_path = main_root.join("main.solc");
+    let std_file = source_file_at_path(
+        db,
+        &std_path,
+        r#"
+export { calldata(*), array(*), uint256(*), Encoded(*), Decoded(*), Typedef, RValueIdxAccess };
+
+data calldata(t) = calldata(word);
+data array(t) = array(word);
+data uint256 = uint256(word);
+data Encoded = Encoded(word);
+data Decoded = Decoded(word);
+
+forall abs rep . class abs:Typedef(rep) {
+  function abs(x:rep) -> abs;
+  function rep(x:abs) -> rep;
+}
+
+forall t . default instance t:Typedef(t) {
+  function abs(x:t) -> t { return x; }
+  function rep(x:t) -> t { return x; }
+}
+
+instance uint256:Typedef(word) {
+  function abs(x:word) -> uint256 { return uint256(x); }
+  function rep(x:uint256) -> word { return 0; }
+}
+
+forall col_idx val . class col_idx:RValueIdxAccess(val) {
+  function lookup(xi:col_idx) -> val;
+}
+
+forall i . i:Typedef(word) =>
+instance (calldata(array(Encoded)), i):RValueIdxAccess(Decoded) {
+  function lookup(xi:(calldata(array(Encoded)), i)) -> Decoded {
+    let value:word;
+    assembly { value := calldataload(0) }
+    return Decoded(value);
+  }
+}
+"#,
+    );
+    let main_file = source_file_at_path(db, &main_path, src);
+    let std_key =
+        module_key_for_path(LibraryId::Std, &std_root, &std_path).expect("std module key");
+    let main_key =
+        module_key_for_path(LibraryId::Main, &main_root, &main_path).expect("main module key");
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key, main_file);
+
+    let module = parse_file_to_hir(db, main_file).module(db);
+    let output = specialize_module(db, module, SpecializeOptions::default());
+    (db, output)
+}
+
 fn function_names(output: &SpecializeOutput<'_>) -> Vec<String> {
     let mut names = output
         .module
@@ -207,6 +276,51 @@ fn specializes_large_linear_body_with_indexed_frontend_lookups() {
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(!function_names(&output).is_empty());
+}
+
+#[test]
+fn calldata_array_index_specializes_to_rvalue_lookup_call() {
+    let (db, output) = specialize_src_with_fake_calldata_array_std(
+        r#"
+import std.{*};
+
+function main(xs:calldata(array(Encoded)), i:uint256) -> Decoded {
+  return xs[i];
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let result = main_return_expr(&output).expect("specialized main return");
+    assert!(matches!(
+        result.ty.ty().kind(db),
+        TyKind::Named {
+            ctor: hir_ty::TyCtor::User(decoded),
+            args,
+        } if args.is_empty() && decoded.def.name(db).as_deref() == Some("Decoded")
+    ));
+    let MonoExprKind::Call { callee, args, .. } = &result.kind else {
+        panic!("expected resolved RValueIdxAccess.lookup call: {result:#?}");
+    };
+    assert!(
+        callee.name.starts_with("RValueIdxAccess_lookup_"),
+        "{}",
+        callee.name
+    );
+    assert!(matches!(
+        args.as_slice(),
+        [MonoExpr {
+            ty,
+            kind: MonoExprKind::Con { ctor, args: pair },
+            ..
+        }] if matches!(
+            ty.ty().kind(db),
+            TyKind::Named {
+                ctor: hir_ty::TyCtor::Builtin(BuiltinTyCtor::Pair),
+                args,
+            } if args.len() == 2
+        ) && ctor.name == "pair" && pair.len() == 2
+    ));
 }
 
 fn specialize_source_at_root(root: &Path, rel_path: &str, src: &str) -> SpecializeOutput<'static> {
@@ -4888,4 +5002,198 @@ function main(x : word) -> word {
         "{:?}",
         output.module
     );
+}
+
+#[test]
+fn derived_abi_wrappers_delegate_to_the_generic_representation_once() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+pragma no-coverage-condition;
+
+data Proxy(t) = Proxy;
+data ABIDecoder(ty, reader) = ABIDecoder(reader);
+data Reader = Reader;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+forall self . class self:ABIDeriving {}
+forall self . class self:ABIAttribs {
+  function headSize(ty:Proxy(self)) -> word;
+  function isStatic(ty:Proxy(self)) -> bool;
+}
+forall decoder decoded . class decoder:ABIDecode(decoded) {
+  function decode(ptr:decoder, headOffset:word) -> decoded;
+}
+forall reader . class reader:WordReader {}
+
+instance word:ABIAttribs {
+  function headSize(ty:Proxy(word)) -> word {
+    assembly { sstore(0, 32) }
+    return 32;
+  }
+  function isStatic(ty:Proxy(word)) -> bool {
+    assembly { sstore(1, 1) }
+    return true;
+  }
+}
+instance Reader:WordReader {}
+instance ABIDecoder(word, Reader):ABIDecode(word) {
+  function decode(ptr:ABIDecoder(word, Reader), headOffset:word) -> word {
+    return headOffset;
+  }
+}
+
+data Box(a) = Box(a);
+
+function main(ptr:ABIDecoder(Box(word), Reader), headOffset:word) -> Box(word) {
+  let p:Proxy(Box(word));
+  let first = ABIAttribs.headSize(p);
+  let second = ABIAttribs.headSize(p);
+  let static = ABIAttribs.isStatic(p);
+  return ABIDecode.decode(ptr, headOffset);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let derived = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(&function.origin, MonoFunctionOrigin::DerivedGeneric { .. }) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for method in [
+        "ABIAttribs.headSize",
+        "ABIAttribs.isStatic",
+        "ABIDecode.decode",
+    ] {
+        assert_eq!(
+            derived
+                .iter()
+                .filter(|function| matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                        if candidate == method
+                ))
+                .count(),
+            1,
+            "derived ABI wrapper was missing or duplicated: {method}: {derived:#?}",
+        );
+    }
+
+    for method in ["ABIAttribs.headSize", "ABIAttribs.isStatic"] {
+        let wrapper = derived
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                        if candidate == method
+                )
+            })
+            .expect("derived ABIAttribs wrapper");
+        let [
+            MonoStmt {
+                kind:
+                    MonoStmtKind::Return(Some(MonoExpr {
+                        kind: MonoExprKind::Call { args, .. },
+                        ..
+                    })),
+                ..
+            },
+        ] = wrapper.body.as_slice()
+        else {
+            panic!("expected ABIAttribs delegation: {wrapper:#?}");
+        };
+        assert!(matches!(
+            args.as_slice(),
+            [MonoExpr {
+                kind: MonoExprKind::Proxy(rep),
+                ..
+            }] if rep.ty().display(db) == "word"
+        ));
+    }
+
+    let decode = derived
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { method, .. } if method == "ABIDecode.decode"
+            )
+        })
+        .expect("derived ABIDecode wrapper");
+    let [
+        MonoStmt {
+            kind: MonoStmtKind::Match { arms, .. },
+            ..
+        },
+    ] = decode.body.as_slice()
+    else {
+        panic!("expected decoder destructuring match: {decode:#?}");
+    };
+    assert!(matches!(
+        arms.as_slice(),
+        [solcore_specialize::MonoArm {
+            body,
+            ..
+        }] if matches!(
+            body.as_slice(),
+            [MonoStmt {
+                kind: MonoStmtKind::Return(Some(MonoExpr {
+                    kind: MonoExprKind::Call { callee, args, .. },
+                    ..
+                })),
+                ..
+            }] if callee.name.starts_with("Generic_to_")
+                && matches!(
+                    args.as_slice(),
+                    [MonoExpr {
+                        kind: MonoExprKind::Call { args, .. },
+                        ..
+                    }] if matches!(
+                        args.as_slice(),
+                        [MonoExpr {
+                            kind: MonoExprKind::Con { ctor, .. },
+                            ..
+                        }, MonoExpr {
+                            kind: MonoExprKind::Var(offset),
+                            ..
+                        }] if ctor.name == "ABIDecoder_ABIDecoder"
+                            && offset.name == "_headOffset"
+                    )
+                )
+        )
+    ));
+}
+
+#[test]
+fn derived_abi_wrappers_replay_definition_side_evidence() {
+    let fixture =
+        repo_root().join("crates/specialize/tests/fixtures/derived_abi_evidence_replay/main.solc");
+    let output = specialize_fixture(&fixture);
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    assert!(output.module.items.iter().any(|item| matches!(
+        item,
+        MonoItem::Function(function)
+            if matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { method, .. }
+                    if method == "ABIAttribs.headSize"
+            )
+    )));
 }

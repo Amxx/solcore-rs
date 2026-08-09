@@ -7,7 +7,7 @@ use hir::{
 };
 use nameres::{LibraryId, module_id_for_source_file};
 use parser::parse_file_to_hir;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
     abi::{
@@ -321,9 +321,9 @@ fn canonical_abi_class_name(db: &dyn Db, class: DefId<'_>) -> Option<&'static st
         return None;
     }
     match (module.logical_path(db).as_slice(), name.as_str()) {
-        ([path], "Generic" | "ABIAttribs" | "ABIEncode" | "ABIDecode") if path == "std" => {
+        ([path], "Generic") if path == "Generic" => Some("Generic"),
+        ([path], "ABIAttribs" | "ABIEncode" | "ABIDecode") if path == "std" => {
             match name.as_str() {
-                "Generic" => Some("Generic"),
                 "ABIAttribs" => Some("ABIAttribs"),
                 "ABIEncode" => Some("ABIEncode"),
                 "ABIDecode" => Some("ABIDecode"),
@@ -333,6 +333,39 @@ fn canonical_abi_class_name(db: &dyn Db, class: DefId<'_>) -> Option<&'static st
         ([path], "SigString") if path == "dispatch" => Some("SigString"),
         _ => None,
     }
+}
+
+fn visible_manual_generic_adts<'db>(db: &'db dyn Db, module: Module<'db>) -> FxHashSet<DefId<'db>> {
+    let Some(module_id) = module_id_for_source_file(db, module.def_id_value(db).file(db)) else {
+        return FxHashSet::default();
+    };
+    crate::trait_env_for_module(db, module_id)
+        .clauses(db)
+        .into_iter()
+        .filter_map(|clause| {
+            let ClauseOrigin::Instance { .. } = clause.origin else {
+                return None;
+            };
+            let PredKind::InClass {
+                class: ClassId::User(class),
+                main,
+                ..
+            } = clause.head.kind(db)
+            else {
+                return None;
+            };
+            if canonical_abi_class_name(db, *class) != Some("Generic") {
+                return None;
+            }
+            match main.kind(db) {
+                TyKind::Named {
+                    ctor: TyCtor::User(user),
+                    ..
+                } if user.kind == UserTyCtorKind::Adt => Some(user.def),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 fn contract_runtime_main_diagnostics<'db>(
@@ -380,6 +413,7 @@ fn contract_dispatch_surface_with_resolutions<'db>(
     contract: ContractDef<'db>,
 ) -> DispatchSurface<'db> {
     let contract_name = ident_text(db, &contract.name_elem(db));
+    let visible_manual_generic_adts = visible_manual_generic_adts(db, module);
     let contract_type_vars =
         type_var_bindings(contract.def_id_value(db), contract.ty_param_elems(db));
     let mut diagnostics = Vec::new();
@@ -415,19 +449,30 @@ fn contract_dispatch_surface_with_resolutions<'db>(
                     &lowered.params,
                     &mut diagnostics,
                     sig.span,
+                    &visible_manual_generic_adts,
                 );
-                let outputs = abi_outputs(db, lowered.ret, &mut diagnostics, sig.span);
-                let signature =
-                    method_signature_string(db, &ident_text(db, &sig.name), &lowered.params)
-                        .unwrap_or_else(|err| {
-                            diagnostics.push(contract_diag_unsupported_abi_type(
-                                db,
-                                sig.span,
-                                &ident_text(db, &sig.name),
-                                &err,
-                            ));
-                            format!("{}(<unsupported>)", ident_text(db, &sig.name))
-                        });
+                let outputs = abi_outputs(
+                    db,
+                    lowered.ret,
+                    &mut diagnostics,
+                    sig.span,
+                    &visible_manual_generic_adts,
+                );
+                let signature = method_signature_string(
+                    db,
+                    &ident_text(db, &sig.name),
+                    &lowered.params,
+                    &visible_manual_generic_adts,
+                )
+                .unwrap_or_else(|err| {
+                    diagnostics.push(contract_diag_unsupported_abi_type(
+                        db,
+                        sig.span,
+                        &ident_text(db, &sig.name),
+                        &err,
+                    ));
+                    format!("{}(<unsupported>)", ident_text(db, &sig.name))
+                });
                 let selector = abi_selector(db, AbiSignature::new(db, signature.clone()));
                 methods.push(DispatchMethod {
                     def: function.def_id_value(db),
@@ -462,6 +507,7 @@ fn contract_dispatch_surface_with_resolutions<'db>(
                     &lowered.params,
                     &mut constructor_abi_diagnostics,
                     sig.span,
+                    &visible_manual_generic_adts,
                 );
                 diagnostics.extend(constructor_abi_diagnostics.iter().cloned());
                 constructor = Some(DispatchConstructor::Explicit {
@@ -492,8 +538,15 @@ fn contract_dispatch_surface_with_resolutions<'db>(
                     &lowered.params,
                     &mut diagnostics,
                     sig.span,
+                    &visible_manual_generic_adts,
                 );
-                let outputs = abi_outputs(db, lowered.ret, &mut diagnostics, sig.span);
+                let outputs = abi_outputs(
+                    db,
+                    lowered.ret,
+                    &mut diagnostics,
+                    sig.span,
+                    &visible_manual_generic_adts,
+                );
                 if !inputs.is_empty() || !outputs.is_empty() {
                     diagnostics.push(contract_diag_unsupported_fallback_shape(
                         db,

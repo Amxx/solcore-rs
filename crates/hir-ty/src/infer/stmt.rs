@@ -139,6 +139,7 @@ impl<'db> InferCtx<'db> {
             } => {
                 if !self.infer_storage_assign(body, *lhs, *rhs)
                     && !self.reject_memory_array_index_assign(body, *lhs, *rhs)
+                    && !self.reject_calldata_array_index_assign(body, *lhs, *rhs)
                 {
                     let lhs_ty = self.infer_expr(body, *lhs);
                     let rhs_ty = self.infer_expr_expected(body, *rhs, Some(lhs_ty.clone()));
@@ -166,6 +167,19 @@ impl<'db> InferCtx<'db> {
                 self.unify_expr(body, *rhs, lhs_ty, rhs_ty);
                 self.unit()
             }
+            StmtKind::Assign {
+                op:
+                    AssignOp::Add
+                    | AssignOp::Sub
+                    | AssignOp::Mul
+                    | AssignOp::Div
+                    | AssignOp::BitXor
+                    | AssignOp::BitAnd
+                    | AssignOp::BitOr
+                    | AssignOp::Mod,
+                lhs,
+                rhs,
+            } if self.reject_calldata_array_index_assign(body, *lhs, *rhs) => self.unit(),
             StmtKind::Assign {
                 op:
                     AssignOp::Add

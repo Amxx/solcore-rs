@@ -7,10 +7,10 @@ they are not the language specification.
 
 ## Comparison baseline
 
-- Haskell reference: [`argotorg/solcore@ac6f8957`](https://github.com/argotorg/solcore/tree/ac6f8957a78dc53248dbe053f1ddbc2a2201b81f).
-- Rust implementation: `solcore-rs@631d40814b28755bfd0afb6fa97a7a79895fa6ee`.
-- Standard library: the byte-identical `ac6f8957` snapshot in [`std/`](std/).
-- Validation date: 2026-07-14.
+- Haskell reference: [`argotorg/solcore@e1361599`](https://github.com/argotorg/solcore/tree/e13615992388cd7bfd59eef5a2b6f61ddc37da1f).
+- Rust implementation: the `catchup` branch while it converges on that reference.
+- Standard library target: the byte-identical `e1361599` snapshot in [`std/`](std/).
+- Validation date: 2026-08-09.
 
 The reference corpus in
 [`reference-frontend.tsv`](crates/parser/tests/fixtures/corpus/reference-frontend.tsv)
@@ -49,7 +49,7 @@ the compiler behaviors already agree once the same options are used.
 | Parameterized contract `main` ([fixture](crates/parser/tests/fixtures/corpus/ok/test/examples/cases/multi-stmt-var-leaf.solc)) | Haskell suppresses generated dispatch whenever a local `main` exists and accepts parameters; Rust rejects them because the runtime entry receives no arguments. | A source runtime entry must be zero-argument. **Fix Haskell dispatch validation; keep Rust.** |
 | Missing helper imports (`field-helper-cxt-collision`, `pair-bug`) | Haskell `-g` verdicts pass; both full frontends fail because the fixtures omit `std.dispatch`. | This is a mode mismatch. Compare both with dispatch or both without it. **Fix the harness/fixtures.** |
 | Primitive `word` in public ABI | Both metadata emitters call it `uint256`, but shared std cannot dispatch source `word`. Both compilers report missing evidence; current Rust tabled resolution terminates with a bounded `SC0207`. | Add complete `word` evidence in the **upstream Haskell std**, then re-vendor. Keep a Rust regression proving bounded failure while evidence is missing. |
-| User ADTs in public ABI | Haskell metadata passes through a nullary source name or crashes on a parameterized ADT; runtime `SigString` is absent. Rust rejects user ADTs from the canonical external ABI with a structured diagnostic. | Keep Rust's rejection. Design layout/spelling/codec semantics in the **upstream language and std**, then fix the Haskell surface before implementing support in both compilers. |
+| User ADTs in public ABI | At `e1361599`, upstream supports a bounded lazy-array surface: `calldata(array(T))` can use a nullary, non-recursive, compiler-derived `Generic` ADT. Runtime selectors spell the Generic representation structurally, while ABI JSON retains the source name (`T[]`). Direct ADT parameters and parameterized, recursive, excluded, or manually represented ADTs still lack one trustworthy surface. | Mirror the bounded upstream array surface. Keep the remaining forms rejected with structured diagnostics, and never infer ABI meaning from a same-named user `array`/`calldata` type. |
 | ABI type validation | Haskell passes other nullary names through and uses `error` for unsupported shapes. Rust uses canonical checks and diagnostics. | Validate against the dispatchable ABI surface. **Fix the Haskell ABI emitter; keep Rust's diagnostic model.** |
 | Signature/selector collisions | Rust rejects duplicate signatures and distinct signatures with the same four-byte selector. Haskell has no equivalent preflight. | Reject both before code generation. **Fix Haskell dispatch generation.** |
 | Nested tuple boundary | Both flatten the language's right-nested pair representation at the top ABI boundary. | This is shared. **Fix both compilers and the language ABI design together** if nested boundaries must be preserved. |
@@ -129,13 +129,16 @@ The current shared snapshot has this evidence matrix:
 | `uint256` | yes | yes | yes | complete |
 | `address` | yes | yes | yes | complete |
 | `bytes32` | yes | yes | yes | complete |
+| `bytes4` | yes | yes | yes | complete at `e1361599` |
 | `memory(string)` | yes | yes | yes | complete |
 | `memory(bytes)` | yes | yes | yes | complete |
 | `()` | yes | yes | yes | complete |
-| `bool` | **no** | **no** | yes | output-only |
+| `bool` | yes | yes (strict) | yes | complete at `e1361599` |
 | `word` (ABI `uint256`) | **no** | **no** | **no** | unsupported by dispatch |
 | pair/tuple | recursive | recursive | recursive | complete only when all components are complete |
-| user ADT | **no generic instance** | representation helpers only | representation helpers only | no complete external contract |
+| `calldata(array(t))` | recursive `SigString(t) <> "[]"` | lazy calldata handle | **no** | input-only; complete when `t` has the required input evidence |
+| nullary derived ADT inside that array | structural Generic representation | compiler-derived `ABIDecode` | representation bridge | bounded upstream extension |
+| direct/parameterized/recursive/manual ADT | rejected | not a compiler-owned finite layout | not a compiler-owned finite layout | unsupported |
 
 For `word`, the minimum upstream std correction is:
 
@@ -147,16 +150,25 @@ Until that upstream change is re-vendored, Rust's table-entry and work-fuel
 bounds make the generated dispatch probe terminate with `SC0207`; the
 `missing_word_abi_evidence` UI regression exercises the real shared std path.
 
-The same audit should add input-side `bool` evidence if boolean parameters are
-intended to be public. A result-only bool works because selectors omit result
-types and `bool : ABIEncode` exists; that does not make bool a supported input.
+At `e1361599`, `std.dispatch` supplies `SigString` for sums and
+`calldata(array(t))`, plus a default bridge through `Generic(rep)`;
+`std.ABIGeneric` supplies the matching representation-driven decode path. The
+Rust ABI preflight mirrors only the portion for which it can prove that the
+representation is compiler-owned and finite: a nullary, non-recursive ADT with
+automatic Generic derivation, nested under the canonical std
+`calldata(array(...))` wrappers. It computes selectors from the final Generic
+`SigString` (comma-joined products and explicit `sum(l,r)` nodes), but mirrors
+the reference JSON spelling by emitting the source leaf name followed by `[]`.
+That JSON spelling is a target-compatibility extension, not a claim that an
+arbitrary Solidity ABI consumer understands Solcore sums.
 
-Shared `std/ABIGeneric.solc` provides representation helpers, but
-`std/dispatch.solc` has no generic canonical `SigString`. Haskell emits an
-arbitrary nullary user type name as if it were a Solidity ABI name and reaches
-a partial `error` for parameterized user types; Rust rejects both forms. A
-stable external ADT design is required before either compiler can support this
-surface completely.
+Parameterized ADTs, recursive representations, `no-generic-instance-for`, and
+visible manual `Generic` evidence remain errors. Direct ADT parameters and
+results also remain rejected; the bounded exception exists specifically for
+the lazy calldata-array ABI implemented by the target standard library.
+That location is input-only: the target std has no `ABIEncode` instance for a
+`calldata(array(t))` handle, so Rust rejects it from every result position even
+though the same type is valid in a parameter.
 
 Both emitters flatten right-nested pairs. Haskell does so in `flattenTuple` and
 Rust in [`flatten_tuple`](crates/hir-ty/src/contract/abi.rs); observable behavior
@@ -188,12 +200,20 @@ The required invariant is:
 > its canonical input signature can be hashed, calldata can be decoded into it,
 > and a result can be encoded from it.
 
-The next upstream std change should complete `word` and input-side `bool`, then
-add argument/result matrix tests for `word`, `uint256`, `address`, `bytes32`,
-`bool`, `memory(string)`, `memory(bytes)`, and supported tuples. Unsupported
-location wrappers, std leaf types, and user ADTs must be explicitly rejected
-until specified. Each test must use generated selector dispatch and must not
-define source `main`, because source `main` suppresses the path under test.
+For the bounded ADT-array extension, “ABI JSON can represent it” means the
+explicit upstream `SourceName[]` metadata convention, while selector hashing
+uses the structural Generic spelling. Both spellings must be derived from the
+same compiler-owned ADT plan; accepting a manual or recursive representation
+would break that link and is therefore prohibited.
+
+The next upstream std change should complete `word`, then extend the
+argument/result matrix for `word`, `uint256`, `address`, `bytes4`, `bytes32`,
+`bool`, `memory(string)`, `memory(bytes)`, supported tuples, and canonical
+calldata-array inputs. Unsupported location wrappers, calldata-array results,
+std leaf types, direct ADTs, and ADTs outside the bounded compiler-derived array
+surface remain explicitly rejected.
+Each test must use generated selector dispatch and must not define source
+`main`, because source `main` suppresses the path under test.
 
 Haskell ABI diagnostics and collision checks do not belong in std. Keep `import
 std.dispatch.{*};` explicit until both compilers have a specified

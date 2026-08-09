@@ -2,9 +2,11 @@ use hir::{
     anchor::DefId,
     ast::item::{AdtDef, ContractItem, Item, Module},
     diag::Diagnostic,
+    nameres as hir_nameres,
 };
 use nameres::{LibraryId, module_id_for_source_file};
 use parser::parse_file_to_hir;
+use rustc_hash::FxHashSet;
 
 use crate::{
     BuiltinTyCtor, Db, Ty, TyCtor, TyKind, UserTyCtor, support::is_canonical_std_def_named,
@@ -78,6 +80,7 @@ pub(super) fn method_signature_string<'db>(
     db: &'db dyn Db,
     name: &str,
     params: &[Ty<'db>],
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
 ) -> Result<String, String> {
     let mut out = String::new();
     out.push_str(name);
@@ -86,7 +89,12 @@ pub(super) fn method_signature_string<'db>(
         if index > 0 {
             out.push(',');
         }
-        out.push_str(&signature_type_string(db, *param, &mut Vec::new())?);
+        out.push_str(&signature_type_string(
+            db,
+            *param,
+            &mut Vec::new(),
+            visible_manual_generic_adts,
+        )?);
     }
     out.push(')');
     Ok(out)
@@ -96,6 +104,7 @@ fn signature_type_string<'db>(
     db: &'db dyn Db,
     ty: Ty<'db>,
     adt_stack: &mut Vec<DefId<'db>>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
 ) -> Result<String, String> {
     match ty.kind(db) {
         TyKind::Named {
@@ -114,11 +123,15 @@ fn signature_type_string<'db>(
             ctor: TyCtor::Builtin(BuiltinTyCtor::Unit),
             args,
         } if args.is_empty() => Ok(AbiType::Unit.to_string()),
-        TyKind::Tuple(elems) => tuple_signature_string(db, elems, adt_stack),
+        TyKind::Tuple(elems) => {
+            tuple_signature_string(db, elems, adt_stack, visible_manual_generic_adts)
+        }
         TyKind::Named {
             ctor: TyCtor::Builtin(BuiltinTyCtor::Pair),
             args,
-        } if args.len() == 2 => tuple_signature_string(db, args, adt_stack),
+        } if args.len() == 2 => {
+            tuple_signature_string(db, args, adt_stack, visible_manual_generic_adts)
+        }
         TyKind::Named {
             ctor: TyCtor::User(user),
             args,
@@ -127,6 +140,12 @@ fn signature_type_string<'db>(
                 && let Some(name) = canonical_user_abi_name(db, user)
             {
                 return Ok(name);
+            }
+            if let Some(element) = canonical_calldata_array_element(db, user, args)? {
+                return Ok(format!(
+                    "{}[]",
+                    generic_sig_string(db, element, adt_stack, visible_manual_generic_adts,)?
+                ));
             }
             if let Some(name) = canonical_location_abi_name(db, user, args)? {
                 return Ok(name);
@@ -143,10 +162,16 @@ fn tuple_signature_string<'db>(
     db: &'db dyn Db,
     elems: &[Ty<'db>],
     adt_stack: &mut Vec<DefId<'db>>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
 ) -> Result<String, String> {
     let mut parts = Vec::new();
     for elem in flatten_tuple(db, elems) {
-        parts.push(signature_type_string(db, elem, adt_stack)?);
+        parts.push(signature_type_string(
+            db,
+            elem,
+            adt_stack,
+            visible_manual_generic_adts,
+        )?);
     }
     Ok(format!("({})", parts.join(",")))
 }
@@ -157,6 +182,7 @@ pub(super) fn abi_params<'db>(
     tys: &[Ty<'db>],
     diagnostics: &mut Vec<Diagnostic>,
     span: hir::span::Span<'db>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
 ) -> Vec<AbiParam> {
     tys.iter()
         .enumerate()
@@ -166,6 +192,7 @@ pub(super) fn abi_params<'db>(
                 names.get(index).cloned().unwrap_or_default(),
                 *ty,
                 &mut Vec::new(),
+                visible_manual_generic_adts,
             ) {
                 Ok(param) => param,
                 Err(err) => {
@@ -191,14 +218,37 @@ pub(super) fn abi_outputs<'db>(
     ty: Ty<'db>,
     diagnostics: &mut Vec<Diagnostic>,
     span: hir::span::Span<'db>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
 ) -> Vec<AbiParam> {
     if is_unit_ty(db, ty) {
         return Vec::new();
     }
     flatten_output_ty(db, ty)
         .into_iter()
-        .map(
-            |ty| match abi_param(db, String::new(), ty, &mut Vec::new()) {
+        .map(|ty| {
+            if contains_canonical_calldata_array(db, ty) {
+                diagnostics.push(contract_diag_unsupported_abi_type(
+                    db,
+                    span,
+                    "ABI output",
+                    &format!(
+                        "{} (calldata(array(t)) is input-only; the target std has no ABIEncode evidence for it)",
+                        ty.display(db)
+                    ),
+                ));
+                return AbiParam {
+                    name: String::new(),
+                    ty: AbiType::Unsupported,
+                    components: Vec::new(),
+                };
+            }
+            match abi_param(
+                db,
+                String::new(),
+                ty,
+                &mut Vec::new(),
+                visible_manual_generic_adts,
+            ) {
                 Ok(param) => param,
                 Err(err) => {
                     diagnostics.push(contract_diag_unsupported_abi_type(
@@ -213,8 +263,8 @@ pub(super) fn abi_outputs<'db>(
                         components: Vec::new(),
                     }
                 }
-            },
-        )
+            }
+        })
         .collect()
 }
 
@@ -223,8 +273,37 @@ fn abi_param<'db>(
     name: String,
     ty: Ty<'db>,
     adt_stack: &mut Vec<DefId<'db>>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
 ) -> Result<AbiParam, String> {
-    let (ty, components) = abi_type_of(db, ty, adt_stack)?;
+    let (ty, components) = abi_type_of(db, ty, adt_stack, visible_manual_generic_adts)?;
+    Ok(AbiParam {
+        name,
+        ty,
+        components,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum UserAdtMode {
+    Reject,
+    DerivedName,
+}
+
+fn abi_param_with_adt_mode<'db>(
+    db: &'db dyn Db,
+    name: String,
+    ty: Ty<'db>,
+    adt_stack: &mut Vec<DefId<'db>>,
+    user_adt_mode: UserAdtMode,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
+) -> Result<AbiParam, String> {
+    let (ty, components) = abi_type_of_with_adt_mode(
+        db,
+        ty,
+        adt_stack,
+        user_adt_mode,
+        visible_manual_generic_adts,
+    )?;
     Ok(AbiParam {
         name,
         ty,
@@ -236,6 +315,23 @@ fn abi_type_of<'db>(
     db: &'db dyn Db,
     ty: Ty<'db>,
     adt_stack: &mut Vec<DefId<'db>>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
+) -> Result<(AbiType, Vec<AbiParam>), String> {
+    abi_type_of_with_adt_mode(
+        db,
+        ty,
+        adt_stack,
+        UserAdtMode::Reject,
+        visible_manual_generic_adts,
+    )
+}
+
+fn abi_type_of_with_adt_mode<'db>(
+    db: &'db dyn Db,
+    ty: Ty<'db>,
+    adt_stack: &mut Vec<DefId<'db>>,
+    user_adt_mode: UserAdtMode,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
 ) -> Result<(AbiType, Vec<AbiParam>), String> {
     match ty.kind(db) {
         TyKind::Named {
@@ -259,7 +355,16 @@ fn abi_type_of<'db>(
             AbiType::Tuple,
             flatten_tuple(db, elems)
                 .into_iter()
-                .map(|elem| abi_param(db, String::new(), elem, adt_stack))
+                .map(|elem| {
+                    abi_param_with_adt_mode(
+                        db,
+                        String::new(),
+                        elem,
+                        adt_stack,
+                        user_adt_mode,
+                        visible_manual_generic_adts,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         TyKind::Named {
@@ -269,7 +374,16 @@ fn abi_type_of<'db>(
             AbiType::Tuple,
             flatten_tuple(db, args)
                 .into_iter()
-                .map(|elem| abi_param(db, String::new(), elem, adt_stack))
+                .map(|elem| {
+                    abi_param_with_adt_mode(
+                        db,
+                        String::new(),
+                        elem,
+                        adt_stack,
+                        user_adt_mode,
+                        visible_manual_generic_adts,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         TyKind::Named {
@@ -281,14 +395,277 @@ fn abi_type_of<'db>(
             {
                 return Ok((AbiType::Named(name), Vec::new()));
             }
+            if let Some(element) = canonical_calldata_array_element(db, user, args)? {
+                let (element_ty, components) = abi_type_of_with_adt_mode(
+                    db,
+                    element,
+                    adt_stack,
+                    UserAdtMode::DerivedName,
+                    visible_manual_generic_adts,
+                )?;
+                return Ok((AbiType::Named(format!("{element_ty}[]")), components));
+            }
             if let Some(name) = canonical_location_abi_name(db, user, args)? {
                 return Ok((AbiType::Named(name), Vec::new()));
             }
             reject_structural_std_abi_fallback(db, user, args)?;
+            if matches!(user_adt_mode, UserAdtMode::DerivedName) {
+                let name = compiler_owned_generic_source_name(
+                    db,
+                    user,
+                    args,
+                    adt_stack,
+                    visible_manual_generic_adts,
+                )?;
+                return Ok((AbiType::Named(name), Vec::new()));
+            }
             Err(unsupported_user_adt_abi_type(db, user, args))
         }
         _ => Err(ty.display(db)),
     }
+}
+
+/// Returns the element of the one externally supported calldata location:
+/// `calldata(array(t))`. Both wrappers must be the canonical definitions from
+/// `std`; same-named user ADTs must not acquire ABI meaning by spelling alone.
+fn canonical_calldata_array_element<'db>(
+    db: &'db dyn Db,
+    user: &UserTyCtor<'db>,
+    args: &[Ty<'db>],
+) -> Result<Option<Ty<'db>>, String> {
+    if !is_canonical_std_def_named(db, user.def, "calldata") {
+        return Ok(None);
+    }
+    let [inner] = args else {
+        return Err(format!(
+            "calldata (expected one type argument, found {})",
+            args.len()
+        ));
+    };
+    let TyKind::Named {
+        ctor: TyCtor::User(array),
+        args: elements,
+    } = inner.kind(db)
+    else {
+        return Err(format!(
+            "{} (only calldata(array(t)) has canonical external ABI evidence)",
+            inner.display(db)
+        ));
+    };
+    if !is_canonical_std_def_named(db, array.def, "array") {
+        return Err(format!(
+            "{} (only the canonical std array supports calldata ABI decoding)",
+            inner.display(db)
+        ));
+    }
+    let [element] = elements.as_slice() else {
+        return Err(format!(
+            "array (expected one type argument, found {})",
+            elements.len()
+        ));
+    };
+    Ok(Some(*element))
+}
+
+/// Mirrors the final `SigString` produced by the target standard library.
+/// Products are comma-joined without adding a tuple wrapper, sums retain their
+/// explicit `sum(l,r)` wrapper, and automatically derived ADTs recurse through
+/// their compiler-owned `Generic` representation.
+fn generic_sig_string<'db>(
+    db: &'db dyn Db,
+    ty: Ty<'db>,
+    adt_stack: &mut Vec<DefId<'db>>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
+) -> Result<String, String> {
+    match ty.kind(db) {
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::Word),
+            args,
+        } if args.is_empty() => Ok("uint256".to_owned()),
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::Bool),
+            args,
+        } if args.is_empty() => Ok("bool".to_owned()),
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::String),
+            args,
+        } if args.is_empty() => Ok("string".to_owned()),
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::Unit),
+            args,
+        } if args.is_empty() => Ok(String::new()),
+        TyKind::Tuple(elems) => {
+            generic_product_sig_string(db, elems, adt_stack, visible_manual_generic_adts)
+        }
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::Pair),
+            args,
+        } if args.len() == 2 => {
+            generic_product_sig_string(db, args, adt_stack, visible_manual_generic_adts)
+        }
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::Sum),
+            args,
+        } if args.len() == 2 => Ok(format!(
+            "sum({},{})",
+            generic_sig_string(db, args[0], adt_stack, visible_manual_generic_adts)?,
+            generic_sig_string(db, args[1], adt_stack, visible_manual_generic_adts)?
+        )),
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } => {
+            if args.is_empty()
+                && let Some(name) = canonical_user_abi_name(db, user)
+            {
+                return Ok(name);
+            }
+            if let Some(element) = canonical_calldata_array_element(db, user, args)? {
+                return Ok(format!(
+                    "{}[]",
+                    generic_sig_string(db, element, adt_stack, visible_manual_generic_adts,)?
+                ));
+            }
+            if let Some(name) = canonical_location_abi_name(db, user, args)? {
+                return Ok(name);
+            }
+            reject_structural_std_abi_fallback(db, user, args)?;
+            compiler_owned_generic_sig_string(
+                db,
+                user,
+                args,
+                adt_stack,
+                visible_manual_generic_adts,
+            )
+        }
+        TyKind::Error | TyKind::Unknown | TyKind::BoundVar(_) => Err(ty.display(db)),
+        TyKind::Named { .. } | TyKind::Function { .. } | TyKind::Comptime(_) => Err(ty.display(db)),
+    }
+}
+
+fn generic_product_sig_string<'db>(
+    db: &'db dyn Db,
+    elems: &[Ty<'db>],
+    adt_stack: &mut Vec<DefId<'db>>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
+) -> Result<String, String> {
+    elems
+        .iter()
+        .map(|elem| generic_sig_string(db, *elem, adt_stack, visible_manual_generic_adts))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|parts| parts.join(","))
+}
+
+fn compiler_owned_generic_source_name<'db>(
+    db: &'db dyn Db,
+    user: &UserTyCtor<'db>,
+    args: &[Ty<'db>],
+    adt_stack: &mut Vec<DefId<'db>>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
+) -> Result<String, String> {
+    compiler_owned_generic_sig_string(db, user, args, adt_stack, visible_manual_generic_adts)?;
+    Ok(user
+        .def
+        .name(db)
+        .unwrap_or_else(|| "<anonymous ADT>".to_owned()))
+}
+
+fn compiler_owned_generic_sig_string<'db>(
+    db: &'db dyn Db,
+    user: &UserTyCtor<'db>,
+    args: &[Ty<'db>],
+    adt_stack: &mut Vec<DefId<'db>>,
+    visible_manual_generic_adts: &FxHashSet<DefId<'db>>,
+) -> Result<String, String> {
+    let name = user
+        .def
+        .name(db)
+        .unwrap_or_else(|| "<anonymous ADT>".to_owned());
+    if !args.is_empty() {
+        return Err(format!(
+            "{} (parameterized user ADTs are not supported in calldata array ABIs)",
+            crate::display::display_ty_source(
+                db,
+                Ty::named(db, TyCtor::User(*user), args.to_vec()),
+                &[]
+            )
+        ));
+    }
+    if adt_stack.contains(&user.def) {
+        return Err(format!(
+            "{name} (recursive ADTs have no finite calldata array ABI signature)"
+        ));
+    }
+    let module = parse_file_to_hir(db, user.def.file(db)).module(db);
+    if visible_manual_generic_adts.contains(&user.def)
+        || generic_derivation_is_excluded(db, module, &name)
+        || has_local_manual_generic_instance(db, module, user.def)
+    {
+        return Err(format!(
+            "{name} (manual or excluded Generic representations are not canonical ABI layouts)"
+        ));
+    }
+    let adt = find_adt_by_def(db, module, user.def)
+        .ok_or_else(|| format!("{name} (definition is unavailable for ABI lowering)"))?;
+    let plan = crate::solver::derived_generic_plan(db, module, adt)
+        .ok_or_else(|| format!("{name} (cannot derive its Generic ABI representation)"))?;
+
+    adt_stack.push(user.def);
+    let result = generic_sig_string(db, plan.rep, adt_stack, visible_manual_generic_adts);
+    adt_stack.pop();
+    result
+}
+
+fn has_local_manual_generic_instance<'db>(
+    db: &'db dyn Db,
+    module: Module<'db>,
+    adt: DefId<'db>,
+) -> bool {
+    let item_resolutions = abi_item_type_resolutions(db, module);
+    module.items(db).iter().any(|item| {
+        let Item::InstanceDef(instance) = item else {
+            return false;
+        };
+        let head = instance.head(db);
+        let class_is_generic = item_resolutions.preds.iter().any(|entry| {
+            entry.pred == head
+                && matches!(
+                    &entry.resolution,
+                    hir_nameres::Resolution::Def {
+                        def,
+                        kind: hir_nameres::DefResolutionKind::Class,
+                    } if def.name(db).as_deref() == Some("Generic")
+                )
+        });
+        if !class_is_generic {
+            return false;
+        }
+        let main = head.kind(db).ty;
+        item_resolutions.types.iter().any(|entry| {
+            entry.ty == main
+                && matches!(
+                    &entry.resolution,
+                    hir_nameres::Resolution::Def {
+                        def,
+                        kind: hir_nameres::DefResolutionKind::Adt,
+                    } if *def == adt
+                )
+        })
+    })
+}
+
+fn abi_item_type_resolutions<'db>(
+    db: &'db dyn Db,
+    module: Module<'db>,
+) -> hir_nameres::ItemResolutionFacts<'db> {
+    let Some(module_id) = module_id_for_source_file(db, module.def_id_value(db).file(db)) else {
+        return hir_nameres::resolve_item_type_facts(db, module);
+    };
+    let env = nameres::module_import_surface(db, module_id);
+    let Some(scope) = env.item_scope.as_ref() else {
+        return hir_nameres::resolve_item_type_facts(db, module);
+    };
+    hir_nameres::resolve_item_type_facts_with_imports(db, module, scope, &env)
 }
 
 fn canonical_user_abi_name(db: &dyn Db, user: &UserTyCtor<'_>) -> Option<String> {
@@ -297,8 +674,35 @@ fn canonical_user_abi_name(db: &dyn Db, user: &UserTyCtor<'_>) -> Option<String>
         return None;
     }
     match name.as_str() {
-        "uint256" | "address" | "bytes32" => Some(name),
+        "uint256" | "address" | "bytes4" | "bytes32" => Some(name),
         _ => None,
+    }
+}
+
+fn contains_canonical_calldata_array(db: &dyn Db, ty: Ty<'_>) -> bool {
+    match ty.kind(db) {
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } => {
+            matches!(
+                canonical_calldata_array_element(db, user, args),
+                Ok(Some(_))
+            ) || args
+                .iter()
+                .any(|arg| contains_canonical_calldata_array(db, *arg))
+        }
+        TyKind::Named { args, .. } | TyKind::Tuple(args) => args
+            .iter()
+            .any(|arg| contains_canonical_calldata_array(db, *arg)),
+        TyKind::Function { params, ret } => {
+            params
+                .iter()
+                .any(|param| contains_canonical_calldata_array(db, *param))
+                || contains_canonical_calldata_array(db, *ret)
+        }
+        TyKind::Comptime(inner) => contains_canonical_calldata_array(db, *inner),
+        TyKind::Error | TyKind::Unknown | TyKind::BoundVar(_) => false,
     }
 }
 
@@ -585,7 +989,7 @@ pub(super) fn abi_type_contains_user_adt<'db>(
             TyKind::Named {
                 ctor: TyCtor::User(user),
                 args,
-            } if is_canonical_std_location(db, user) && args.len() == 1 => {
+            } if is_canonical_std_abi_container(db, user) && args.len() == 1 => {
                 visit(db, args[0], target, adt_stack)
             }
             TyKind::Named {
@@ -664,6 +1068,10 @@ fn is_canonical_std_location(db: &dyn Db, user: &UserTyCtor<'_>) -> bool {
         matches!(name.as_str(), "memory" | "calldata" | "storage" | "mapping")
             && is_canonical_std_def_named(db, user.def, &name)
     })
+}
+
+fn is_canonical_std_abi_container(db: &dyn Db, user: &UserTyCtor<'_>) -> bool {
+    is_canonical_std_location(db, user) || is_canonical_std_def_named(db, user.def, "array")
 }
 
 pub(super) fn contract_diag_unsupported_abi_type<'db>(

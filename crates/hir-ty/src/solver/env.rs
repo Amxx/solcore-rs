@@ -28,11 +28,16 @@ pub fn trait_env_for_module<'db>(db: &'db dyn Db, module: ModuleId<'db>) -> Trai
     modules.extend(env.instances.iter().map(|origin| origin.module));
     modules.extend(visible_class_modules(db, &env));
 
+    let derived_generic =
+        visible_generic_class(db, &env).map(|generic| DerivedGenericClauseSource {
+            module,
+            generic,
+            abi: visible_abi_clause_source(db, &env),
+        });
     let source = ModuleTraitEnvSource {
         superclass_modules: unique_modules(modules),
         instance_origins: env.instances.clone(),
-        derived_generic: visible_generic_class(db, &env)
-            .map(|generic| DerivedGenericClauseSource { module, generic }),
+        derived_generic,
         derived_class_modules: nameres::instance_import_modules(db, module),
     };
     TraitEnvId::new(
@@ -73,6 +78,7 @@ pub fn trait_env_from_module_resolution<'db>(
             module,
             &module_resolution.item_resolutions,
             generic,
+            resolved_abi_clause_source(db, module, &module_resolution.item_resolutions),
         );
         clause_sets.push(derived_builder.finish());
     }
@@ -165,6 +171,9 @@ fn trait_env_from_module_resolution_and_imports_impl<'db>(
             module,
             &module_resolution.item_resolutions,
             generic,
+            visible_abi_clause_source(db, imports).or_else(|| {
+                resolved_abi_clause_source(db, module, &module_resolution.item_resolutions)
+            }),
         );
         clause_sets.push(derived_builder.finish());
     }
@@ -221,7 +230,7 @@ pub(super) fn base_trait_env_clauses<'db>(
                 extend_clause_set(
                     &mut clauses,
                     db,
-                    derived_generic_clause_set(db, source.module, source.generic),
+                    derived_generic_clause_set(db, source.module, source.generic, source.abi),
                 );
             }
             for module in &source.derived_class_modules {
@@ -310,10 +319,11 @@ fn derived_generic_clause_set<'db>(
     db: &'db dyn Db,
     module: ModuleId<'db>,
     generic: DefId<'db>,
+    abi: Option<DerivedAbiClauseSource<'db>>,
 ) -> TraitClauseSetId<'db> {
     let mut builder = TraitClauseBuilder::new(db);
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
-        builder.add_derived_generic_instances(scope.module, &item_resolutions, generic);
+        builder.add_derived_generic_instances(scope.module, &item_resolutions, generic, abi);
     }
     builder.finish()
 }
@@ -504,6 +514,7 @@ impl<'db> TraitClauseBuilder<'db> {
         module: Module<'db>,
         item_resolutions: &hir_nameres::ItemResolutionFacts<'db>,
         generic: DefId<'db>,
+        abi: Option<DerivedAbiClauseSource<'db>>,
     ) {
         let mut seen = FxHashSet::default();
         for info in local_adt_infos(self.db, module) {
@@ -518,6 +529,9 @@ impl<'db> TraitClauseBuilder<'db> {
                 continue;
             };
             self.push_derived_generic_clause(&info, &plan, generic);
+            if let Some(abi) = abi {
+                push_derived_abi_clauses(self.db, &mut self.clauses, &info, &plan, abi);
+            }
         }
 
         // Imported ADTs referenced by signatures need definition-side
@@ -574,13 +588,29 @@ impl<'db> TraitClauseBuilder<'db> {
             else {
                 continue;
             };
-            let Some(plan) =
-                derived_generic_instance_plan(self.db, definition_module, info.adt, generic)
+            // Imported synthesized instances model the declarations that the
+            // defining compilation unit would have emitted. In particular,
+            // importing ABIGeneric only at the use site must not retroactively
+            // enable ABI derivation for an ADT whose own module never saw the
+            // ABIDeriving marker.
+            let Some((definition_generic, definition_abi)) =
+                derived_sources_for_definition(self.db, definition_module)
             else {
                 continue;
             };
+            let Some(plan) = derived_generic_instance_plan(
+                self.db,
+                definition_module,
+                info.adt,
+                definition_generic,
+            ) else {
+                continue;
+            };
             collect_adt_defs_from_ty(self.db, plan.rep, &mut pending);
-            self.push_derived_generic_clause(&info, &plan, generic);
+            self.push_derived_generic_clause(&info, &plan, definition_generic);
+            if let Some(abi) = definition_abi {
+                push_derived_abi_clauses(self.db, &mut self.clauses, &info, &plan, abi);
+            }
         }
     }
 
@@ -633,6 +663,29 @@ impl<'db> TraitClauseBuilder<'db> {
             }),
         });
     }
+}
+
+fn derived_sources_for_definition<'db>(
+    db: &'db dyn Db,
+    module: Module<'db>,
+) -> Option<(DefId<'db>, Option<DerivedAbiClauseSource<'db>>)> {
+    if let Some(module_id) =
+        nameres::module_id_for_source_file(db, module.def_id_value(db).file(db))
+    {
+        let surface = nameres::module_import_surface(db, module_id);
+        if let Some(generic) = visible_generic_class(db, &surface) {
+            return Some((generic, visible_abi_clause_source(db, &surface)));
+        }
+    }
+
+    // Ad-hoc resolved modules used by unit tests do not necessarily have a
+    // module-tree identity. Preserve the same definition-side rule using their
+    // own item resolutions rather than the importing module's surface.
+    let item_resolutions = hir_nameres::resolve_item_type_facts(db, module);
+    let generic = local_generic_class(db, module)
+        .or_else(|| imported_generic_class(db, &item_resolutions))?;
+    let abi = resolved_abi_clause_source(db, module, &item_resolutions);
+    Some((generic, abi))
 }
 
 fn canonical_std_string_types<'db>(db: &'db dyn Db) -> Vec<(Ty<'db>, Option<Ty<'db>>)> {

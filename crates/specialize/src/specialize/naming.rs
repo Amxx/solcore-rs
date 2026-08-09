@@ -306,6 +306,15 @@ fn hash_evidence<'db>(db: &'db dyn Db, evidence: &Evidence<'db>, state: &mut Def
                     0u8.hash(state);
                     hash_def_id(db, *adt, state);
                 }
+                DerivedClauseKind::AbiAttribs { adt } => {
+                    3u8.hash(state);
+                    hash_def_id(db, *adt, state);
+                }
+                DerivedClauseKind::AbiDecode { adt, word_reader } => {
+                    4u8.hash(state);
+                    hash_def_id(db, *adt, state);
+                    hash_def_id(db, *word_reader, state);
+                }
                 DerivedClauseKind::Class {
                     adt,
                     class,

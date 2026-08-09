@@ -113,6 +113,40 @@ impl<'db> Driver<'db> {
                     depth,
                 )
             }
+            Evidence::Derived {
+                kind: DerivedClauseKind::AbiAttribs { adt },
+                pred,
+                sub_evidence,
+            } => self.specialize_derived_abi(
+                DerivedAbiKey {
+                    adt,
+                    family: DerivedAbiFamily::Attribs,
+                    word_reader: None,
+                    method: method.to_owned(),
+                    pred,
+                    target_ty,
+                    sub_evidence,
+                },
+                call_span,
+                depth,
+            ),
+            Evidence::Derived {
+                kind: DerivedClauseKind::AbiDecode { adt, word_reader },
+                pred,
+                sub_evidence,
+            } => self.specialize_derived_abi(
+                DerivedAbiKey {
+                    adt,
+                    family: DerivedAbiFamily::Decode,
+                    word_reader: Some(word_reader),
+                    method: method.to_owned(),
+                    pred,
+                    target_ty,
+                    sub_evidence,
+                },
+                call_span,
+                depth,
+            ),
             Evidence::Builtin { pred } => {
                 let method_evidence = match pred.kind(self.db) {
                     PredKind::InClass {

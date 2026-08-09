@@ -86,6 +86,14 @@ impl<'db> InferCtx<'db> {
                         self.infer_memory_array_index_read(body, *index, base_ty.clone())
                     {
                         ret
+                    } else if let Some(ret) = self.infer_calldata_array_index_read(
+                        body,
+                        expr_id,
+                        *index,
+                        base_ty.clone(),
+                        expected.clone(),
+                    ) {
+                        ret
                     } else {
                         let index_ty = self.infer_expr(body, *index);
                         let ret = expected.clone().unwrap_or_else(|| self.engine.fresh_var());

@@ -57,6 +57,7 @@ use crate::{
 const DEFAULT_SOLVER_FUEL: usize = 16_384;
 
 mod canonical;
+mod derived_abi;
 mod derived_class;
 mod derived_generic;
 mod display;
@@ -70,6 +71,10 @@ mod soundness;
 
 use canonical::{
     GoalRenaming, RigidVar, TableKey, actualize_answer, canonicalize_goal, canonicalize_local_given,
+};
+use derived_abi::{
+    DerivedAbiClauseSource, push_derived_abi_clauses, resolved_abi_clause_source,
+    visible_abi_clause_source,
 };
 pub(crate) use derived_class::class_derivation_diagnostics;
 pub use derived_class::derived_class_plans;
@@ -140,6 +145,8 @@ pub struct DerivedGenericClauseSource<'db> {
     pub module: ModuleId<'db>,
     /// Visible `Generic` class definition.
     pub generic: DefId<'db>,
+    /// ABI marker and support definitions visible beside `Generic`.
+    abi: Option<DerivedAbiClauseSource<'db>>,
 }
 
 /// Source layout for a base trait environment.
@@ -222,6 +229,18 @@ pub enum DerivedClauseKind<'db> {
     Generic {
         /// ADT whose `Generic` instance was synthesized.
         adt: DefId<'db>,
+    },
+    /// Concrete `T:ABIAttribs` instance backed by `T`'s Generic representation.
+    AbiAttribs {
+        /// ADT whose ABI metadata instance was synthesized.
+        adt: DefId<'db>,
+    },
+    /// Concrete `ABIDecoder(T, reader):ABIDecode(T)` instance.
+    AbiDecode {
+        /// ADT whose decoder instance was synthesized.
+        adt: DefId<'db>,
+        /// `WordReader` class used by the synthesized instance context.
+        word_reader: DefId<'db>,
     },
     /// Class instance requested by an ADT `derive` attribute.
     Class {

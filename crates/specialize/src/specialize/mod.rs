@@ -56,6 +56,7 @@ use crate::{
 
 mod body;
 mod call_resolver;
+mod derived_abi;
 mod derived_class;
 mod derived_generic;
 mod diagnostics;
@@ -68,7 +69,10 @@ mod ty_subst;
 
 use body::{BinOpExpr, BodyCtx, BodyIndex};
 pub use diagnostics::{SpecializeDiagnostic, SpecializeDiagnosticKind};
-use driver::{AdtInfo, DerivedClassKey, Driver, FunctionInfo, SpecKey, SyntheticKey};
+use driver::{
+    AdtInfo, DerivedAbiFamily, DerivedAbiKey, DerivedClassKey, Driver, FunctionInfo, SpecKey,
+    SyntheticKey,
+};
 use evidence::replay_evidence_bindings;
 use intrinsics::{
     builtin_ctor_name, builtin_intrinsic, builtin_name, overloaded_operator_method,

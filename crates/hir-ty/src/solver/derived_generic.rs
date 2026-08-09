@@ -280,7 +280,15 @@ pub(super) fn derived_generic_instance_plan_with_resolutions<'db>(
     info: &AdtDeriveInfo<'db>,
     generic: DefId<'db>,
 ) -> Option<DerivedGenericPlan<'db>> {
-    if info.adt.ctors(db).is_empty()
+    let own_param_count = info.adt.ty_param_elems(db).len();
+    // Contract-local ADTs in generic contracts can capture an enclosing type
+    // variable without representing it in their nominal type head. Such a
+    // binder cannot be recovered from a `Local(args)` solver goal, so emitting
+    // a clause would leave an existential variable in the Generic rep (and in
+    // every derived instance backed by that rep). This is the same eligibility
+    // boundary used by explicit class derivation.
+    if info.type_vars.len() != own_param_count
+        || info.adt.ctors(db).is_empty()
         || no_generic_instance_for(db, module).contains(&adt_name(db, info.adt))
         || manual_generic_instance_types(db, module, item_resolutions, generic)
             .contains(&info.adt.def_id_value(db))

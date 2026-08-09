@@ -610,6 +610,9 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                     }
                 } else if self.is_memory_array_expr(*base) {
                     self.memory_array_index(*base, *index, ty, expr.span)?.kind
+                } else if self.is_calldata_array_expr(*base) {
+                    self.calldata_array_index(expr_id, *base, *index, ty, expr.span)?
+                        .kind
                 } else {
                     MonoExprKind::Index {
                         base: Box::new(self.expr(*base)?),
@@ -1584,6 +1587,66 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         self.typedef_abs(raw, result_ty, span)
     }
 
+    fn calldata_array_index(
+        &mut self,
+        expr: Id<Expr<'db>>,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let base = self.expr(base)?;
+        let index = self.expr(index)?;
+        let pair_ty = Ty::named(
+            self.driver.db,
+            TyCtor::Builtin(BuiltinTyCtor::Pair),
+            vec![base.ty.ty(), index.ty.ty()],
+        );
+        let pair = product_expr_from_elems(self.driver.db, &[base, index], pair_ty, span);
+        let callee_ty = Ty::function(self.driver.db, vec![pair_ty], result_ty);
+        let class =
+            self.driver.classes.keys().copied().find(|class| {
+                is_canonical_std_def_named(self.driver.db, *class, "RValueIdxAccess")
+            });
+        let evidence = class.and_then(|class| {
+            self.class_method_value_evidence(expr, class)
+                .map(|evidence| self.specialize_evidence(evidence))
+                .or_else(|| {
+                    self.driver
+                        .solve_class_method_pred(class, "lookup", callee_ty, Some(span))
+                })
+        });
+        let Some(name) = evidence.and_then(|evidence| {
+            self.driver
+                .resolve_class_method_call("lookup", evidence, callee_ty, span, self.depth)
+        }) else {
+            self.driver.diagnostics.push(SpecializeDiagnostic {
+                kind: SpecializeDiagnosticKind::MissingEvidence {
+                    context: "RValueIdxAccess.lookup".to_owned(),
+                },
+                span: Some(span),
+            });
+            return None;
+        };
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(result_ty, "calldata array index result", span)?,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: self
+                        .driver
+                        .mono_ty(callee_ty, "calldata array index callee", span)?,
+                    span,
+                },
+                args: vec![pair],
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
     fn typedef_rep(&mut self, value: MonoExpr<'db>, span: Span<'db>) -> Option<MonoExpr<'db>> {
         if ty_is_builtin_word(self.driver.db, value.ty.ty())
             || ty_is_storage_ref(self.driver.db, value.ty.ty())
@@ -1740,6 +1803,14 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         };
         let ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty));
         ty_is_memory_dyn_array(self.driver.db, ty)
+    }
+
+    fn is_calldata_array_expr(&self, expr: Id<Expr<'db>>) -> bool {
+        let Some(ty) = self.expr_ty(expr) else {
+            return false;
+        };
+        let ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty));
+        ty_is_calldata_array(self.driver.db, ty)
     }
 
     fn stmt_has_comptime_let_obligation(&self, stmt: Id<Stmt<'db>>) -> bool {
@@ -1972,5 +2043,25 @@ fn ty_is_memory_dyn_array<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
             ctor: TyCtor::User(array),
             args,
         } if args.len() == 1 && is_canonical_std_def_named(db, array.def, "DynArray")
+    )
+}
+
+fn ty_is_calldata_array<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let TyKind::Named {
+        ctor: TyCtor::User(calldata),
+        args: calldata_args,
+    } = ty.kind(db)
+    else {
+        return false;
+    };
+    if calldata_args.len() != 1 || !is_canonical_std_def_named(db, calldata.def, "calldata") {
+        return false;
+    }
+    matches!(
+        calldata_args[0].kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(array),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, array.def, "array")
     )
 }

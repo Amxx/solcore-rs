@@ -142,15 +142,18 @@ fn db_with_array_std(main_src: &str) -> (TestDb, ModuleKey) {
         &db,
         &std_path,
         r#"
-export { memory(*), storage(*), DynArray, array(*), uint256(*), address(*), string, concatLit, Add, Array, ArrayPush, Length, Typedef, CanStore };
+export { memory(*), storage(*), calldata(*), DynArray, array(*), uint256(*), address(*), string, Encoded(*), Decoded(*), concatLit, Add, Array, ArrayPush, Length, Typedef, CanStore, RValueIdxAccess };
 
 data memory(t) = memory(word);
 data storage(t) = storage(word);
+data calldata(t) = calldata(word);
 data DynArray(t);
 data array(t) = array(word);
 data uint256 = uint256(word);
 data address = address(word);
 data string;
+data Encoded = Encoded(word);
+data Decoded = Decoded(word);
 
 function concatLit(comptime lhs:string, comptime rhs:string) -> string { return lhs; }
 
@@ -180,6 +183,17 @@ instance uint256:Typedef(word) {
 instance memory(string):Typedef(word) {
   function abs(x:word) -> memory(string) { return memory(x); }
   function rep(x:memory(string)) -> word { return 0; }
+}
+
+forall col_idx val . class col_idx:RValueIdxAccess(val) {
+  function lookup(xi:col_idx) -> val;
+}
+
+forall i . i:Typedef(word) =>
+instance (calldata(array(Encoded)), i):RValueIdxAccess(Decoded) {
+  function lookup(xi:(calldata(array(Encoded)), i)) -> Decoded {
+    return Decoded(0);
+  }
 }
 
 forall dst value . class dst:CanStore(value) {
@@ -1555,6 +1569,21 @@ function write(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
   xs[i] = value;
   return ();
 }
+
+function compound(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+  xs[i] += value;
+  return ();
+}
+
+function annotatedWrite(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+  (xs[i] : word) : word = value;
+  return ();
+}
+
+function annotatedCompound(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+  xs[i] : word += value;
+  return ();
+}
 "#,
     );
     let module = module_id_from_key(&db, &key);
@@ -1580,15 +1609,179 @@ function write(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
         result.obligations
     );
 
-    let (_, write) = infer_module_function(&db, module, "write");
+    for name in ["write", "compound", "annotatedWrite", "annotatedCompound"] {
+        let (_, write) = infer_module_function_with_solver(&db, module, name);
+        assert!(
+            write.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                TypeckDiagnostic::Mismatch { expected, .. }
+                    if expected == "assignable storage-backed index"
+            )),
+            "{name}: {:?}",
+            write.diagnostics
+        );
+    }
+}
+
+#[test]
+fn calldata_array_index_uses_rvalue_evidence_and_improves_decoded_type() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{*};
+
+function inferred(xs:calldata(array(Encoded)), i:uint256) -> () {
+  let value = xs[i];
+  return ();
+}
+
+function expected(xs:calldata(array(Encoded)), i:uint256) -> Decoded {
+  return xs[i];
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let encoded = canonical_std_adt_ty(&db, "Encoded", Vec::new());
+    let decoded = canonical_std_adt_ty(&db, "Decoded", Vec::new());
+    let array = canonical_std_adt_ty(&db, "array", vec![encoded]);
+    let calldata_array = canonical_std_adt_ty(&db, "calldata", vec![array]);
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let indexed_main = Ty::named(
+        &db,
+        TyCtor::Builtin(BuiltinTyCtor::Pair),
+        vec![calldata_array, uint256],
+    );
+
+    for name in ["inferred", "expected"] {
+        let (body, result) = infer_module_function_with_solver(&db, module, name);
+        assert_no_typeck(&result);
+        let indexed = body
+            .exprs(&db)
+            .iter()
+            .find_map(|(id, expr)| matches!(expr.kind, ExprKind::Index { .. }).then_some(id))
+            .expect("calldata array index");
+        assert_eq!(result.expr_ty(body, indexed), Some(decoded), "{name}");
+
+        let obligation = result
+            .obligations
+            .iter()
+            .position(|obligation| {
+                matches!(
+                    obligation.pred.kind(&db),
+                    PredKind::InClass {
+                        class: ClassId::User(class),
+                        main,
+                        args,
+                    } if class.name(&db).as_deref() == Some("RValueIdxAccess")
+                        && *main == indexed_main
+                        && args.as_slice() == [decoded]
+                )
+            })
+            .expect("RValueIdxAccess obligation");
+        assert!(
+            result
+                .obligation_evidence
+                .iter()
+                .any(|evidence| evidence.obligation == obligation),
+            "{name}: {:?}",
+            result.obligation_evidence
+        );
+    }
+}
+
+#[test]
+fn calldata_array_index_rejects_plain_and_compound_writes() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{*};
+
+function write(
+  xs:calldata(array(Encoded)),
+  i:uint256,
+  value:Decoded
+) -> () {
+  xs[i] = value;
+  return ();
+}
+
+function compound(
+  xs:calldata(array(Encoded)),
+  i:uint256,
+  value:Decoded
+) -> () {
+  xs[i] += value;
+  return ();
+}
+
+function annotatedWrite(
+  xs:calldata(array(Encoded)),
+  i:uint256,
+  value:Decoded
+) -> () {
+  (xs[i] : Decoded) : Decoded = value;
+  return ();
+}
+
+function annotatedCompound(
+  xs:calldata(array(Encoded)),
+  i:uint256,
+  value:Decoded
+) -> () {
+  xs[i] : Decoded += value;
+  return ();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+
+    for name in ["write", "compound", "annotatedWrite", "annotatedCompound"] {
+        let (_, result) = infer_module_function_with_solver(&db, module, name);
+        assert!(
+            result.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                TypeckDiagnostic::Mismatch { expected, .. }
+                    if expected == "assignable storage-backed index"
+            )),
+            "{name}: {:?}",
+            result.diagnostics
+        );
+    }
+}
+
+#[test]
+fn same_named_non_std_calldata_array_keeps_generic_index_typing() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{RValueIdxAccess};
+
+data calldata(t) = calldata(word);
+data array(t) = array(word);
+
+function read(xs:calldata(array(word)), i:word) -> word {
+  return xs[i];
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function_with_solver(&db, module, "read");
+
     assert!(
-        write.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic,
-            TypeckDiagnostic::Mismatch { expected, .. }
-                if expected == "assignable storage-backed index"
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        result.diagnostics
+    );
+    assert!(
+        !result.obligations.iter().any(|obligation| matches!(
+            obligation.pred.kind(&db),
+            PredKind::InClass {
+                class: ClassId::User(class),
+                ..
+            } if class.name(&db).as_deref() == Some("RValueIdxAccess")
         )),
         "{:?}",
-        write.diagnostics
+        result.obligations
     );
 }
 
