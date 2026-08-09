@@ -312,6 +312,7 @@ comptime/ct_param_ok.solc	pass
 comptime/ct_param_poly_runtime.solc	fail	SC0299
 comptime/ct_param_runtime.solc	fail	
 comptime/ct_runtime_arg.solc	pass	
+comptime/erc7201-lit.solc	pass	
 comptime/fib.solc	pass	
 comptime/fib2.solc	pass	
 comptime/fib3.solc	pass	

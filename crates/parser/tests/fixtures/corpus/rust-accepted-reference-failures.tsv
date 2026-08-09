@@ -1,5 +1,6 @@
 # path<TAB>reason
 cases/compose_desugared.solc	SC0209 reference rejects the explicitly desugared closure because its inferred invoke implementation is not polymorphic enough; Rust accepts it
+cases/derive-self-return-poc.solc	SC0001 the ac6 baseline predates derive attributes and rejects `#`; Rust implements the upstream derive wrapper, including Generic.to for self results
 cases/for-let-post.solc	SC0001 reference frontend rejects this for-loop let form while the Rust grammar accepts it
 cases/super-class-recursive-arg.solc	SC0223 reference legacy solver rejects this recursive superclass argument, while the reference tabled mode and Rust both accept it
 cases/tabled-answer-reuse.solc	SC0299 reference legacy solver reports an ambiguous inferred type, while the reference tabled mode and Rust both accept it
