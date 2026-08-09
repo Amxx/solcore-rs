@@ -16,7 +16,9 @@ use solcore_hull::{
     CheckDiagnosticKind, EmitDiagnostic, EmitDiagnosticKind, EmitOptions, check_program_with_db,
     emit_module, pretty_program,
 };
-use specialize::{SpecializeOptions, SpecializeOutput, specialize_module};
+use specialize::{
+    SpecializeDiagnosticKind, SpecializeOptions, SpecializeOutput, specialize_module,
+};
 
 #[salsa::db]
 #[derive(Default, Clone)]
@@ -172,6 +174,68 @@ fn specialization_corpus_subset_emits_and_checks() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn objectless_string_materializers_are_content_deduplicated() {
+    let (db, output) = specialize_src_with_std(
+        "objectless_string_materializer",
+        r#"
+import std.{memory, string};
+
+function alpha() -> memory(string) { return "alpha"; }
+function beta() -> memory(string) { return "beta"; }
+function main() -> memory(string) {
+  alpha();
+  beta();
+  return "alpha";
+}
+"#,
+    );
+    assert_eq!(output.diagnostics, Vec::new());
+
+    let emitted = emit_module(db, &output.module, EmitOptions::default());
+    assert_eq!(emitted.diagnostics, Vec::new());
+    assert_eq!(check_program_with_db(db, &emitted.program), Vec::new());
+    let hull = pretty_program(db, &emitted.program);
+    assert_eq!(hull.matches("function __strlit_").count(), 2, "{hull}");
+    assert_eq!(hull.matches("function __strlit_0").count(), 1, "{hull}");
+    assert_eq!(hull.matches("__strlit_0()").count(), 2, "{hull}");
+    assert!(hull.contains("p := mload(0x40)"), "{hull}");
+    assert!(hull.contains("mstore(p, 5)"), "{hull}");
+    assert!(
+        hull.contains("0x616c706861000000000000000000000000000000000000000000000000000000"),
+        "{hull}"
+    );
+    assert!(hull.contains("mstore(0x40, add(p, 64))"), "{hull}");
+}
+
+#[test]
+fn contract_objects_receive_their_reachable_string_materializer() {
+    let (db, output) = specialize_src_with_std(
+        "contract_string_materializers",
+        r#"
+import std.{memory, string};
+
+contract A { function main() -> memory(string) { return "shared"; } }
+contract B { function main() -> memory(string) { return "shared"; } }
+"#,
+    );
+    assert_eq!(output.diagnostics, Vec::new());
+
+    let emitted = emit_module(db, &output.module, EmitOptions::default());
+    assert_eq!(emitted.diagnostics, Vec::new());
+    assert_eq!(check_program_with_db(db, &emitted.program), Vec::new());
+    let hull = pretty_program(db, &emitted.program);
+    // One content-deduplicated helper exists in the shared function table and
+    // reachability copies it into each runtime object that references it.
+    assert_eq!(hull.matches("function __strlit_0").count(), 2, "{hull}");
+    let deploy_a = hull.split("object \"ADeploy\"").nth(1).expect("A deploy");
+    let runtime_a = deploy_a.split("object \"A\"").nth(1).expect("A runtime");
+    assert!(runtime_a.contains("function __strlit_0"), "{hull}");
+    let deploy_b = hull.split("object \"BDeploy\"").nth(1).expect("B deploy");
+    let runtime_b = deploy_b.split("object \"B\"").nth(1).expect("B runtime");
+    assert!(runtime_b.contains("function __strlit_0"), "{hull}");
 }
 
 #[test]
@@ -640,8 +704,8 @@ fn recursive_adt_layouts_are_cycle_safe() {
 }
 
 #[test]
-fn unsupported_match_rows_produce_an_explicit_emit_diagnostic() {
-    let (db, output) = specialize_src(
+fn runtime_string_match_is_rejected_before_emission() {
+    let (_db, output) = specialize_src(
         "string_literal_match",
         r#"
 function main(s : string) -> word {
@@ -652,17 +716,14 @@ function main(s : string) -> word {
 }
 "#,
     );
-    assert_eq!(output.diagnostics, Vec::new());
-    let emitted = emit_module(db, &output.module, EmitOptions::default());
-
     assert!(
-        emitted.diagnostics.iter().any(|diagnostic| matches!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
             &diagnostic.kind,
-            EmitDiagnosticKind::UnsupportedMonoConstruct { construct }
-                if construct.contains("string literal match pattern")
+            SpecializeDiagnosticKind::IntegerErasure { context, ty }
+                if context == "pattern" && ty == "string"
         )),
         "{:?}",
-        emitted.diagnostics
+        output.diagnostics
     );
 }
 

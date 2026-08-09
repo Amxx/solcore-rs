@@ -134,6 +134,20 @@ fn specialize_src_with_std(src: &str) -> SpecializeOutput<'static> {
 fn specialize_src_with_std_and_db(
     src: &str,
 ) -> (&'static TestDb, SourceFile, SpecializeOutput<'static>) {
+    specialize_src_with_std_and_db_options(src, SpecializeOptions::default())
+}
+
+fn specialize_src_with_std_options(
+    src: &str,
+    options: SpecializeOptions,
+) -> SpecializeOutput<'static> {
+    specialize_src_with_std_and_db_options(src, options).2
+}
+
+fn specialize_src_with_std_and_db_options(
+    src: &str,
+    options: SpecializeOptions,
+) -> (&'static TestDb, SourceFile, SpecializeOutput<'static>) {
     let db = Box::leak(Box::new(TestDb::default()));
     let main_root = PathBuf::from("/main");
     let repo = repo_root();
@@ -156,7 +170,7 @@ fn specialize_src_with_std_and_db(
     let unresolved = load_reachable_modules(db, key);
     assert!(unresolved.is_empty(), "{unresolved:?}");
     let module = parse_file_to_hir(db, file).module(db);
-    let output = specialize_module(db, module, SpecializeOptions::default());
+    let output = specialize_module(db, module, options);
     (db, file, output)
 }
 
@@ -2780,6 +2794,263 @@ fn folds_resolved_std_string_keccak_literal_intrinsic() {
             "35286403120855365962805127237049809881669876751651884979611909062921250761797"
                 .to_owned()
         )
+    );
+}
+
+#[test]
+fn clones_and_deduplicates_folded_comptime_string_arguments() {
+    let (db, _, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+
+function consume(s:string, x:word) -> word {
+  return addWord(strlenLit(s), x);
+}
+
+contract C {
+  public function main(x:word) -> word {
+    return addWord(consume("abcd", x), consume(concatLit("ab", "cd"), x));
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let clones = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) if function.name.contains("$ct") => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(clones.len(), 1, "{:?}", function_names(&output));
+    assert_eq!(clones[0].params.len(), 1, "{:?}", clones[0].params);
+    assert_eq!(clones[0].params[0].ty.ty().display(db).to_string(), "word");
+
+    let main_calls = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function)
+                if function_call_names(function).contains(&clones[0].name) =>
+            {
+                Some(function_call_names(function))
+            }
+            _ => None,
+        })
+        .expect("caller of the string clone");
+    assert!(main_calls.contains(&clones[0].name), "{main_calls:?}");
+}
+
+#[test]
+fn user_str_instance_clone_leaves_only_a_literal_materializer_call() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+data Wrapped = Wrapped(memory(string));
+
+instance Wrapped:Str {
+  function fromString(s:string) -> Wrapped {
+    return Wrapped(Str.fromString(s));
+  }
+}
+
+contract C {
+  public function main(x:word) -> word {
+    let wrapped:Wrapped = "abcd";
+    let source = "abcd";
+    let explicit:Wrapped = Str.fromString(source);
+    return x;
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let clones = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) if function.name.contains("$ct") => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(clones.len(), 1, "{:?}", function_names(&output));
+    assert!(clones[0].params.is_empty(), "{:?}", clones[0].params);
+    assert!(
+        function_call_names(clones[0]).contains("memStringFromLit"),
+        "{:?}",
+        clones[0].body
+    );
+}
+
+#[test]
+fn require_accepts_a_string_literal_via_the_std_error_str_instance() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract C {
+  public function main(cond:bool) -> () {
+    require(cond, "boom");
+    return ();
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| {
+            matches!(
+                item,
+                MonoItem::Function(function)
+                    if function_call_names(function).contains("memStringFromLit")
+            )
+        }),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn materializes_a_string_literal_through_a_memory_string_alias() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+type Text = memory(string);
+type Source = string;
+
+contract C {
+  public function main() -> word {
+    let implicit:Text = "x";
+    let source:Source = "y";
+    let explicit:Text = Str.fromString(source);
+    return addWord(strlen(implicit), strlen(explicit));
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| {
+            matches!(
+                item,
+                MonoItem::Function(function)
+                    if function_call_names(function).contains("memStringFromLit")
+            )
+        }),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn string_clone_worklist_evaluates_clones_that_spawn_clones() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+function inner(s:string, x:word) -> word {
+  return addWord(strlenLit(s), x);
+}
+
+function touch(x:word) -> () {
+  assembly { sstore(0, x) }
+}
+
+function outer(s:string, x:word) -> word {
+  let result:word = inner(s, x);
+  touch(x);
+  return result;
+}
+
+contract C {
+  public function main(x:word) -> word {
+    return outer("abcd", x);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let clones = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) if function.name.contains("$ct") => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(clones.len(), 2, "{:?}", function_names(&output));
+    assert!(
+        clones.iter().all(|function| function.params.len() == 1),
+        "{clones:?}"
+    );
+    assert!(
+        clones.iter().any(|function| {
+            function_call_names(function)
+                .iter()
+                .any(|name| name.contains("$ct"))
+        }),
+        "{clones:?}"
+    );
+}
+
+#[test]
+fn recursive_string_clone_creation_consumes_global_fuel() {
+    let output = specialize_src_with_std_options(
+        r#"
+import std.{*};
+
+function grow(s:string, x:word) -> word {
+  let result:word = grow(concatLit(s, "x"), x);
+  assembly { sstore(0, x) }
+  return result;
+}
+
+contract C {
+  public function main(x:word) -> word {
+    return grow("", x);
+  }
+}
+"#,
+        SpecializeOptions {
+            eval_fuel: 3,
+            ..SpecializeOptions::default()
+        },
+    );
+
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            SpecializeDiagnosticKind::ComptimeFuelExhausted { limit: 3, .. }
+        )),
+        "{:?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        output
+            .module
+            .items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                MonoItem::Function(function) if function.name.contains("$ct")
+            ))
+            .count(),
+        3,
+        "names={:?}, diagnostics={:?}",
+        function_names(&output),
+        output.diagnostics
     );
 }
 

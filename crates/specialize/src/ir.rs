@@ -125,6 +125,10 @@ pub enum MonoIntrinsic {
     StrlenLit,
     KeccakLit,
     KeccakWordLit,
+    /// Runtime materialization of a compile-time string literal into
+    /// `memory(string)`. This marker is deliberately not foldable: Hull
+    /// replaces it with a call to a generated allocator.
+    MemStringFromLit,
 }
 
 /// Resolved origin for a monomorphic call expression.

@@ -124,7 +124,7 @@ impl<'db> InferCtx<'db> {
             }
             LitKind::String(_) => expected
                 .and_then(|expected| self.expected_string_lit_ty(expected))
-                .unwrap_or_else(|| self.string()),
+                .unwrap_or_else(|| self.source_string()),
             LitKind::Error => InferTy::Error,
         }
     }

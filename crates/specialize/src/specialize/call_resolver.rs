@@ -447,6 +447,17 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 ) {
                     return self.int_from_integer_call(arg_exprs, result_ty, span);
                 }
+                if matches!(
+                    kind,
+                    hir_nameres::BuiltinKind::ClassMethod(
+                        hir_nameres::BuiltinClassMethod::StrFromString
+                    )
+                ) {
+                    let evidence = self
+                        .call_evidence(call_expr, callee)
+                        .map(|evidence| self.specialize_evidence(evidence.evidence));
+                    return self.str_from_string_call(arg_exprs, result_ty, span, evidence);
+                }
                 let builtin_callee = MonoId {
                     name: builtin_name(kind).to_owned(),
                     ty: mono_callee_ty,
@@ -804,6 +815,102 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             args,
         })
     }
+
+    pub(super) fn str_from_string_call(
+        &mut self,
+        mut args: Vec<MonoExpr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+        evidence: Option<Evidence<'db>>,
+    ) -> Option<MonoExprKind<'db>> {
+        let source_ty = args
+            .first()
+            .map(|arg| arg.ty.ty())
+            .unwrap_or_else(|| Ty::string(self.driver.db));
+        if ty_is_source_string(self.driver.db, result_ty) {
+            return Some(
+                args.pop()
+                    .map(|expr| expr.kind)
+                    .unwrap_or(MonoExprKind::Error),
+            );
+        }
+
+        let callee_ty = Ty::function(self.driver.db, vec![source_ty], result_ty);
+        let mono_callee_ty = self
+            .driver
+            .mono_ty(callee_ty, "Str.fromString callee", span)?;
+        if ty_is_memory_string(self.driver.db, result_ty) {
+            return Some(MonoExprKind::Call {
+                callee: MonoId {
+                    name: "memStringFromLit".to_owned(),
+                    ty: mono_callee_ty,
+                    span,
+                },
+                origin: MonoCallOrigin::Builtin(MonoIntrinsic::MemStringFromLit),
+                args,
+            });
+        }
+
+        if let Some(evidence) = evidence
+            && let Some(name) = self.driver.resolve_class_method_call(
+                "fromString",
+                evidence,
+                callee_ty,
+                span,
+                self.depth,
+            )
+        {
+            return Some(MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: mono_callee_ty,
+                    span,
+                },
+                origin: MonoCallOrigin::ByName,
+                args,
+            });
+        }
+
+        self.driver.diagnostics.push(SpecializeDiagnostic {
+            kind: SpecializeDiagnosticKind::MissingEvidence {
+                context: "fromString".to_owned(),
+            },
+            span: Some(span),
+        });
+        Some(MonoExprKind::Error)
+    }
+}
+
+pub(super) fn ty_is_source_string<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let ty = strip_comptime_ty(db, ty);
+    match ty.kind(db) {
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::String),
+            args,
+        } => args.is_empty(),
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } => {
+            args.is_empty()
+                && matches!(user.kind, UserTyCtorKind::Adt)
+                && is_canonical_std_def_named(db, user.def, "string")
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn ty_is_memory_string<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let ty = strip_comptime_ty(db, ty);
+    matches!(
+        ty.kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } if matches!(user.kind, UserTyCtorKind::Adt)
+            && is_canonical_std_def_named(db, user.def, "memory")
+            && matches!(args.as_slice(), [inner] if ty_is_source_string(db, *inner))
+    )
 }
 
 pub(super) fn ty_has_specialization_hole<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {

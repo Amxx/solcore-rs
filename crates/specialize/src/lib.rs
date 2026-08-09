@@ -17,6 +17,7 @@
 mod evaluate;
 mod ir;
 mod specialize;
+mod string_literal;
 
 pub use ir::{
     LetMode, MonoAbiParam, MonoArm, MonoBuiltinCtor, MonoCallOrigin, MonoComptimeObligation,
@@ -29,3 +30,4 @@ pub use specialize::{
     SpecializeDiagnostic, SpecializeDiagnosticKind, SpecializeOptions, SpecializeOutput,
     specialize_module, specialize_name, specialize_prepared_module,
 };
+pub use string_literal::decode_string_literal;

@@ -37,6 +37,7 @@ pub fn instance_soundness_diagnostics<'db>(
             .map(alias_error_to_diagnostic)
             .collect::<Vec<_>>();
     let mut prior_heads = imported_non_default_heads(db, module, facts.module, &facts.imports);
+    add_builtin_str_heads(db, &mut prior_heads);
     for fact in &facts.instances {
         let class = fact.class(db);
         let same_class_prior = class
@@ -56,7 +57,7 @@ pub fn instance_soundness_diagnostics<'db>(
         {
             prior_heads.entry(class).or_default().push(InstanceHead {
                 pred: head,
-                span: fact.head_span.clone(),
+                span: Some(fact.head_span.clone()),
             });
         }
     }
@@ -71,7 +72,7 @@ pub fn instance_soundness_diagnostics<'db>(
         check_overlapping_instance(db, plan.head, span.clone(), prior, &[], &mut diagnostics);
         prior_heads.entry(class).or_default().push(InstanceHead {
             pred: plan.head,
-            span,
+            span: Some(span),
         });
     }
     diagnostics
@@ -80,7 +81,34 @@ pub fn instance_soundness_diagnostics<'db>(
 #[derive(Clone)]
 struct InstanceHead<'db> {
     pred: Pred<'db>,
-    span: LabelSpan,
+    span: Option<LabelSpan>,
+}
+
+fn add_builtin_str_heads<'db>(
+    db: &'db dyn Db,
+    heads: &mut FxHashMap<ClassId<'db>, Vec<InstanceHead<'db>>>,
+) {
+    let class = ClassId::Builtin(BuiltinClassId::Str);
+    let entries = heads.entry(class).or_default();
+    let source = crate::support::source_string_ty(db);
+    entries.push(InstanceHead {
+        pred: Pred::in_class(db, class, source, Vec::new()),
+        span: None,
+    });
+    if let Some(memory) = crate::support::canonical_std_adt_def(db, "memory") {
+        let memory_string = Ty::named(
+            db,
+            TyCtor::User(crate::UserTyCtor {
+                def: memory,
+                kind: crate::UserTyCtorKind::Adt,
+            }),
+            vec![source],
+        );
+        entries.push(InstanceHead {
+            pred: Pred::in_class(db, class, memory_string, Vec::new()),
+            span: None,
+        });
+    }
 }
 
 #[derive(Default)]
@@ -281,7 +309,7 @@ fn imported_non_default_heads<'db>(
         if let Some(class) = fact.class(db) {
             heads.entry(class).or_default().push(InstanceHead {
                 pred: fact.head,
-                span: fact.head_span.clone(),
+                span: Some(fact.head_span.clone()),
             });
         }
     }
@@ -303,7 +331,7 @@ fn imported_non_default_heads<'db>(
                 .or_default()
                 .push(InstanceHead {
                     pred: plan.head,
-                    span,
+                    span: Some(span),
                 });
         }
     }
@@ -337,6 +365,7 @@ fn class_arity<'db>(db: &'db dyn Db, module: Module<'db>, class: ClassId<'db>) -
     match class {
         ClassId::Builtin(BuiltinClassId::Invokable) => Some(2),
         ClassId::Builtin(BuiltinClassId::Int) => Some(0),
+        ClassId::Builtin(BuiltinClassId::Str) => Some(0),
         ClassId::User(def) => {
             let class_module = module_for_def(db, def)
                 .and_then(|module| scope_resolution_for_module_id(db, module).map(|it| it.0.module))
@@ -400,7 +429,7 @@ fn check_overlapping_instance<'db>(
         if instance_heads_overlap(db, head, prior.pred) {
             diagnostics.push(TypeckDiagnostic::OverlappingInstance {
                 instance_span: head_span,
-                overlaps_span: Some(prior.span.clone()),
+                overlaps_span: prior.span.clone(),
                 instance: display_pred_source(db, head, type_var_names),
                 overlaps: display_pred_source(db, prior.pred, &[]),
             });
@@ -432,11 +461,21 @@ fn check_instance_methods<'db>(
     head: Pred<'db>,
     diagnostics: &mut Vec<TypeckDiagnostic>,
 ) {
-    let PredKind::InClass {
-        class: ClassId::User(class_def),
-        ..
-    } = head.kind(db)
-    else {
+    let PredKind::InClass { class, .. } = head.kind(db) else {
+        return;
+    };
+    if matches!(class, ClassId::Builtin(BuiltinClassId::Str)) {
+        check_builtin_str_instance_methods(
+            db,
+            module,
+            instance,
+            item_resolutions,
+            head,
+            diagnostics,
+        );
+        return;
+    }
+    let ClassId::User(class_def) = class else {
         return;
     };
     let class_module = module_for_def(db, *class_def)
@@ -510,6 +549,158 @@ fn check_instance_methods<'db>(
             instance_head_span: LabelSpan::from_span(db, instance.head(db).span(db)),
         };
         check_instance_method_signature(&ctx, class_method, *instance_method, diagnostics);
+    }
+}
+
+fn check_builtin_str_instance_methods<'db>(
+    db: &'db dyn Db,
+    module: Module<'db>,
+    instance: InstanceDef<'db>,
+    item_resolutions: &hir_nameres::ItemResolutionFacts<'db>,
+    head: Pred<'db>,
+    diagnostics: &mut Vec<TypeckDiagnostic>,
+) {
+    const CLASS_NAME: &str = "Str";
+    const METHOD_NAME: &str = "fromString";
+
+    let methods = instance.methods(db);
+    let method_names = methods
+        .iter()
+        .map(|method| ident_text(db, &method.sig(db).name))
+        .collect::<Vec<_>>();
+    for method in methods {
+        let name = ident_text(db, &method.sig(db).name);
+        if name != METHOD_NAME {
+            diagnostics.push(TypeckDiagnostic::UnknownInstanceMethod {
+                span: LabelSpan::from_span(db, method.sig(db).name.span(db)),
+                name: format!("{CLASS_NAME}.{name}"),
+                // Builtin classes have no source declaration to label.
+                class_span: None,
+            });
+        }
+    }
+    if !method_names.iter().any(|name| name == METHOD_NAME) {
+        diagnostics.push(TypeckDiagnostic::IncompleteInstance {
+            span: LabelSpan::from_span(db, instance.head(db).span(db)),
+            class: CLASS_NAME.to_owned(),
+            missing: vec![METHOD_NAME.to_owned()],
+        });
+        return;
+    }
+
+    let Some(method) = methods
+        .iter()
+        .find(|method| ident_text(db, &method.sig(db).name) == METHOD_NAME)
+    else {
+        return;
+    };
+    check_builtin_str_method_signature(
+        db,
+        module,
+        instance,
+        item_resolutions,
+        head,
+        *method,
+        diagnostics,
+    );
+}
+
+fn check_builtin_str_method_signature<'db>(
+    db: &'db dyn Db,
+    module: Module<'db>,
+    instance: InstanceDef<'db>,
+    item_resolutions: &hir_nameres::ItemResolutionFacts<'db>,
+    head: Pred<'db>,
+    method: FunctionDef<'db>,
+    diagnostics: &mut Vec<TypeckDiagnostic>,
+) {
+    const METHOD_NAME: &str = "fromString";
+
+    if let Some(reason) = incomplete_instance_method_signature_reason(method.sig(db)) {
+        diagnostics.push(TypeckDiagnostic::InvalidInstanceMethodSignature {
+            span: LabelSpan::from_span(db, method.sig(db).span(db)),
+            method: METHOD_NAME.to_owned(),
+            reason,
+        });
+        return;
+    }
+    let PredKind::InClass { main, .. } = head.kind(db) else {
+        return;
+    };
+
+    let mut method_type_vars =
+        type_var_bindings(method.def_id_value(db), &method.sig(db).type_vars);
+    let mut inherited = type_var_bindings_for_instance(db, method, module);
+    inherited.append(&mut method_type_vars);
+    let method_lowerer = TypeLowering::from_item_resolutions(
+        db,
+        item_resolutions,
+        BinderEnv::from_type_vars(&inherited),
+    );
+    let mut normalizer = AliasNormalizer::new(db, module, item_resolutions);
+    let actual_scheme = normalizer.normalize_scheme(method_lowerer.lower_function(method).scheme);
+    if scheme_is_ambiguous(db, actual_scheme) {
+        diagnostics.push(TypeckDiagnostic::AmbiguousInferredType {
+            span: LabelSpan::from_span(db, instance.head(db).span(db)),
+            scheme: display_scheme_source(db, actual_scheme, &inherited),
+        });
+    }
+    let mut actual = actual_scheme.body(db).ty(db);
+    if method.sig(db).ret.is_none()
+        && let TyKind::Function { params, .. } = actual.kind(db)
+    {
+        actual = Ty::function(db, params.clone(), *main);
+    }
+    diagnostics.extend(
+        normalizer
+            .take_errors()
+            .into_iter()
+            .map(alias_error_to_diagnostic),
+    );
+
+    let valid = matches!(
+        actual.kind(db),
+        TyKind::Function { params, ret }
+            if matches!(params.as_slice(), [source] if ty_is_source_string(db, *source))
+                && ty_equal(db, *main, *ret)
+    );
+    if valid {
+        return;
+    }
+
+    let inherited_names = type_var_names(db, &inherited);
+    diagnostics.push(TypeckDiagnostic::InvalidInstanceMethodSignature {
+        span: LabelSpan::from_span(db, method.sig(db).span(db)),
+        method: METHOD_NAME.to_owned(),
+        reason: format!(
+            "expected (string) -> {}, got {}",
+            display_ty_source(db, *main, &inherited_names),
+            display_ty_source(db, actual, &inherited_names)
+        ),
+    });
+}
+
+fn ty_is_source_string<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    match ty.kind(db) {
+        TyKind::Comptime(inner) => ty_is_source_string(db, *inner),
+        TyKind::Named {
+            ctor: TyCtor::Builtin(crate::BuiltinTyCtor::String),
+            args,
+        } => args.is_empty(),
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } => {
+            args.is_empty()
+                && matches!(user.kind, crate::UserTyCtorKind::Adt)
+                && crate::is_canonical_std_def_named(db, user.def, "string")
+        }
+        TyKind::Named { .. }
+        | TyKind::Function { .. }
+        | TyKind::Tuple(_)
+        | TyKind::Error
+        | TyKind::Unknown
+        | TyKind::BoundVar(_) => false,
     }
 }
 

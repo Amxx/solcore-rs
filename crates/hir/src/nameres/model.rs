@@ -244,6 +244,8 @@ pub enum BuiltinClass {
     Invokable,
     /// `Int`.
     Int,
+    /// String-literal conversion class `Str`.
+    Str,
 }
 
 /// Builtin constructor names.
@@ -295,6 +297,8 @@ pub enum BuiltinClassMethod {
     InvokableInvoke,
     /// `Int.fromInteger`.
     IntFromInteger,
+    /// `Str.fromString`.
+    StrFromString,
 }
 
 /// Builtin resolution category.

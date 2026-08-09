@@ -12,8 +12,8 @@ use hir::{
     ast::{
         Ident,
         function::{
-            BinOp, Expr, ExprKind, FuncBody, FuncParam, MatchArm, Pat, PatKind, Stmt, StmtKind,
-            UnOp,
+            BinOp, Expr, ExprKind, FuncBody, FuncParam, LitKind, MatchArm, Pat, PatKind, Stmt,
+            StmtKind, UnOp,
         },
         item::{
             AdtDef, ContractItem, FuncKind, FunctionDef, Import, ImportSelector, InstanceDef, Item,
@@ -34,7 +34,7 @@ use hir_ty::{
     ProductShape, Solution, Ty, TyCtor, TyKind, TypeLowering, UserTyCtor, UserTyCtorKind,
     canonical_goal, canonical_goal_with_allowed, contract_dispatch_surface_for_module,
     contract_overlay_backend_name, derived_generic_instance_plan, derived_generic_plan,
-    frontend_desugar_plan, infer_body, is_contract_deployment_main_def,
+    frontend_desugar_plan, infer_body, is_canonical_std_def_named, is_contract_deployment_main_def,
     is_contract_dispatch_main_def, lower_normalized_function_with_inferred_signature,
     prepare_module, solve, solver::DerivedClauseKind, trait_env_from_module_resolution,
     trait_env_from_module_resolution_and_imports, trait_env_with_givens,

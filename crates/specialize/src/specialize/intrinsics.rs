@@ -29,6 +29,7 @@ pub(super) fn builtin_name(kind: hir_nameres::BuiltinKind) -> &'static str {
         hir_nameres::BuiltinKind::ClassMethod(method) => match method {
             hir_nameres::BuiltinClassMethod::InvokableInvoke => "invokable.invoke",
             hir_nameres::BuiltinClassMethod::IntFromInteger => "Int.fromInteger",
+            hir_nameres::BuiltinClassMethod::StrFromString => "Str.fromString",
         },
         hir_nameres::BuiltinKind::Type(_) | hir_nameres::BuiltinKind::Class(_) => "<builtin>",
     }

@@ -124,6 +124,9 @@ impl<'db> InferCtx<'db> {
     }
 
     fn finish(mut self) -> InferenceResult<'db> {
+        if self.trait_env.is_none() {
+            self.default_open_string_coercions_without_solver();
+        }
         let solved = if let Some(trait_env) = self.trait_env {
             self.solve_pending_obligations(trait_env)
         } else {
@@ -413,6 +416,11 @@ impl<'db> InferCtx<'db> {
         self.engine.from_ty(Ty::string(self.db))
     }
 
+    pub(super) fn source_string(&mut self) -> InferTy<'db> {
+        self.engine
+            .from_ty(crate::support::source_string_ty(self.db))
+    }
+
     pub(super) fn poison_expr(&mut self, body: FuncBody<'db>, expr: Id<Expr<'db>>) {
         self.poisoned_exprs.insert((body, expr));
     }
@@ -467,6 +475,7 @@ impl<'db> InferCtx<'db> {
     pub(super) fn obligation_source_label_span(&self, source: &ObligationSource<'db>) -> LabelSpan {
         match source {
             ObligationSource::IntegerLiteral { body, expr }
+            | ObligationSource::StringCoercion { body, expr }
             | ObligationSource::ClassMethod { body, expr } => self.expr_label_span(*body, *expr),
             ObligationSource::CallSite {
                 body, call_expr, ..

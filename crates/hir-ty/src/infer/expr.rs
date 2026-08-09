@@ -98,6 +98,29 @@ impl<'db> InferCtx<'db> {
             }
             ExprKind::Call { callee, args } => {
                 if let Some(ty) =
+                    self.infer_str_from_string_call(body, expr_id, *callee, args, expected.clone())
+                {
+                    ty
+                } else if self.is_concat_lit_callee(body, *callee) {
+                    let source = self.source_string();
+                    let inferred =
+                        self.infer_call_expr(body, expr_id, *callee, args, Some(source.clone()));
+                    if matches!(inferred, InferTy::Error) || self.expr_is_poisoned(body, expr_id) {
+                        InferTy::Error
+                    } else {
+                        let target = expected.clone().unwrap_or(source);
+                        self.pending.push(PendingObligation {
+                            class: ClassId::Builtin(BuiltinClassId::Str),
+                            main: target.clone(),
+                            args: Vec::new(),
+                            source: ObligationSource::StringCoercion {
+                                body,
+                                expr: expr_id,
+                            },
+                        });
+                        target
+                    }
+                } else if let Some(ty) =
                     self.infer_constructor_call(body, expr_id, *callee, args, expected.clone())
                 {
                     ty
@@ -701,10 +724,100 @@ impl<'db> InferCtx<'db> {
                 });
                 ty
             }
-            LitKind::String(_) => expected
-                .and_then(|expected| self.expected_string_lit_ty(expected))
-                .unwrap_or_else(|| self.string()),
+            LitKind::String(_) => {
+                let target = expected.unwrap_or_else(|| self.source_string());
+                self.pending.push(PendingObligation {
+                    class: ClassId::Builtin(BuiltinClassId::Str),
+                    main: target.clone(),
+                    args: Vec::new(),
+                    source: ObligationSource::StringCoercion { body, expr },
+                });
+                target
+            }
             LitKind::Error => InferTy::Error,
+        }
+    }
+
+    fn infer_str_from_string_call(
+        &mut self,
+        body: FuncBody<'db>,
+        call_expr: Id<Expr<'db>>,
+        callee_expr: Id<Expr<'db>>,
+        args: &[Id<Expr<'db>>],
+        expected: Option<InferTy<'db>>,
+    ) -> Option<InferTy<'db>> {
+        let kind =
+            hir_nameres::BuiltinKind::ClassMethod(hir_nameres::BuiltinClassMethod::StrFromString);
+        if !matches!(
+            self.expr_resolutions.get(&(body, callee_expr)),
+            Some(hir_nameres::Resolution::Builtin(resolved)) if *resolved == kind
+        ) {
+            return None;
+        }
+
+        let callee = CallSiteCallee::Builtin(kind);
+        if args.len() != 1 {
+            self.emit_expr_error(
+                body,
+                call_expr,
+                TypeckDiagnostic::WrongArity {
+                    span: self.expr_label_span(body, call_expr),
+                    context: "call".to_owned(),
+                    expected: 1,
+                    actual: args.len(),
+                    callee: callee_diagnostic_info(self.db, self.entry_module, &callee),
+                },
+            );
+            for arg in args {
+                self.infer_expr(body, *arg);
+            }
+            self.expr_tys.push((body, callee_expr, InferTy::Error));
+            return Some(InferTy::Error);
+        }
+
+        let source_ty = self.source_string();
+        let source = self.infer_expr_expected(body, args[0], Some(source_ty.clone()));
+        if matches!(source, InferTy::Error) {
+            self.poison_expr(body, call_expr);
+            self.expr_tys.push((body, callee_expr, InferTy::Error));
+            return Some(InferTy::Error);
+        }
+
+        let target = expected.unwrap_or_else(|| source_ty.clone());
+        let callee_ty = InferTy::Function {
+            params: vec![source_ty],
+            ret: Box::new(target.clone()),
+        };
+        self.expr_tys.push((body, callee_expr, callee_ty));
+        self.pending.push(PendingObligation {
+            class: ClassId::Builtin(BuiltinClassId::Str),
+            main: target.clone(),
+            args: Vec::new(),
+            source: ObligationSource::CallSite {
+                body,
+                call_expr,
+                callee_expr,
+                callee,
+            },
+        });
+        self.comptime_obligations.push(ComptimeObligation {
+            body,
+            expr: args[0],
+            kind: ComptimeObligationKind::CallParam {
+                call_expr,
+                callee_expr,
+                function: "Str.fromString".to_owned(),
+                param: "s".to_owned(),
+            },
+        });
+        Some(target)
+    }
+
+    fn is_concat_lit_callee(&self, body: FuncBody<'db>, callee: Id<Expr<'db>>) -> bool {
+        match &body.exprs(self.db).get(callee).kind {
+            ExprKind::Ident(name) => (*name.atom()).text(self.db) == "concatLit",
+            ExprKind::Field { field, .. } => (*field.atom()).text(self.db) == "concatLit",
+            _ => false,
         }
     }
 
@@ -724,18 +837,24 @@ impl<'db> InferCtx<'db> {
 
     fn infer_ty_is_string_adt(&mut self, ty: InferTy<'db>) -> bool {
         let ty = self.normalize_aliases(ty);
-        let InferTy::Named {
-            ctor:
-                TyCtor::User(crate::UserTyCtor {
-                    def,
-                    kind: crate::UserTyCtorKind::Adt,
-                }),
-            args,
-        } = self.engine.resolve(ty)
-        else {
-            return false;
-        };
-        args.is_empty() && def.name(self.db).as_deref() == Some("string")
+        match self.engine.resolve(ty) {
+            InferTy::Named {
+                ctor: TyCtor::Builtin(BuiltinTyCtor::String),
+                args,
+            } => args.is_empty(),
+            InferTy::Named {
+                ctor:
+                    TyCtor::User(crate::UserTyCtor {
+                        def,
+                        kind: crate::UserTyCtorKind::Adt,
+                    }),
+                args,
+            } => {
+                args.is_empty()
+                    && crate::support::is_canonical_std_def_named(self.db, def, "string")
+            }
+            _ => false,
+        }
     }
 
     fn infer_lambda(

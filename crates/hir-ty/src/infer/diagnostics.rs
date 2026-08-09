@@ -1318,6 +1318,9 @@ fn builtin_name(kind: hir_nameres::BuiltinKind) -> Option<&'static str> {
         hir_nameres::BuiltinKind::ClassMethod(hir_nameres::BuiltinClassMethod::IntFromInteger) => {
             "fromInteger"
         }
+        hir_nameres::BuiltinKind::ClassMethod(hir_nameres::BuiltinClassMethod::StrFromString) => {
+            "fromString"
+        }
         hir_nameres::BuiltinKind::Type(_) | hir_nameres::BuiltinKind::Class(_) => return None,
     })
 }
@@ -2131,6 +2134,7 @@ pub(super) fn class_id_from_resolution<'db>(
             let class = match class {
                 hir_nameres::BuiltinClass::Invokable => BuiltinClassId::Invokable,
                 hir_nameres::BuiltinClass::Int => BuiltinClassId::Int,
+                hir_nameres::BuiltinClass::Str => BuiltinClassId::Str,
             };
             Some(ClassId::Builtin(class))
         }

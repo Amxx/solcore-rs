@@ -62,6 +62,7 @@ pub(super) fn builtin_type_or_class<'db>(name: &str) -> Option<Resolution<'db>> 
         "integer" => BuiltinKind::Type(BuiltinType::Integer),
         "invokable" => BuiltinKind::Class(BuiltinClass::Invokable),
         "Int" => BuiltinKind::Class(BuiltinClass::Int),
+        "Str" => BuiltinKind::Class(BuiltinClass::Str),
         _ => return None,
     };
     Some(Resolution::Builtin(kind))
@@ -87,6 +88,7 @@ pub(super) fn builtin_term<'db>(name: &str) -> Option<Resolution<'db>> {
         "integerEq" => BuiltinKind::Function(BuiltinFunction::IntegerEq),
         "invokable.invoke" => BuiltinKind::ClassMethod(BuiltinClassMethod::InvokableInvoke),
         "Int.fromInteger" => BuiltinKind::ClassMethod(BuiltinClassMethod::IntFromInteger),
+        "Str.fromString" => BuiltinKind::ClassMethod(BuiltinClassMethod::StrFromString),
         _ => return None,
     };
     Some(Resolution::Builtin(kind))

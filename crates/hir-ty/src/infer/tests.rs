@@ -789,6 +789,137 @@ function exerciseBig(value: Big) -> Big {
 }
 
 #[test]
+fn string_literals_and_concat_lit_use_str_conversion_only_at_literal_sites() {
+    let mut db = TestDb::default();
+    let std_path = PathBuf::from("/std/std.solc");
+    let main_path = PathBuf::from("/main/main.solc");
+    let std_file = source_file_at_path(
+        &db,
+        &std_path,
+        r#"
+export { memory(*), string, concatLit, strlenLit };
+data memory(a) = memory(word);
+data string;
+function concatLit(comptime lhs: string, comptime rhs: string) -> string { return lhs; }
+function strlenLit(comptime value: string) -> word { return 0; }
+"#,
+    );
+    let main_file = source_file_at_path(
+        &db,
+        &main_path,
+        r#"
+import std;
+import std.{memory, string, strlenLit};
+
+data Tag = Tag(word);
+instance Tag : Str {
+  function fromString(comptime value: string) -> Tag {
+    return Tag(strlenLit(value));
+  }
+}
+
+function literal() -> memory(string) { return "hello"; }
+function concatLit(lhs: word, rhs: word) -> word { return lhs; }
+function concatenated() -> memory(string) { return std.concatLit("he", "llo"); }
+function explicit(value: string) -> memory(string) { return Str.fromString(value); }
+function tagged() -> Tag { return "abcd"; }
+function taggedFromLet() -> Tag {
+  let value = "abcd";
+  return Str.fromString(value);
+}
+function inferredLiteral() -> () { let value = "x"; return (); }
+function inferredConcat() -> () { let value = std.concatLit("a", "b"); return (); }
+function consumePair(value: (string, word)) -> word { return 0; }
+function inferredTuple() -> word {
+  let value = ("x", 0);
+  return consumePair(value);
+}
+function inferredComptimeParam() -> () {
+  let sink = lam (comptime value) -> () { return (); };
+  sink("x");
+  return ();
+}
+function invalidConcat() -> memory(string) { return concatLit(1, 2); }
+function makeWord() -> word { return 0; }
+function invalidSource() -> memory(string) {
+  let value;
+  let result: memory(string) = Str.fromString(value);
+  value = makeWord();
+  return result;
+}
+function runtime(value: string) -> memory(string) { return value; }
+"#,
+    );
+    let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
+    let main_key =
+        module_key_for_path(LibraryId::Main, &PathBuf::from("/main"), &main_path).unwrap();
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key.clone(), main_file);
+    assert!(
+        parse_diagnostics(&db, main_file).is_empty(),
+        "{:?}",
+        parse_diagnostics(&db, main_file)
+    );
+    let main_module = module_id_from_key(&db, &main_key);
+    let module_diagnostics = module_typeck_diagnostics(&db, main_module)
+        .iter()
+        .map(|diagnostic| diagnostic.lower(&db))
+        .collect::<Vec<_>>();
+    assert_eq!(module_diagnostics.len(), 3, "{module_diagnostics:?}");
+    assert!(
+        module_diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("SC0201")
+                && diagnostic.message.contains("memory")
+                && diagnostic.message.contains("string")
+        }),
+        "{module_diagnostics:?}"
+    );
+
+    assert!(
+        module_diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("SC0201")
+                && diagnostic.message.contains("string")
+                && diagnostic.message.contains("word")
+        }),
+        "{module_diagnostics:?}"
+    );
+
+    for name in [
+        "literal",
+        "concatenated",
+        "explicit",
+        "tagged",
+        "taggedFromLet",
+    ] {
+        let (_, result) = infer_module_function(&db, main_module, name);
+        assert_no_typeck(&result);
+        assert!(
+            result.obligations.iter().any(|obligation| {
+                matches!(
+                    obligation.pred.kind(&db),
+                    PredKind::InClass {
+                        class: ClassId::Builtin(BuiltinClassId::Str),
+                        ..
+                    }
+                )
+            }),
+            "{name}: {:?}",
+            result.obligations
+        );
+    }
+
+    for name in [
+        "inferredLiteral",
+        "inferredConcat",
+        "inferredTuple",
+        "inferredComptimeParam",
+    ] {
+        let (_, result) = infer_module_function(&db, main_module, name);
+        assert_no_typeck(&result);
+    }
+}
+
+#[test]
 fn module_local_string_and_integer_adts_remain_runtime_types() {
     let diagnostics = lowered_module_typeck_diagnostics(
         r#"
@@ -812,6 +943,29 @@ function exercise(value: word) -> () {
     );
 
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn module_local_string_adt_rejects_primitive_string_patterns() {
+    let diagnostics = lowered_module_typeck_diagnostics(
+        r#"
+data string = RuntimeString(word);
+
+function inspect(value: string) -> word {
+  match value {
+  | "a" => return 1;
+  | _ => return 0;
+  }
+}
+"#,
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("SC0201")),
+        "{diagnostics:?}"
+    );
 }
 
 #[test]
@@ -1113,6 +1267,128 @@ instance word:IsA {
     );
 
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn builtin_str_instance_requires_from_string() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+data Wrapped = Wrapped(word);
+instance Wrapped:Str {}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let diagnostics = crate::solver::instance_soundness_diagnostics(&db, module);
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            TypeckDiagnostic::IncompleteInstance { class, missing, .. }
+                if class == "Str" && missing == &["fromString".to_owned()]
+        )),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn builtin_str_instance_rejects_unknown_methods() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+data Wrapped = Wrapped(word);
+instance Wrapped:Str {
+  function unexpected(x:word) -> word { return x; }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let diagnostics = crate::solver::instance_soundness_diagnostics(&db, module);
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            TypeckDiagnostic::UnknownInstanceMethod { name, .. }
+                if name == "Str.unexpected"
+        )),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn builtin_str_instance_rejects_wrong_from_string_signature() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+data Wrapped = Wrapped(word);
+instance Wrapped:Str {
+  function fromString(s:word) -> Wrapped { return Wrapped(s); }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let diagnostics = crate::solver::instance_soundness_diagnostics(&db, module);
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            TypeckDiagnostic::InvalidInstanceMethodSignature { method, .. }
+                if method == "fromString"
+        )),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn builtin_str_ground_instance_rejects_overlapping_source_instance() {
+    let mut db = TestDb::default();
+    let std_path = PathBuf::from("/std/std.solc");
+    let main_path = PathBuf::from("/main/main.solc");
+    let std_file = source_file_at_path(
+        &db,
+        &std_path,
+        r#"
+export { memory(*), string };
+data memory(a) = memory(word);
+data string;
+"#,
+    );
+    let main_file = source_file_at_path(
+        &db,
+        &main_path,
+        r#"
+import std.{*};
+
+instance string:Str {
+  function fromString(comptime value:string) -> string { return value; }
+}
+
+instance memory(string):Str {
+  function fromString(comptime value:string) -> memory(string) {
+    return Str.fromString(value);
+  }
+}
+"#,
+    );
+    let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
+    let main_key =
+        module_key_for_path(LibraryId::Main, &PathBuf::from("/main"), &main_path).unwrap();
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key.clone(), main_file);
+    let module = module_id_from_key(&db, &main_key);
+    let diagnostics = crate::solver::instance_soundness_diagnostics(&db, module);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| matches!(
+                diagnostic,
+                TypeckDiagnostic::OverlappingInstance {
+                    overlaps_span: None,
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
 }
 
 #[test]

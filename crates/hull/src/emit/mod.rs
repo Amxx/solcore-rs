@@ -25,7 +25,7 @@ use parser::parse_file_to_hir;
 use specialize::{
     MonoArm, MonoBuiltinCtor, MonoCallOrigin, MonoContract, MonoEntry, MonoExpr, MonoExprArm,
     MonoExprKind, MonoFunction, MonoId, MonoIntrinsic, MonoItem, MonoModule, MonoPat, MonoPatKind,
-    MonoStmt, MonoStmtKind,
+    MonoStmt, MonoStmtKind, decode_string_literal,
 };
 
 use crate::{
@@ -75,6 +75,10 @@ struct Emitter<'db> {
     layout_stack: Vec<(DefId<'db>, Vec<SemTy<'db>>)>,
     if_stmt_spans: Vec<Span<'db>>,
     predeclared_lets: Vec<PredeclaredLet<'db>>,
+    /// Runtime allocators for compile-time string literals, keyed by decoded
+    /// UTF-8 bytes so equivalent literal spellings share one helper.
+    string_literals: BTreeMap<Vec<u8>, StringLiteralHelper<'db>>,
+    next_string_literal: usize,
     fresh: usize,
 }
 
@@ -83,4 +87,10 @@ struct PredeclaredLet<'db> {
     span: Span<'db>,
     backend_name: String,
     ty: Ty<'db>,
+}
+
+#[derive(Clone)]
+struct StringLiteralHelper<'db> {
+    span: Span<'db>,
+    name: String,
 }

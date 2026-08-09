@@ -193,7 +193,7 @@ impl SpecializeDiagnosticKind<'_> {
                     .to_owned(),
             ],
             Self::IntegerErasure { .. } => vec![
-                "`integer` and `comptime` values must be eliminated before runtime lowering"
+                "`integer`, `string`, and `comptime` values must be eliminated before runtime lowering"
                     .to_owned(),
                 "help: evaluate the value at comptime or change it to a runtime-representable type"
                     .to_owned(),

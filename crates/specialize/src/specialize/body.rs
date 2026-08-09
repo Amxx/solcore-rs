@@ -24,6 +24,7 @@ pub(super) struct BodyIndex<'db> {
     call_evidence: FxHashMap<(FuncBody<'db>, Id<Expr<'db>>, Id<Expr<'db>>), CallSiteEvidence<'db>>,
     class_method_value_evidence:
         FxHashMap<(FuncBody<'db>, Id<Expr<'db>>, DefId<'db>), Evidence<'db>>,
+    string_coercion_evidence: FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), Evidence<'db>>,
     first_builtin_int_evidence: Option<CallSiteEvidence<'db>>,
     comptime_let_stmts: FxHashSet<(FuncBody<'db>, Id<Stmt<'db>>)>,
     comptime_obligations: FxHashMap<FuncBody<'db>, Vec<ComptimeObligation<'db>>>,
@@ -43,6 +44,7 @@ impl<'db> BodyIndex<'db> {
             pat_resolutions: FxHashMap::default(),
             call_evidence: FxHashMap::default(),
             class_method_value_evidence: FxHashMap::default(),
+            string_coercion_evidence: FxHashMap::default(),
             first_builtin_int_evidence: None,
             comptime_let_stmts: FxHashSet::default(),
             comptime_obligations: FxHashMap::default(),
@@ -107,6 +109,13 @@ impl<'db> BodyIndex<'db> {
             let Some(obligation) = result.obligations.get(solved.obligation) else {
                 continue;
             };
+            if let hir_ty::ObligationSource::StringCoercion { body, expr } = obligation.source {
+                index
+                    .string_coercion_evidence
+                    .entry((body, expr))
+                    .or_insert_with(|| solved.evidence.clone());
+                continue;
+            }
             let hir_ty::ObligationSource::ClassMethod { body, expr } = obligation.source else {
                 continue;
             };
@@ -276,6 +285,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                     .or_else(|| init.and_then(|expr| self.expr_ty(expr)).or(annotation_ty))
                     .map(|ty| self.subst.apply_ty(self.driver.db, ty))
                     .unwrap_or_else(|| Ty::unknown(self.driver.db));
+                let sem_ty = self.normalize_body_ty(sem_ty);
                 let id = MonoId {
                     name: ident_text(self.driver.db, name),
                     ty: self.driver.mono_ty(sem_ty, "let binding", span)?,
@@ -415,7 +425,37 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         {
             ty = closed;
         }
+        ty = self.normalize_body_ty(ty);
         let mono_ty = self.driver.mono_ty(ty, "expression", expr.span)?;
+        if let Some(evidence) = self.string_coercion_evidence(expr_id) {
+            let source_ty = self.source_string_ty();
+            let source_mono_ty =
+                self.driver
+                    .mono_ty(source_ty, "string literal source", expr.span)?;
+            let source_kind = match &expr.kind {
+                ExprKind::Lit(LitKind::String(value)) => {
+                    MonoExprKind::Lit(LitKind::String(value.clone()))
+                }
+                ExprKind::Call { callee, args } => {
+                    self.call_expr(expr_id, *callee, args, source_ty, expr.span)?
+                }
+                _ => MonoExprKind::Error,
+            };
+            let source = MonoExpr {
+                span: expr.span,
+                ty: source_mono_ty,
+                kind: source_kind,
+            };
+            let evidence = self.specialize_evidence(evidence);
+            let kind = self.str_from_string_call(vec![source], ty, expr.span, Some(evidence))?;
+            let mono_expr = MonoExpr {
+                span: expr.span,
+                ty: mono_ty,
+                kind,
+            };
+            self.lowered_exprs.insert(expr_id, mono_expr.clone());
+            return Some(mono_expr);
+        }
         if let Some(kind) = self.bool_expr_kind(expr_id, mono_ty, expr.span) {
             let mono_expr = MonoExpr {
                 span: expr.span,
@@ -677,7 +717,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         let mut locals = self.locals.clone();
         let mut mono_params = Vec::new();
         for (param, param_ty) in params.iter().zip(param_tys) {
-            let param_ty = self.subst.apply_ty(self.driver.db, *param_ty);
+            let param_ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, *param_ty));
             let name = param_name(self.driver.db, param).unwrap_or("_").to_owned();
             let mono_ty = self.driver.mono_ty(param_ty, "lambda parameter", span)?;
             locals.insert(name.clone(), param_ty);
@@ -735,6 +775,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             .copied()
             .map(|ty| self.subst.apply_ty(self.driver.db, ty))
             .unwrap_or_else(|| Ty::unknown(self.driver.db));
+        let ty = self.normalize_body_ty(ty);
         let mono_ty = self.driver.mono_ty(ty, "pattern", pat.span)?;
         if let Some(kind) = self.bool_pat_kind(pat_id, mono_ty, pat.span) {
             return Some(MonoPat {
@@ -1159,6 +1200,32 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             .cloned()
     }
 
+    fn string_coercion_evidence(&self, expr: Id<Expr<'db>>) -> Option<Evidence<'db>> {
+        self.index
+            .string_coercion_evidence
+            .get(&(self.body, expr))
+            .cloned()
+    }
+
+    fn source_string_ty(&self) -> Ty<'db> {
+        self.driver
+            .adts
+            .keys()
+            .copied()
+            .find(|def| is_canonical_std_def_named(self.driver.db, *def, "string"))
+            .map(|def| {
+                Ty::named(
+                    self.driver.db,
+                    TyCtor::User(UserTyCtor {
+                        def,
+                        kind: UserTyCtorKind::Adt,
+                    }),
+                    Vec::new(),
+                )
+            })
+            .unwrap_or_else(|| Ty::string(self.driver.db))
+    }
+
     pub(super) fn invokable_call_main_ty(
         &self,
         call_expr: Id<Expr<'db>>,
@@ -1232,6 +1299,18 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             &resolution.item_resolutions,
         );
         Some(normalizer.normalize_ty(lowerer.lower_type(ty)))
+    }
+
+    fn normalize_body_ty(&self, ty: Ty<'db>) -> Ty<'db> {
+        let Some(resolution) = self.driver.try_module_resolution(self.info.module) else {
+            return ty;
+        };
+        AliasNormalizer::new(
+            self.driver.db,
+            self.info.module,
+            &resolution.item_resolutions,
+        )
+        .normalize_ty(ty)
     }
 
     fn stmt_has_comptime_let_obligation(&self, stmt: Id<Stmt<'db>>) -> bool {

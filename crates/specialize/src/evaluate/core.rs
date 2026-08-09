@@ -1,4 +1,7 @@
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, VecDeque},
+};
 
 use hir::{
     ast::function::{
@@ -19,7 +22,8 @@ use super::{
     },
     erasure::{
         display_backend_symbol, display_mono_function_name, erase_comptime_ty,
-        lambda_ret_is_comptime, param_is_comptime, ty_is_builtin, ty_is_comptime, ty_is_function,
+        lambda_ret_is_comptime, param_is_comptime, ty_is_builtin, ty_is_comptime,
+        ty_is_comptime_string, ty_is_function,
     },
     ident_text,
     known::{
@@ -54,6 +58,19 @@ struct InlineFrame<'db> {
     name: String,
     args: Vec<MonoExpr<'db>>,
     comptime: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StringCloneKey {
+    callee: String,
+    // Parameter positions keep the key unambiguous even for recovered `_`
+    // parameter names; decoded contents deduplicate equivalent folded literals.
+    bindings: Vec<(usize, String)>,
+}
+
+struct PendingStringClone<'db> {
+    function: MonoFunction<'db>,
+    env: VEnv<'db>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +113,14 @@ pub(super) struct Evaluator<'db> {
     inline_stack: Vec<InlineFrame<'db>>,
     fuel_limit: usize,
     fuel: usize,
+    // Unlike inline fuel, clone fuel is never reset per emitted function. A
+    // recursive function deriving a fresh literal therefore terminates.
+    clone_fuel: usize,
+    // Mono functions are module-global. Hull's object reachability copies a
+    // shared clone into every object that calls it, so module-wide dedup is safe.
+    clone_names: FxHashMap<StringCloneKey, String>,
+    pending_string_clones: VecDeque<PendingStringClone<'db>>,
+    next_clone_id: usize,
     inline_depth_limit: usize,
     memory: BTreeMap<BigInt, u8>,
     comptime_mode: bool,
@@ -162,6 +187,10 @@ impl<'db> Evaluator<'db> {
             inline_stack: Vec::new(),
             fuel_limit: fuel,
             fuel,
+            clone_fuel: fuel,
+            clone_names: FxHashMap::default(),
+            pending_string_clones: VecDeque::new(),
+            next_clone_id: 0,
             inline_depth_limit,
             memory: BTreeMap::new(),
             comptime_mode: false,
@@ -169,7 +198,20 @@ impl<'db> Evaluator<'db> {
         }
     }
 
-    pub(super) fn eval_function(&mut self, mut function: MonoFunction<'db>) -> MonoFunction<'db> {
+    pub(super) fn eval_function(&mut self, function: MonoFunction<'db>) -> MonoFunction<'db> {
+        self.eval_function_with_env(function, VEnv::default())
+    }
+
+    pub(super) fn eval_next_string_clone(&mut self) -> Option<MonoFunction<'db>> {
+        let pending = self.pending_string_clones.pop_front()?;
+        Some(self.eval_function_with_env(pending.function, pending.env))
+    }
+
+    fn eval_function_with_env(
+        &mut self,
+        mut function: MonoFunction<'db>,
+        initial_env: VEnv<'db>,
+    ) -> MonoFunction<'db> {
         // Bound total unfolding work for each emitted function. The counter is
         // monotone while that function is evaluated, so sibling calls cannot
         // repeatedly reclaim the same budget.
@@ -182,10 +224,11 @@ impl<'db> Evaluator<'db> {
             .iter()
             .filter(|param| ret_comptime || param_is_comptime(self.db, param))
             .map(|param| param.name.clone())
+            .chain(initial_env.keys().cloned())
             .collect::<CEnv>();
         let (_, _, body) = self.eval_stmts(
             &type_reg,
-            VEnv::default(),
+            initial_env,
             comptime_env,
             function.body,
             ret_comptime,
@@ -645,7 +688,12 @@ impl<'db> Evaluator<'db> {
                         }],
                     )
                 } else {
-                    let (env, comptime_env) = self.preserve_comptime_known_env(env, comptime_env);
+                    let (mut env, mut comptime_env) =
+                        self.preserve_comptime_known_env(env, comptime_env);
+                    for name in written {
+                        env.remove(&name);
+                        comptime_env.remove(&name);
+                    }
                     (
                         env,
                         comptime_env,
@@ -739,7 +787,12 @@ impl<'db> Evaluator<'db> {
 
     fn expr_survives_unknown_write(&self, expr: &MonoExpr<'db>) -> bool {
         match &expr.kind {
-            MonoExprKind::Proxy(_) | MonoExprKind::Lambda { .. } => true,
+            // A compile-time string has no mutable runtime location. Keep a
+            // clone binding across unknown callees; the assembly path removes
+            // names explicitly written by that block before carrying it on.
+            MonoExprKind::Lit(LitKind::String(_))
+            | MonoExprKind::Proxy(_)
+            | MonoExprKind::Lambda { .. } => true,
             MonoExprKind::Var(id) => self.functions.contains_key(&id.name),
             MonoExprKind::Tuple(elems) => elems
                 .iter()
@@ -926,6 +979,9 @@ impl<'db> Evaluator<'db> {
                 if !matches!(origin, MonoCallOrigin::Builtin(_)) {
                     self.check_comptime_params(&callee.name, &args, comptime_env, span);
                     if let Some(result) = self.try_inline(&callee.name, &args, span) {
+                        return result;
+                    }
+                    if let Some(result) = self.try_clone_string_call(&callee, &args, ty, span) {
                         return result;
                     }
                 }
@@ -1158,14 +1214,16 @@ impl<'db> Evaluator<'db> {
                 let args = self.closure_call_args(function, args);
                 self.check_comptime_params(&id.name, &args, &CEnv::default(), span);
                 self.try_inline(&id.name, &args, span).or_else(|| {
-                    Some(MonoExpr {
-                        span,
-                        ty,
-                        kind: MonoExprKind::Call {
-                            callee: id.clone(),
-                            args,
-                            origin: MonoCallOrigin::ByName,
-                        },
+                    self.try_clone_string_call(id, &args, ty, span).or_else(|| {
+                        Some(MonoExpr {
+                            span,
+                            ty,
+                            kind: MonoExprKind::Call {
+                                callee: id.clone(),
+                                args,
+                                origin: MonoCallOrigin::ByName,
+                            },
+                        })
                     })
                 })
             }
@@ -1616,6 +1674,129 @@ impl<'db> Evaluator<'db> {
             }
             FoldOutcome::ReturnedUnknownAbort | FoldOutcome::FellThroughContinue(_, _) => None,
         }
+    }
+
+    fn try_clone_string_call(
+        &mut self,
+        callee: &MonoId<'db>,
+        args: &[MonoExpr<'db>],
+        result_ty: MonoTy<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        // This hook runs after argument folding and ordinary inlining. It can
+        // therefore use the final string contents as the clone identity and
+        // make direct and folded-equivalent call sites share one definition.
+        let function = self.functions.get(&callee.name)?.clone();
+        if function.params.len() != args.len() {
+            return None;
+        }
+
+        let mut key_bindings = Vec::new();
+        let mut env = VEnv::default();
+        let mut erased = FxHashSet::default();
+        for (index, (param, arg)) in function.params.iter().zip(args).enumerate() {
+            if !ty_is_comptime_string(self.db, param.ty.ty()) {
+                continue;
+            }
+            let value = known_string(arg)?;
+            key_bindings.push((index, value.clone()));
+            env.insert(param.name.clone(), string_expr(value, param.ty, arg.span));
+            erased.insert(index);
+        }
+        if key_bindings.is_empty() {
+            return None;
+        }
+
+        let key = StringCloneKey {
+            callee: callee.name.clone(),
+            bindings: key_bindings,
+        };
+        let kept_params = function
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !erased.contains(index))
+            .map(|(_, param)| param.clone())
+            .collect::<Vec<_>>();
+        let clone_ty = MonoTy::new_unchecked(hir_ty::Ty::function(
+            self.db,
+            kept_params.iter().map(|param| param.ty.ty()).collect(),
+            function.ret.ty(),
+        ));
+
+        let clone_name = if let Some(name) = self.clone_names.get(&key) {
+            name.clone()
+        } else {
+            if self.clone_fuel == 0 {
+                self.push_clone_fuel_diagnostic(&function, span);
+                return None;
+            }
+            self.clone_fuel -= 1;
+            let name = self.fresh_string_clone_name(&function.name);
+            let mut clone = function.clone();
+            clone.name = name.clone();
+            clone.params = kept_params;
+
+            if self.pure_funs.contains(&function.name) {
+                self.pure_funs.insert(name.clone());
+            }
+            self.write_effects.insert(
+                name.clone(),
+                self.write_effects
+                    .get(&function.name)
+                    .cloned()
+                    .unwrap_or(AssignedNames::All),
+            );
+            self.functions.insert(name.clone(), clone.clone());
+            self.pending_string_clones.push_back(PendingStringClone {
+                function: clone,
+                env,
+            });
+            self.clone_names.insert(key, name.clone());
+            name
+        };
+
+        Some(MonoExpr {
+            span,
+            ty: result_ty,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name: clone_name,
+                    ty: clone_ty,
+                    span: callee.span,
+                },
+                args: args
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| !erased.contains(index))
+                    .map(|(_, arg)| arg.clone())
+                    .collect(),
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
+    fn fresh_string_clone_name(&mut self, base: &str) -> String {
+        loop {
+            let name = format!("{base}$ct{}", self.next_clone_id);
+            self.next_clone_id += 1;
+            if !self.functions.contains_key(&name) {
+                return name;
+            }
+        }
+    }
+
+    fn push_clone_fuel_diagnostic(&mut self, function: &MonoFunction<'db>, span: Span<'db>) {
+        if self.has_inline_failure_diagnostic() {
+            return;
+        }
+        self.diagnostics.push(SpecializeDiagnostic {
+            kind: SpecializeDiagnosticKind::ComptimeFuelExhausted {
+                function: display_mono_function_name(self.db, function),
+                limit: self.fuel_limit,
+            },
+            span: Some(span),
+        });
     }
 
     fn try_inline_stmt_call(

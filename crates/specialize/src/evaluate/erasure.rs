@@ -1,22 +1,43 @@
 use hir::span::Span;
-use hir_ty::{BuiltinTyCtor, Db, Ty, TyCtor, TyKind};
+use hir_ty::{BuiltinTyCtor, Db, Ty, TyCtor, TyKind, UserTyCtorKind, is_canonical_std_def_named};
 
-use super::core::Evaluator;
+use super::{core::Evaluator, known::known_string};
 use crate::{
     ir::{
-        MonoCallOrigin, MonoExpr, MonoExprKind, MonoFunction, MonoItem, MonoModule, MonoParam,
-        MonoPat, MonoPatKind, MonoStmt, MonoStmtKind,
+        MonoCallOrigin, MonoExpr, MonoExprKind, MonoFunction, MonoIntrinsic, MonoItem, MonoModule,
+        MonoParam, MonoPat, MonoPatKind, MonoStmt, MonoStmtKind,
         visit::{Visitor, walk_expr, walk_pat, walk_stmt},
     },
     specialize::{SpecializeDiagnostic, SpecializeDiagnosticKind, display_backend_ty},
 };
 
 pub(super) fn param_is_comptime<'db>(db: &'db dyn Db, param: &MonoParam<'db>) -> bool {
-    param.mode.is_comptime() || ty_is_comptime(db, param.ty.ty())
+    param.mode.is_comptime()
+        || ty_is_comptime(db, param.ty.ty())
+        || ty_is_comptime_string(db, param.ty.ty())
 }
 
 pub(super) fn ty_is_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
     matches!(ty.kind(db), TyKind::Comptime(_))
+}
+
+pub(super) fn ty_is_comptime_string<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let ty = strip_comptime(db, ty);
+    match ty.kind(db) {
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::String),
+            args,
+        } => args.is_empty(),
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } => {
+            args.is_empty()
+                && matches!(user.kind, UserTyCtorKind::Adt)
+                && is_canonical_std_def_named(db, user.def, "string")
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn display_mono_function_name<'db>(
@@ -79,12 +100,19 @@ pub(super) fn ty_is_builtin<'db>(db: &'db dyn Db, ty: Ty<'db>, builtin: BuiltinT
 }
 
 fn ty_needs_erasure<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    if ty_is_comptime_string(db, ty) {
+        return true;
+    }
     match ty.kind(db) {
         TyKind::Comptime(_) => true,
         TyKind::Named {
             ctor: TyCtor::Builtin(BuiltinTyCtor::Integer),
             args,
         } if args.is_empty() => true,
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } if is_runtime_string_location(db, user.def, args) => false,
         TyKind::Named { args, .. } => args.iter().any(|arg| ty_needs_erasure(db, *arg)),
         TyKind::Function { params, ret } => {
             params.iter().any(|param| ty_needs_erasure(db, *param)) || ty_needs_erasure(db, *ret)
@@ -92,6 +120,21 @@ fn ty_needs_erasure<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
         TyKind::Tuple(elems) => elems.iter().any(|elem| ty_needs_erasure(db, *elem)),
         TyKind::Error | TyKind::Unknown | TyKind::BoundVar(_) => false,
     }
+}
+
+fn is_runtime_string_location<'db>(
+    db: &'db dyn Db,
+    def: hir::anchor::DefId<'db>,
+    args: &[Ty<'db>],
+) -> bool {
+    args.len() == 1
+        && ty_is_comptime_string(db, args[0])
+        && def.name(db).is_some_and(|name| {
+            matches!(
+                name.as_str(),
+                "memory" | "storage" | "calldata" | "returndata"
+            ) && is_canonical_std_def_named(db, def, &name)
+        })
 }
 
 pub(super) fn strip_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
@@ -220,7 +263,18 @@ impl<'db> Visitor<'db> for Evaluator<'db> {
                     Some(expr.span),
                 );
             }
-            MonoExprKind::Call { callee, origin, .. } => {
+            MonoExprKind::Call {
+                callee,
+                args,
+                origin,
+            } => {
+                if matches!(
+                    origin,
+                    MonoCallOrigin::Builtin(MonoIntrinsic::MemStringFromLit)
+                ) && matches!(args.as_slice(), [arg] if known_string(arg).is_some())
+                {
+                    return;
+                }
                 if self.check_erasure_ty(
                     format!(
                         "call to `{}`",

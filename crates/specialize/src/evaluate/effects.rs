@@ -42,29 +42,30 @@ pub(super) fn compute_pure_funs<'db>(
 }
 
 pub(super) fn intrinsic_is_pure(intrinsic: MonoIntrinsic) -> bool {
-    matches!(
-        intrinsic,
+    match intrinsic {
         MonoIntrinsic::PrimAddWord
-            | MonoIntrinsic::PrimEqWord
-            | MonoIntrinsic::SubWord
-            | MonoIntrinsic::MulWord
-            | MonoIntrinsic::GtWord
-            | MonoIntrinsic::BxorWord
-            | MonoIntrinsic::BandWord
-            | MonoIntrinsic::BorWord
-            | MonoIntrinsic::BnotWord
-            | MonoIntrinsic::WordToInteger
-            | MonoIntrinsic::WordFromInteger
-            | MonoIntrinsic::IntegerAdd
-            | MonoIntrinsic::IntegerSub
-            | MonoIntrinsic::IntegerMul
-            | MonoIntrinsic::IntegerLt
-            | MonoIntrinsic::IntegerEq
-            | MonoIntrinsic::ConcatLit
-            | MonoIntrinsic::StrlenLit
-            | MonoIntrinsic::KeccakLit
-            | MonoIntrinsic::KeccakWordLit
-    )
+        | MonoIntrinsic::PrimEqWord
+        | MonoIntrinsic::SubWord
+        | MonoIntrinsic::MulWord
+        | MonoIntrinsic::GtWord
+        | MonoIntrinsic::BxorWord
+        | MonoIntrinsic::BandWord
+        | MonoIntrinsic::BorWord
+        | MonoIntrinsic::BnotWord
+        | MonoIntrinsic::WordToInteger
+        | MonoIntrinsic::WordFromInteger
+        | MonoIntrinsic::IntegerAdd
+        | MonoIntrinsic::IntegerSub
+        | MonoIntrinsic::IntegerMul
+        | MonoIntrinsic::IntegerLt
+        | MonoIntrinsic::IntegerEq
+        | MonoIntrinsic::ConcatLit
+        | MonoIntrinsic::StrlenLit
+        | MonoIntrinsic::KeccakLit
+        | MonoIntrinsic::KeccakWordLit => true,
+        // Materialization allocates and writes EVM memory at runtime.
+        MonoIntrinsic::MemStringFromLit => false,
+    }
 }
 
 fn function_is_pure<'db>(

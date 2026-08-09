@@ -62,6 +62,7 @@ pub use solver::{
     trait_env_for_module, trait_env_from_module_resolution,
     trait_env_from_module_resolution_and_imports, trait_env_with_givens,
 };
+pub use support::is_canonical_std_def_named;
 
 /// Database contract required by HIR type queries.
 #[salsa::db]

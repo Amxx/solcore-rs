@@ -210,8 +210,13 @@ forall a . function absurd() -> a {
 }
 
 // TODO: use bytes4
-// TODO: add literal version Msg(string)
 data Error = Error(word) | Empty | Msg(memory(string));
+
+instance Error : Str {
+    function fromString(s: string) -> Error {
+        return Error.Msg(Str.fromString(s));
+    }
+}
 
 // Revert with Error selector.
 function revertWithError(e:Error) -> () {

@@ -807,6 +807,15 @@ fn builtin_comptime_sig(kind: hir_nameres::BuiltinKind) -> Option<ComptimeCallab
             }],
             ret_comptime: true,
         },
+        BuiltinKind::ClassMethod(BuiltinClassMethod::StrFromString) => ComptimeCallableSig {
+            name: "Str.fromString".to_owned(),
+            params: vec![ComptimeParamInfo {
+                name: "s".to_owned(),
+                is_comptime: true,
+                has_type_var: false,
+            }],
+            ret_comptime: false,
+        },
         BuiltinKind::Function(BuiltinFunction::PrimAddWord | BuiltinFunction::PrimEqWord)
         | BuiltinKind::Function(BuiltinFunction::Invoke)
         | BuiltinKind::ClassMethod(BuiltinClassMethod::InvokableInvoke)

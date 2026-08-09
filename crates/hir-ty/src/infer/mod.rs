@@ -168,6 +168,13 @@ pub enum ObligationSource<'db> {
         /// Literal expression.
         expr: Id<Expr<'db>>,
     },
+    /// Obligation created by an implicit string-literal conversion.
+    StringCoercion {
+        /// Body containing the literal or `concatLit` call.
+        body: FuncBody<'db>,
+        /// Expression being converted.
+        expr: Id<Expr<'db>>,
+    },
     /// Obligation instantiated from a scheme.
     Scheme,
     /// Obligation instantiated while typing a call callee.
