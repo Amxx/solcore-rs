@@ -589,11 +589,13 @@ fn solve_class_report<'db>(
 }
 
 fn return_expr<'db>(db: &'db TestDb, body: FuncBody<'db>) -> Id<Expr<'db>> {
-    let stmt = body.stmts(db).get(body.top_level_stmts(db)[0]);
-    match &stmt.kind {
-        StmtKind::Return(Some(expr)) => *expr,
-        _ => panic!("expected return expression"),
-    }
+    body.top_level_stmts(db)
+        .iter()
+        .find_map(|stmt| match &body.stmts(db).get(*stmt).kind {
+            StmtKind::Return(Some(expr)) => Some(*expr),
+            _ => None,
+        })
+        .expect("expected return expression")
 }
 
 #[test]
@@ -1325,6 +1327,62 @@ contract C {
 }
 
 #[test]
+fn local_and_parameter_ufcs_infer_receiver_and_evidence_once() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+forall self . class self:Echo {
+  function echo(value:self) -> self;
+}
+
+instance word:Echo {
+  function echo(value:word) -> word { return value; }
+}
+
+function parameterReceiver(value:word) -> word {
+  return value.echo();
+}
+
+function localReceiver(value:word) -> word {
+  let local:word = value;
+  return local.echo();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let word = Ty::word(&db);
+
+    for function in ["parameterReceiver", "localReceiver"] {
+        let (body, result) = infer_module_function_with_solver(&db, module, function);
+        assert_no_typeck(&result);
+        assert!(
+            has_user_obligation(&db, &result, "Echo", word, &[]),
+            "{function}: {:?}",
+            result.obligations
+        );
+
+        let call = return_expr(&db, body);
+        let ExprKind::Call { callee, .. } = &body.exprs(&db).get(call).kind else {
+            panic!("{function}: UFCS call");
+        };
+        let ExprKind::Field { base: receiver, .. } = &body.exprs(&db).get(*callee).kind else {
+            panic!("{function}: UFCS callee");
+        };
+        let receiver = *receiver;
+        assert_eq!(
+            result
+                .expr_tys
+                .iter()
+                .filter(|entry| entry.body == body && entry.expr == receiver)
+                .count(),
+            1,
+            "{function}: receiver must be inferred exactly once: {:?}",
+            result.expr_tys
+        );
+        assert_eq!(result.expr_ty(body, receiver), Some(word), "{function}");
+    }
+}
+
+#[test]
 fn field_ufcs_comptime_parameter_uses_explicit_argument_position() {
     let (db, key) = db_with_array_std(
         r#"
@@ -1397,6 +1455,88 @@ contract C {
     assert!(
         diagnostics[0].message.contains("'tag'")
             && diagnostics[0].message.contains("'Stamp.stamp'"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn local_and_parameter_ufcs_comptime_parameter_uses_explicit_argument_position() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+forall self . class self:Stamp {
+  function stamp(value:self, comptime tag:word) -> word;
+}
+
+instance word:Stamp {
+  function stamp(value:word, comptime tag:word) -> word { return tag; }
+}
+
+function parameterLiteral(value:word) -> word {
+  return value.stamp(7);
+}
+
+function localLiteral(value:word) -> word {
+  let local:word = value;
+  return local.stamp(7);
+}
+
+function parameterRuntime(value:word, tag:word) -> word {
+  return value.stamp(tag);
+}
+
+function localRuntime(value:word, tag:word) -> word {
+  let local:word = value;
+  return local.stamp(tag);
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+
+    for function in ["parameterLiteral", "localLiteral"] {
+        let (body, result) = infer_module_function_with_solver(&db, module, function);
+        assert_no_typeck(&result);
+
+        let call = return_expr(&db, body);
+        let ExprKind::Call { callee, args } = &body.exprs(&db).get(call).kind else {
+            panic!("{function}: UFCS call");
+        };
+        let explicit_arg = args[0];
+        let ExprKind::Field { base: receiver, .. } = &body.exprs(&db).get(*callee).kind else {
+            panic!("{function}: UFCS callee");
+        };
+        let receiver = *receiver;
+        assert!(
+            result.comptime_obligations.iter().any(|obligation| {
+                obligation.body == body
+                    && obligation.expr == explicit_arg
+                    && matches!(
+                        &obligation.kind,
+                        ComptimeObligationKind::CallParam { param, .. } if param == "arg1"
+                    )
+            }),
+            "{function}: {:?}",
+            result.comptime_obligations
+        );
+        assert!(
+            result
+                .comptime_obligations
+                .iter()
+                .all(|obligation| obligation.expr != receiver),
+            "{function}: receiver must not be matched with the comptime parameter: {:?}",
+            result.comptime_obligations
+        );
+    }
+
+    let diagnostics = module_typeck_diagnostics(&db, module)
+        .iter()
+        .map(|diagnostic| diagnostic.lower(&db))
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some("SC0240"))
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+    assert!(
+        diagnostics.iter().all(|diagnostic| {
+            diagnostic.message.contains("'tag'") && diagnostic.message.contains("'Stamp.stamp'")
+        }),
         "{diagnostics:?}"
     );
 }

@@ -650,7 +650,7 @@ fn field_ufcs_resolves_a_unique_imported_class_method() {
 }
 
 #[test]
-fn field_ufcs_reports_undefined_name_when_visible_methods_conflict() {
+fn ufcs_reports_undefined_name_when_visible_methods_conflict() {
     let db = TestDb::default();
     let provider = parse_module(
         &db,
@@ -667,6 +667,7 @@ fn field_ufcs_reports_undefined_name_when_visible_methods_conflict() {
          contract C {
            value: word;
            function ambiguous() -> word { return value.collide(); }
+           function ambiguousParameter(value: word) -> word { return value.collide(); }
            function missing() -> word { return value.absent(); }
          }",
     );
@@ -710,6 +711,23 @@ fn field_ufcs_reports_undefined_name_when_visible_methods_conflict() {
             .any(|(name, resolution)| name == "collide" && resolution == Resolution::Err)
     );
 
+    let parameter = contract_function(&db, module, "C", "ambiguousParameter");
+    let parameter_body = parameter.body(&db).expect("body");
+    let parameter_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == parameter_body))
+        .expect("parameter body map");
+    assert!(ident_resolutions(&db, parameter_body, parameter_map)
+        .into_iter()
+        .any(|(name, resolution)| name == "value"
+            && matches!(resolution, Resolution::Param(_))));
+    assert!(
+        field_resolutions(&db, parameter_body, parameter_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "collide" && resolution == Resolution::Err)
+    );
+
     let missing = contract_function(&db, module, "C", "missing");
     let missing_body = missing.body(&db).expect("body");
     let missing_map = resolution
@@ -725,7 +743,7 @@ fn field_ufcs_reports_undefined_name_when_visible_methods_conflict() {
 }
 
 #[test]
-fn field_ufcs_preserves_qualified_calls_and_rejects_parameter_receivers() {
+fn value_ufcs_resolves_parameters_and_locals_while_preserving_qualified_calls() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
@@ -743,6 +761,13 @@ fn field_ufcs_preserves_qualified_calls_and_rejects_parameter_receivers() {
            }
            function parameter(value: word, y: word) -> word {
              return value.combine(y);
+           }
+           function local(value: word, y: word) -> word {
+             let receiver = value;
+             return receiver.combine(y);
+           }
+           function arbitrary(y: word) -> word {
+             return (value + y).combine(y);
            }
          }",
     );
@@ -822,7 +847,41 @@ fn field_ufcs_preserves_qualified_calls_and_rejects_parameter_receivers() {
         .any(|(name, resolution)| name == "value"
             && matches!(resolution, Resolution::Param(_))));
     assert!(
-        !field_resolutions(&db, parameter_body, parameter_map)
+        field_resolutions(&db, parameter_body, parameter_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "combine"
+                && matches!(resolution, Resolution::ClassMethod { .. }))
+    );
+
+    let local = contract_function(&db, module, "C", "local");
+    let local_body = local.body(&db).expect("body");
+    let local_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == local_body))
+        .expect("local body map");
+    assert!(
+        ident_resolutions(&db, local_body, local_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "receiver"
+                && matches!(resolution, Resolution::Local(_)))
+    );
+    assert!(
+        field_resolutions(&db, local_body, local_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "combine"
+                && matches!(resolution, Resolution::ClassMethod { .. }))
+    );
+
+    let arbitrary = contract_function(&db, module, "C", "arbitrary");
+    let arbitrary_body = arbitrary.body(&db).expect("body");
+    let arbitrary_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == arbitrary_body))
+        .expect("arbitrary body map");
+    assert!(
+        !field_resolutions(&db, arbitrary_body, arbitrary_map)
             .into_iter()
             .any(|(_, resolution)| matches!(resolution, Resolution::ClassMethod { .. }))
     );

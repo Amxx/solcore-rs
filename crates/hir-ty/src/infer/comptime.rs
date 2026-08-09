@@ -460,8 +460,7 @@ impl<'db> ComptimeChecker<'db> {
         callee: Id<Expr<'db>>,
         args: &[Id<Expr<'db>>],
     ) -> ComptimeValue {
-        let logical_args =
-            field_ufcs_logical_args(self.db, &self.expr_resolutions, body, callee, args);
+        let logical_args = ufcs_logical_args(self.db, &self.expr_resolutions, body, callee, args);
         let arg_values = logical_args
             .iter()
             .map(|arg| self.classify_expr(body, *arg))

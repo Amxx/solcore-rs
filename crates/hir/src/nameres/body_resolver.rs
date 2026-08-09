@@ -483,8 +483,8 @@ impl<'db, 'a> BodyResolver<'db, 'a> {
         }
 
         // Qualified class/module/type interpretations keep priority over
-        // receiver-style calls. UFCS is only a fallback for a bare contract
-        // field whose dotted callee otherwise has no meaning.
+        // receiver-style calls. UFCS is only a fallback for a bare value
+        // receiver whose dotted callee otherwise has no meaning.
         if let Some(resolution) = self.resolve_field_expr(body, base, field) {
             let access_path = expr_path(self.db, body, expr_id).map(|segments| segments.join("."));
             self.expr_as_qualifier(body, base, access_path.as_deref());
@@ -504,7 +504,14 @@ impl<'db, 'a> BodyResolver<'db, 'a> {
             }
         };
 
-        if !matches!(base_resolution, Some(Resolution::Field(_))) {
+        if !matches!(
+            base_resolution,
+            Some(
+                Resolution::Field(_)
+                    | Resolution::Local(LocalBinding::Let { .. } | LocalBinding::Pattern { .. })
+                    | Resolution::Param(_)
+            )
+        ) {
             return;
         }
 

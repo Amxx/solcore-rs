@@ -309,7 +309,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         span: Span<'db>,
     ) -> Option<MonoExprKind<'db>> {
         let resolution = self.expr_resolution(callee);
-        let ufcs_receiver = self.field_ufcs_receiver(callee, resolution.as_ref());
+        let ufcs_receiver = self.ufcs_receiver(callee, resolution.as_ref());
         let arg_exprs = ufcs_receiver
             .into_iter()
             .chain(args.iter().copied())
@@ -578,14 +578,15 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         }
     }
 
-    /// Returns the implicit receiver for field-only UFCS calls.
+    /// Returns the implicit receiver for value-receiver UFCS calls.
     ///
     /// Name resolution deliberately records the dotted callee as a class
     /// method without rewriting the source HIR. Keep the recognition narrow:
-    /// only a bare contract field may supply an implicit first argument.
-    /// Qualified class/module calls and arbitrary dotted expressions retain
-    /// their existing argument lists.
-    fn field_ufcs_receiver(
+    /// only a bare contract field, value local, or parameter may supply an
+    /// implicit first argument. Type-variable bindings, qualified
+    /// class/module calls, and arbitrary dotted expressions retain their
+    /// existing argument lists.
+    fn ufcs_receiver(
         &self,
         callee: Id<Expr<'db>>,
         resolution: Option<&hir_nameres::Resolution<'db>>,
@@ -608,6 +609,11 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         matches!(
             self.expr_resolution(*base),
             Some(hir_nameres::Resolution::Field(_))
+                | Some(hir_nameres::Resolution::Param(_))
+                | Some(hir_nameres::Resolution::Local(
+                    hir_nameres::LocalBinding::Let { .. }
+                        | hir_nameres::LocalBinding::Pattern { .. }
+                ))
         )
         .then_some(*base)
     }

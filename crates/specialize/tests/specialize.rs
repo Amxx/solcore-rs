@@ -493,6 +493,100 @@ contract C {
 }
 
 #[test]
+fn local_and_parameter_ufcs_prepend_receivers_and_share_instance_method() {
+    let (db, output) = specialize_src(
+        r#"
+forall a . class a:Combiner {
+  function combine(x:a, y:word) -> word;
+}
+
+instance word:Combiner {
+  function combine(x:word, y:word) -> word { return y; }
+}
+
+function viaParam(paramReceiver:word, paramArg:word) -> word {
+  return paramReceiver.combine(paramArg);
+}
+
+function viaLocal(seed:word, localArg:word) -> word {
+  let localReceiver:word = seed;
+  return localReceiver.combine(localArg);
+}
+
+function main(x:word, y:word) -> word {
+  return viaParam(viaLocal(x, y), y);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let functions = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let instance_method = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                    if class == "Combiner" && method == "combine"
+            )
+        })
+        .expect("specialized Combiner.combine instance method");
+
+    for (source_name, receiver_name, explicit_name) in [
+        ("viaParam", "paramReceiver", "paramArg"),
+        ("viaLocal", "localReceiver", "localArg"),
+    ] {
+        let caller = functions
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(function.origin, MonoFunctionOrigin::Source)
+                    && function
+                        .source
+                        .is_some_and(|source| source.name(db).as_deref() == Some(source_name))
+            })
+            .unwrap_or_else(|| panic!("specialized UFCS caller {source_name}"));
+        let (callee, args) = caller
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                MonoStmtKind::Return(Some(MonoExpr {
+                    kind: MonoExprKind::Call { callee, args, .. },
+                    ..
+                })) => Some((callee, args)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a direct instance-method call: {caller:#?}"));
+        assert_eq!(callee.name, instance_method.name);
+        assert!(
+            matches!(
+                args.as_slice(),
+                [
+                    MonoExpr {
+                        kind: MonoExprKind::Var(receiver),
+                        ..
+                    },
+                    MonoExpr {
+                        kind: MonoExprKind::Var(explicit),
+                        ..
+                    }
+                ] if receiver.name == receiver_name && explicit.name == explicit_name
+            ),
+            "{source_name}: {args:#?}"
+        );
+    }
+}
+
+#[test]
 fn evidence_replay_resolves_imported_instance_methods() {
     let db = Box::leak(Box::new(TestDb::default()));
     let main_root = PathBuf::from("/main");

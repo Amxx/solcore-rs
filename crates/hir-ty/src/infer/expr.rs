@@ -356,7 +356,7 @@ impl<'db> InferCtx<'db> {
         expected: Option<InferTy<'db>>,
     ) -> InferTy<'db> {
         let logical_args =
-            field_ufcs_logical_args(self.db, &self.expr_resolutions, body, callee_expr, args);
+            ufcs_logical_args(self.db, &self.expr_resolutions, body, callee_expr, args);
         let args = logical_args.as_slice();
         let callee_ty = self.infer_callee_expr(body, call_expr, callee_expr);
         let normalized = self.normalize_aliases(callee_ty.clone());
@@ -582,7 +582,7 @@ impl<'db> InferCtx<'db> {
                 )
             }
             ExprKind::Field { base, .. } => {
-                if !is_field_ufcs_call(self.db, &self.expr_resolutions, body, callee_expr)
+                if !is_ufcs_call(self.db, &self.expr_resolutions, body, callee_expr)
                     && !self.is_namespace_expr(body, *base)
                 {
                     self.infer_expr(body, *base);
