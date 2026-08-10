@@ -593,14 +593,15 @@ contract C {
             args.as_slice(),
             [
                 MonoExpr {
-                    kind: MonoExprKind::Var(receiver),
+                    kind:
+                        MonoExprKind::Lit(hir::ast::function::LitKind::Number(storage_slot)),
                     ..
                 },
                 MonoExpr {
                     kind: MonoExprKind::Var(explicit),
                     ..
                 }
-            ] if receiver.name == "value" && explicit.name == "y"
+            ] if storage_slot == "0" && explicit.name == "y"
         ),
         "{args:#?}"
     );
@@ -1826,78 +1827,80 @@ contract C {
 
 #[test]
 fn specializes_p7_cited_regression_corpus() {
-    let repo = repo_root();
-    let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples");
-    for fixture in [
-        "cases/app.solc",
-        "cases/mptc-chain-phantom.solc",
-        "cases/mptc-both-templates.solc",
-        "dispatch/nonpayable_ctor.solc",
-        "dispatch/storage.solc",
-        "cases/SimpleLambda.solc",
-        "dispatch/specialise_sum_of_product.solc",
-    ] {
-        let output = specialize_fixture(&corpus.join(fixture));
-        assert_eq!(output.diagnostics, Vec::new(), "{fixture}");
-    }
-    let basic = specialize_fixture(&corpus.join("dispatch/basic.solc"));
-    assert_eq!(basic.diagnostics, Vec::new(), "dispatch/basic.solc");
-    assert!(
-        !basic.module.items.iter().any(|item| match item {
-            MonoItem::Function(function) => function.body.iter().any(stmt_has_closure_dispatch),
-            _ => false,
-        }),
-        "dispatch/basic.solc retained closure dispatch"
-    );
-    let basic_contract = basic
-        .module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            MonoItem::Contract(contract) => Some(contract),
-            _ => None,
-        })
-        .expect("basic contract metadata");
-    assert!(
-        basic_contract.entries.iter().any(|entry| {
-            matches!(
-                entry,
-                MonoEntry::RuntimeMain {
-                    specialized,
-                    origin: MonoRuntimeMainOrigin::StdDispatch,
-                    ..
-                } if specialized.contains("_C_main_")
-            )
-        }),
-        "{:?}",
-        basic_contract.entries
-    );
-    let payable = specialize_fixture(&corpus.join("dispatch/payable.solc"));
-    let payable_contract = payable
-        .module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            MonoItem::Contract(contract) => Some(contract),
-            _ => None,
-        })
-        .expect("payable contract metadata");
-    assert!(
-        payable_contract.entries.iter().any(|entry| {
-            matches!(
-                entry,
-                MonoEntry::RuntimeMain {
-                    specialized,
-                    origin: MonoRuntimeMainOrigin::StdDispatch,
-                    ..
-                } if specialized.contains("_main_")
-            )
-        }),
-        "{:?}",
-        payable_contract.entries
-    );
-    assert!(payable_contract.fallback.explicit);
-    assert!(payable_contract.fallback.payable);
+    solcore_test_utils::run_in_large_stack(|| {
+        let repo = repo_root();
+        let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples");
+        for fixture in [
+            "cases/app.solc",
+            "cases/mptc-chain-phantom.solc",
+            "cases/mptc-both-templates.solc",
+            "dispatch/nonpayable_ctor.solc",
+            "dispatch/storage.solc",
+            "cases/SimpleLambda.solc",
+            "dispatch/specialise_sum_of_product.solc",
+        ] {
+            let output = specialize_fixture(&corpus.join(fixture));
+            assert_eq!(output.diagnostics, Vec::new(), "{fixture}");
+        }
+        let basic = specialize_fixture(&corpus.join("dispatch/basic.solc"));
+        assert_eq!(basic.diagnostics, Vec::new(), "dispatch/basic.solc");
+        assert!(
+            !basic.module.items.iter().any(|item| match item {
+                MonoItem::Function(function) => function.body.iter().any(stmt_has_closure_dispatch),
+                _ => false,
+            }),
+            "dispatch/basic.solc retained closure dispatch"
+        );
+        let basic_contract = basic
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Contract(contract) => Some(contract),
+                _ => None,
+            })
+            .expect("basic contract metadata");
+        assert!(
+            basic_contract.entries.iter().any(|entry| {
+                matches!(
+                    entry,
+                    MonoEntry::RuntimeMain {
+                        specialized,
+                        origin: MonoRuntimeMainOrigin::StdDispatch,
+                        ..
+                    } if specialized.contains("_C_main_")
+                )
+            }),
+            "{:?}",
+            basic_contract.entries
+        );
+        let payable = specialize_fixture(&corpus.join("dispatch/payable.solc"));
+        let payable_contract = payable
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Contract(contract) => Some(contract),
+                _ => None,
+            })
+            .expect("payable contract metadata");
+        assert!(
+            payable_contract.entries.iter().any(|entry| {
+                matches!(
+                    entry,
+                    MonoEntry::RuntimeMain {
+                        specialized,
+                        origin: MonoRuntimeMainOrigin::StdDispatch,
+                        ..
+                    } if specialized.contains("_main_")
+                )
+            }),
+            "{:?}",
+            payable_contract.entries
+        );
+        assert!(payable_contract.fallback.explicit);
+        assert!(payable_contract.fallback.payable);
+    });
 }
 
 #[test]
