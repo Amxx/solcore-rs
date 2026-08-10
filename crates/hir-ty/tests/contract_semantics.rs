@@ -168,6 +168,21 @@ fn insert_real_std_modules(db: &mut TestDb) {
             "/std/ABIGeneric.solc",
             include_str!("../../../std/ABIGeneric.solc"),
         ),
+        (
+            "StorageGeneric",
+            "/std/StorageGeneric.solc",
+            include_str!("../../../std/StorageGeneric.solc"),
+        ),
+        (
+            "eip712",
+            "/std/eip712.solc",
+            include_str!("../../../std/eip712.solc"),
+        ),
+        (
+            "eip7951",
+            "/std/eip7951.solc",
+            include_str!("../../../std/eip7951.solc"),
+        ),
     ] {
         insert_module_source(
             db,
