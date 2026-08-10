@@ -1,9 +1,10 @@
 # Backend E2E fixtures
 
-Both the Yul and Sonatina backends run every `**/main.solc` fixture in this
-directory. Selector-dispatched fixtures explicitly import both `std.{*}` and
-`std.dispatch.{*}`. Expectations live next to the contract function they
-exercise:
+Both the Yul and Sonatina backends generate a test for every `**/main.solc`
+fixture in this directory. Yul runs the complete target set; Sonatina rejects
+fixtures whose requested EVM version it does not support. Selector-dispatched
+fixtures explicitly import both `std.{*}` and `std.dispatch.{*}`. Expectations
+live next to the contract function they exercise:
 
 ```solcore
 // #[(0, 1) -> 1]
@@ -69,6 +70,10 @@ omitted `evmVersion` means Prague, matching upstream; vectors that require
 Osaka must say so explicitly. Yul compilation uses that same target. The
 current Sonatina dependency only supports Osaka, so its runner rejects other
 targets explicitly instead of emitting Osaka bytecode for an older runtime.
+The e136 snapshot contains 49 executable source/vector pairs, all vendored
+byte-for-byte here. Its remaining `template.json` is a source-less placeholder
+used by the upstream generator, not an executable fixture. Forty-eight of the
+49 executable vectors default to Prague; `p256verify` is the sole Osaka vector.
 This is also the migration format for Solcore's dispatch fixtures with dynamic
 arrays or ADTs. For a non-recursive, compiler-derived nullary ADT `T`, the ABI
 surface follows the `e1361599` reference convention: ABI JSON uses the source
@@ -94,10 +99,21 @@ for an alternate Yul runtime. Raw vectors always use their own `evmVersion`.
 
 For local optimized runs, use the workspace's E2E profile. It uses moderate
 optimization (`opt-level = 2`) without LTO, keeping execution representative
-while avoiding the native release profile's link-time optimization cost:
+while avoiding the native release profile's link-time optimization cost. Run
+the complete e136 raw-vector surface through Yul:
 
 ```sh
 E2E=1 E2E_REQUIRED=1 cargo test --profile e2e \
-  -p solcore-yul -p solcore-sonatina --test e2e --locked -- \
+  -p solcore-yul --test e2e --locked -- \
   --nocapture --test-threads=1
+```
+
+Sonatina cannot currently run the Prague vectors. Exercise its Osaka-compatible
+fixtures with an explicit filter; for example, the upstream P-256 vector is:
+
+```sh
+E2E=1 E2E_REQUIRED=1 cargo test --profile e2e \
+  -p solcore-sonatina --test e2e --locked \
+  sonatina_evm_e2e__p256verify_main -- \
+  --exact --nocapture --test-threads=1
 ```

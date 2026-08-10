@@ -48,6 +48,11 @@ for file in ABIGeneric.solc Generic.solc StorageGeneric.solc dispatch.solc \
 done
 cargo test -p solcore-parser -p solcore-hir-ty -p solcore-specialize --locked
 E2E=1 E2E_REQUIRED=1 cargo test --profile e2e \
-  -p solcore-yul -p solcore-sonatina --test e2e --locked -- \
+  -p solcore-yul --test e2e --locked -- \
   --nocapture --test-threads=1
 ```
+
+The e136 raw-vector set contains Prague targets and therefore the complete set
+runs through Yul. The current Sonatina dependency supports Osaka only; see
+[`tests/e2e/README.md`](../tests/e2e/README.md) for its filtered validation
+command.
