@@ -49,7 +49,7 @@ the compiler behaviors already agree once the same options are used.
 | Parameterized contract `main` ([fixture](crates/parser/tests/fixtures/corpus/ok/test/examples/cases/multi-stmt-var-leaf.solc)) | Haskell suppresses generated dispatch whenever a local `main` exists and accepts parameters; Rust rejects them because the runtime entry receives no arguments. | A source runtime entry must be zero-argument. **Fix Haskell dispatch validation; keep Rust.** |
 | Missing helper imports (`field-helper-cxt-collision`, `pair-bug`) | Haskell `-g` verdicts pass; both full frontends fail because the fixtures omit `std.dispatch`. | This is a mode mismatch. Compare both with dispatch or both without it. **Fix the harness/fixtures.** |
 | Primitive `word` in public ABI | Both metadata emitters call it `uint256`, but shared std cannot dispatch source `word`. Both compilers report missing evidence; current Rust tabled resolution terminates with a bounded `SC0207`. | Add complete `word` evidence in the **upstream Haskell std**, then re-vendor. Keep a Rust regression proving bounded failure while evidence is missing. |
-| User ADTs in public ABI | At `e1361599`, upstream supports a bounded lazy-array surface: `calldata(array(T))` can use a nullary, non-recursive, compiler-derived `Generic` ADT. Runtime selectors spell the Generic representation structurally, while ABI JSON retains the source name (`T[]`). Direct ADT parameters and parameterized, recursive, excluded, or manually represented ADTs still lack one trustworthy surface. | Mirror the bounded upstream array surface. Keep the remaining forms rejected with structured diagnostics, and never infer ABI meaning from a same-named user `array`/`calldata` type. |
+| User ADTs in public ABI | At `e1361599`, upstream supports non-recursive, compiler-derived `Generic` ADTs both directly and under `calldata(array(T))`; runtime selectors spell the Generic representation structurally. Its `ContractDispatch.abiTypeOf` emits source metadata only for a nullary `TyCon n []`, so a concrete parameterized ADT can derive runtime evidence but still fails upstream ABI JSON emission. Rust mirrors the nullary surface and intentionally extends metadata to source spellings such as `Point(uint256)`. Recursive, excluded, and manually represented ADTs lack the derived decode path. | Keep the safe Rust parameterized-metadata extension, but do not describe it as exact e136 emitter parity. Keep non-derived forms rejected with structured diagnostics, and never infer ABI meaning from a same-named user `array`/`calldata` type. |
 | ABI type validation | Haskell passes other nullary names through and uses `error` for unsupported shapes. Rust uses canonical checks and diagnostics. | Validate against the dispatchable ABI surface. **Fix the Haskell ABI emitter; keep Rust's diagnostic model.** |
 | Signature/selector collisions | Rust rejects duplicate signatures and distinct signatures with the same four-byte selector. Haskell has no equivalent preflight. | Reject both before code generation. **Fix Haskell dispatch generation.** |
 | Nested tuple boundary | Both flatten the language's right-nested pair representation at the top ABI boundary. | This is shared. **Fix both compilers and the language ABI design together** if nested boundaries must be preserved. |
@@ -137,8 +137,8 @@ The current shared snapshot has this evidence matrix:
 | `word` (ABI `uint256`) | **no** | **no** | **no** | unsupported by dispatch |
 | pair/tuple | recursive | recursive | recursive | complete only when all components are complete |
 | `calldata(array(t))` | recursive `SigString(t) <> "[]"` | lazy calldata handle | **no** | input-only; complete when `t` has the required input evidence |
-| nullary derived ADT inside that array | structural Generic representation | compiler-derived `ABIDecode` | representation bridge | bounded upstream extension |
-| direct/parameterized/recursive/manual ADT | rejected | not a compiler-owned finite layout | not a compiler-owned finite layout | unsupported |
+| non-recursive derived ADT (direct or array element) | structural Generic representation | compiler-derived `ABIDecode` | representation bridge | complete when every concrete type argument has the required evidence |
+| recursive/excluded/manual ADT | rejected | no compiler-owned derived decode path | not accepted by Rust ABI preflight | unsupported |
 
 For `word`, the minimum upstream std correction is:
 
@@ -152,23 +152,35 @@ bounds make the generated dispatch probe terminate with `SC0207`; the
 
 At `e1361599`, `std.dispatch` supplies `SigString` for sums and
 `calldata(array(t))`, plus a default bridge through `Generic(rep)`;
-`std.ABIGeneric` supplies the matching representation-driven decode path. The
-Rust ABI preflight mirrors only the portion for which it can prove that the
-representation is compiler-owned and finite: a nullary, non-recursive ADT with
-automatic Generic derivation, nested under the canonical std
-`calldata(array(...))` wrappers. It computes selectors from the final Generic
-`SigString` (comma-joined products and explicit `sum(l,r)` nodes), but mirrors
-the reference JSON spelling by emitting the source leaf name followed by `[]`.
-That JSON spelling is a target-compatibility extension, not a claim that an
-arbitrary Solidity ABI consumer understands Solcore sums.
+`std.ABIGeneric` supplies concrete compiler-derived `ABIAttribs` and
+`ABIDecode` evidence for each eligible ADT and the matching default
+representation-driven `ABIEncode` bridge. Rust accepts finite, compiler-owned
+plans directly and beneath canonical std `calldata(array(...))` wrappers. It
+computes selectors from the instantiated Generic `SigString` (comma-joined
+products and explicit `sum(l,r)` nodes), while ABI JSON keeps the source
+spelling (`T` or `T[]`). For a nullary ADT this mirrors the e136 convention.
+For a concrete parameterized ADT, however, upstream `abiTypeOf` has no matching
+case and fails metadata emission; Rust's spelling such as `Point(uint256)` is
+an intentional safe extension beyond exact e136 emitter behavior. Neither
+metadata convention claims that an arbitrary Solidity ABI consumer understands
+Solcore sums.
 
-Parameterized ADTs, recursive representations, `no-generic-instance-for`, and
-visible manual `Generic` evidence remain errors. Direct ADT parameters and
-results also remain rejected; the bounded exception exists specifically for
-the lazy calldata-array ABI implemented by the target standard library.
-That location is input-only: the target std has no `ABIEncode` instance for a
-`calldata(array(t))` handle, so Rust rejects it from every result position even
+Under that Rust metadata extension, concrete parameterized ADTs are supported
+when every type argument discharges the generated ABI constraints, including
+phantom parameters that do not occur in the instantiated Generic
+representation. Recursion tracking distinguishes concrete instantiations, so
+finite shapes such as `Box(Box(uint256))` remain valid, while a definition whose
+unspecialized representation mentions itself is rejected before expansion.
+`no-generic-instance-for` and visible manual `Generic` evidence remain errors.
+The `calldata(array(t))` location itself remains input-only: the target std has
+no `ABIEncode` instance for that lazy handle, so Rust follows derived Generic
+representations and rejects the handle from every nested result position even
 though the same type is valid in a parameter.
+
+The known primitive-`word` evidence gap also applies when `word` occurs inside
+a Generic representation or as a concrete ADT argument: metadata can spell the
+shape as `uint256`, but full generated dispatch still reports the bounded
+missing-evidence diagnostic described above.
 
 Both emitters flatten right-nested pairs. Haskell does so in `flattenTuple` and
 Rust in [`flatten_tuple`](crates/hir-ty/src/contract/abi.rs); observable behavior
@@ -200,18 +212,21 @@ The required invariant is:
 > its canonical input signature can be hashed, calldata can be decoded into it,
 > and a result can be encoded from it.
 
-For the bounded ADT-array extension, “ABI JSON can represent it” means the
-explicit upstream `SourceName[]` metadata convention, while selector hashing
-uses the structural Generic spelling. Both spellings must be derived from the
-same compiler-owned ADT plan; accepting a manual or recursive representation
-would break that link and is therefore prohibited.
+For the derived-ADT extension, “ABI JSON can represent it” means the explicit
+source-name metadata convention (`SourceName` directly and `SourceName[]` for
+lazy arrays), plus Rust's deliberate parameterized spelling extension such as
+`Point(uint256)`. Selector hashing uses the structural Generic spelling. Both
+spellings must be derived from the same compiler-owned ADT plan; accepting a
+manual or recursive representation would break that link and is therefore
+prohibited. The parameterized spelling satisfies this Rust invariant even
+though e136's `abiTypeOf` fails before producing equivalent JSON.
 
 The next upstream std change should complete `word`, then extend the
 argument/result matrix for `word`, `uint256`, `address`, `bytes4`, `bytes32`,
 `bool`, `memory(string)`, `memory(bytes)`, supported tuples, and canonical
 calldata-array inputs. Unsupported location wrappers, calldata-array results,
-std leaf types, direct ADTs, and ADTs outside the bounded compiler-derived array
-surface remain explicitly rejected.
+std leaf types, and ADTs outside the finite compiler-derived surface remain
+explicitly rejected.
 Each test must use generated selector dispatch and must not define source
 `main`, because source `main` suppresses the path under test.
 

@@ -5498,6 +5498,239 @@ fn derived_abi_wrappers_replay_definition_side_evidence() {
             )
     )));
 }
+
+#[test]
+fn direct_adt_abi_specializations_keep_sum_representations_separate() {
+    let (db, _, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
+data D2 = L(uint256) | R(memory(bytes));
+data D3 = X(uint256) | Y(uint256) | Z(memory(bytes));
+data S2 = P(uint256) | Q(uint256);
+
+contract Sums {
+  constructor() {}
+  public function makeD2(b:memory(bytes)) -> D2 { return D2.R(b); }
+  public function makeD3(b:memory(bytes)) -> D3 { return D3.Z(b); }
+  public function makeS2(n:uint256) -> S2 { return S2.P(n); }
+  public function roundtripD3(value:D3) -> D3 { return value; }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let functions = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut functions_by_name = BTreeMap::<&str, Vec<&solcore_specialize::MonoFunction<'_>>>::new();
+    for function in &functions {
+        functions_by_name
+            .entry(function.name.as_str())
+            .or_default()
+            .push(function);
+    }
+    let duplicate_names = functions_by_name
+        .iter()
+        .filter(|(_, candidates)| candidates.len() > 1)
+        .map(|(name, candidates)| (*name, candidates.clone()))
+        .collect::<Vec<_>>();
+    assert!(
+        duplicate_names.is_empty(),
+        "specialized function names must be globally unique: {duplicate_names:#?}"
+    );
+
+    let mut bridge_names = BTreeSet::new();
+    let mut generic_from_names = BTreeSet::new();
+    let mut representation_returns = BTreeSet::new();
+    let encode_into_candidates = functions
+        .iter()
+        .copied()
+        .filter_map(|function| match &function.origin {
+            MonoFunctionOrigin::InstanceMethod { class, method, .. } if method == "encodeInto" => {
+                Some((
+                    class.clone(),
+                    function.name.clone(),
+                    function
+                        .params
+                        .iter()
+                        .map(|param| param.ty.ty().display(db))
+                        .collect::<Vec<_>>(),
+                    function.ret.ty().display(db),
+                    function_call_names(function),
+                ))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for adt_name in ["D2", "D3", "S2"] {
+        let displayed_adt = format!("adt:{adt_name}");
+        let bridge = functions
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "ABIEncode" && method == "encodeInto"
+                ) && function
+                    .params
+                    .first()
+                    .is_some_and(|param| param.ty.ty().display(db) == displayed_adt)
+            })
+            .unwrap_or_else(|| {
+                panic!("missing ABIEncode bridge for {adt_name}: {encode_into_candidates:#?}")
+            });
+        assert!(
+            bridge_names.insert(bridge.name.clone()),
+            "shared ABIEncode bridge: {bridge:#?}"
+        );
+
+        let generic_from = function_call_names(bridge)
+            .into_iter()
+            .find(|name| name.starts_with("Generic_from_"))
+            .unwrap_or_else(|| panic!("missing Generic.from call in {bridge:#?}"));
+        assert!(
+            generic_from_names.insert(generic_from.clone()),
+            "shared Generic.from specialization: {bridge:#?}"
+        );
+        let generic_from_function = functions_by_name
+            .get(generic_from.as_str())
+            .and_then(|candidates| candidates.first())
+            .expect("Generic.from specialization is emitted");
+        representation_returns.insert(generic_from_function.ret.ty().display(db));
+    }
+    assert_eq!(
+        representation_returns.len(),
+        3,
+        "D2, D3, and S2 must retain distinct Generic representations: {representation_returns:?}"
+    );
+
+    fn unary_expr_arg<'a, 'db>(expr: &'a MonoExpr<'db>, expected_ctor: &str) -> &'a MonoExpr<'db> {
+        let MonoExprKind::Con { ctor, args } = &expr.kind else {
+            panic!("expected {expected_ctor} expression: {expr:#?}");
+        };
+        assert_eq!(ctor.name, expected_ctor, "{expr:#?}");
+        assert_eq!(ctor.ty, expr.ty, "constructor/result annotation mismatch");
+        let [arg] = args.as_slice() else {
+            panic!("expected unary {expected_ctor}: {expr:#?}");
+        };
+        arg
+    }
+
+    fn unary_pat_arg<'a, 'db>(
+        pat: &'a solcore_specialize::MonoPat<'db>,
+        expected_ctor: &str,
+    ) -> &'a solcore_specialize::MonoPat<'db> {
+        let MonoPatKind::Con { ctor, args } = &pat.kind else {
+            panic!("expected {expected_ctor} pattern: {pat:#?}");
+        };
+        assert_eq!(ctor.name, expected_ctor, "{pat:#?}");
+        assert_eq!(ctor.ty, pat.ty, "constructor/pattern annotation mismatch");
+        let [arg] = args.as_slice() else {
+            panic!("expected unary {expected_ctor}: {pat:#?}");
+        };
+        arg
+    }
+
+    let d3_from = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { adt, method }
+                    if method == "from" && adt.name(db).as_deref() == Some("D3")
+            )
+        })
+        .expect("D3 Generic.from");
+    let TyKind::Named {
+        ctor: hir_ty::TyCtor::Builtin(BuiltinTyCtor::Sum),
+        args: d3_rep_args,
+    } = d3_from.ret.ty().kind(db)
+    else {
+        panic!("D3 representation is not a sum: {d3_from:#?}");
+    };
+    let d3_right_suffix = d3_rep_args[1];
+    let [
+        MonoStmt {
+            kind: MonoStmtKind::Match {
+                arms: from_arms, ..
+            },
+            ..
+        },
+    ] = d3_from.body.as_slice()
+    else {
+        panic!("D3 Generic.from body: {d3_from:#?}");
+    };
+    for (arm, inner_ctor) in [(&from_arms[1], "inl"), (&from_arms[2], "inr")] {
+        let [
+            MonoStmt {
+                kind: MonoStmtKind::Return(Some(expr)),
+                ..
+            },
+        ] = arm.body.as_slice()
+        else {
+            panic!("D3 Generic.from arm: {arm:#?}");
+        };
+        assert_eq!(expr.ty, d3_from.ret, "outer inr must retain full D3 rep");
+        let inner = unary_expr_arg(expr, "inr");
+        assert_eq!(
+            inner.ty.ty(),
+            d3_right_suffix,
+            "inner sum expression must use the right-hand suffix"
+        );
+        unary_expr_arg(inner, inner_ctor);
+    }
+
+    let d3_to = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { adt, method }
+                    if method == "to" && adt.name(db).as_deref() == Some("D3")
+            )
+        })
+        .expect("D3 Generic.to");
+    let [
+        MonoStmt {
+            kind: MonoStmtKind::Match { arms: to_arms, .. },
+            ..
+        },
+    ] = d3_to.body.as_slice()
+    else {
+        panic!("D3 Generic.to body: {d3_to:#?}");
+    };
+    for (arm, inner_ctor) in [(&to_arms[1], "inl"), (&to_arms[2], "inr")] {
+        let [pat] = arm.pats.as_slice() else {
+            panic!("D3 Generic.to arm pattern: {arm:#?}");
+        };
+        assert_eq!(
+            pat.ty, d3_to.params[0].ty,
+            "outer inr must retain full D3 rep"
+        );
+        let inner = unary_pat_arg(pat, "inr");
+        assert_eq!(
+            inner.ty.ty(),
+            d3_right_suffix,
+            "inner sum pattern must use the right-hand suffix"
+        );
+        unary_pat_arg(inner, inner_ctor);
+    }
+}
+
 #[test]
 fn derived_storage_wrappers_delegate_to_the_generic_representation_once() {
     let (db, output) = specialize_src(

@@ -689,6 +689,7 @@ fn calldata_array_abi_uses_generic_signature_and_source_adt_json_name() {
         r#"
 import std.{*};
 import std.Generic.{*};
+import std.ABIGeneric.{*};
 
 data Operation = Approve(uint256) | Reject(uint256);
 
@@ -836,6 +837,7 @@ fn calldata_array_signature_recurses_through_nested_derived_generic_reps() {
         r#"
 import std.{*};
 import std.Generic.{*};
+import std.ABIGeneric.{*};
 
 data Inner = Number(uint256) | Account(address);
 data Outer = Outer(Inner, bytes32);
@@ -862,11 +864,12 @@ contract Nested {
 }
 
 #[test]
-fn calldata_array_rejects_parameterized_recursive_and_manual_generic_adts() {
+fn calldata_array_supports_parameterized_and_rejects_recursive_and_manual_generic_adts() {
     let (mut db, key) = db_with_main(
         r#"
 import std.{*};
 import std.Generic.{*};
+import std.ABIGeneric.{*};
 
 data Box(a) = Box(a);
 data Node = Node(uint256, Node);
@@ -895,7 +898,12 @@ contract Rejected {
     let surface = contract_dispatch_surface(&db, module, contract);
 
     assert_eq!(surface.methods.len(), 3);
-    assert!(surface.methods.iter().all(|method| {
+    assert_eq!(surface.methods[0].signature, "boxed(uint256[])");
+    assert_eq!(
+        surface.methods[0].inputs[0].ty.to_string(),
+        "Box(uint256)[]"
+    );
+    assert!(surface.methods[1..].iter().all(|method| {
         method.signature.ends_with("(<unsupported>)")
             && method.inputs[0].ty.to_string() == "<unsupported>"
     }));
@@ -905,7 +913,6 @@ contract Rejected {
         .map(|diagnostic| diagnostic.message.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(messages.contains("parameterized user ADTs"), "{messages}");
     assert!(messages.contains("recursive ADTs"), "{messages}");
     assert!(
         messages.contains("manual or excluded Generic"),
@@ -989,66 +996,227 @@ contract Fake {
 }
 
 #[test]
-fn single_constructor_adt_is_rejected_from_the_canonical_abi() {
-    let db = TestDb::default();
-    let module = parse_module(
-        &db,
+fn parameterized_single_constructor_adt_uses_its_generic_rep_in_the_public_abi() {
+    let (mut db, key) = db_with_main(
         r#"
+import std.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
 data Point(a) = Point(a, bool);
 
 contract Shapes {
-  public function roundtrip(p: Point(word)) -> Point(word) { return p; }
+  public function roundtrip(p: Point(uint256)) -> Point(uint256) { return p; }
 }
 "#,
     );
+    insert_real_std_modules(&mut db);
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
     let contract = contract_named(&db, module, "Shapes");
     let surface = contract_dispatch_surface(&db, module, contract);
 
     assert!(
-        surface.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code.as_deref() == Some("SC0231")
-                && diagnostic
-                    .message
-                    .contains("user-defined ADTs are not supported by the canonical external ABI")
-        }),
+        surface
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("SC0231")),
         "{:?}",
         surface.diagnostics
     );
     let method = &surface.methods[0];
-    assert_eq!(method.signature, "roundtrip(<unsupported>)");
-    assert_eq!(method.inputs[0].ty.to_string(), "<unsupported>");
-    assert_eq!(method.outputs[0].ty.to_string(), "<unsupported>");
+    assert_eq!(method.signature, "roundtrip(uint256,bool)");
+    assert_eq!(method.inputs[0].ty.to_string(), "Point(uint256)");
+    assert_eq!(method.outputs[0].ty.to_string(), "Point(uint256)");
+    let abi = contract_abi_json(&db, module, contract).expect("direct parameterized ADT ABI");
+    assert!(
+        abi.contains("\"internalType\": \"Point(uint256)\""),
+        "{abi}"
+    );
+    assert!(abi.contains("\"type\": \"Point(uint256)\""), "{abi}");
+}
+
+#[test]
+fn nested_parameterized_adt_instantiations_are_finite_but_recursive_plans_are_rejected() {
+    let (mut db, key) = db_with_main(
+        r#"
+import std.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
+data Box(a) = Box(a);
+data Node = Node(Node);
+
+contract Finite {
+  public function roundtrip(value:Box(Box(uint256))) -> Box(Box(uint256)) { return value; }
+}
+contract Recursive {
+  public function recursive(value:Node) -> Node { return value; }
+}
+"#,
+    );
+    insert_real_std_modules(&mut db);
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let finite = contract_named(&db, module, "Finite");
+    let surface = contract_dispatch_surface(&db, module, finite);
+
+    assert_eq!(surface.methods[0].signature, "roundtrip(uint256)");
+    assert_eq!(
+        surface.methods[0].inputs[0].ty.to_string(),
+        "Box(Box(uint256))"
+    );
+    assert_eq!(
+        surface.methods[0].outputs[0].ty.to_string(),
+        "Box(Box(uint256))"
+    );
+    let abi = contract_abi_json(&db, module, finite).expect("finite nested ADT ABI");
+    assert!(abi.contains("\"type\": \"Box(Box(uint256))\""), "{abi}");
+
+    let recursive = contract_named(&db, module, "Recursive");
+    let surface = contract_dispatch_surface(&db, module, recursive);
+    assert_eq!(surface.methods[0].signature, "recursive(<unsupported>)");
+    assert_eq!(
+        surface.methods[0].outputs[0].ty.to_string(),
+        "<unsupported>"
+    );
+    assert!(surface.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code.as_deref() == Some("SC0231")
+            && diagnostic.message.contains("recursive ADTs")
+    }));
+}
+
+#[test]
+fn phantom_adt_type_arguments_must_be_supported_by_the_derived_abi_context() {
+    let (mut db, key) = db_with_main(
+        r#"
+import std.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
+data Phantom(a) = Phantom(uint256);
+
+contract PhantomAbi {
+  public function take(value:Phantom(mapping(uint256, uint256))) -> uint256 {
+    return uint256(0);
+  }
+  public function make() -> Phantom(mapping(uint256, uint256)) {
+    return Phantom(uint256(0));
+  }
+}
+"#,
+    );
+    insert_real_std_modules(&mut db);
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let contract = contract_named(&db, module, "PhantomAbi");
+    let surface = contract_dispatch_surface(&db, module, contract);
+
+    assert_eq!(surface.methods[0].signature, "take(<unsupported>)");
+    assert_eq!(surface.methods[0].inputs[0].ty.to_string(), "<unsupported>");
+    assert_eq!(surface.methods[1].signature, "make()");
+    assert_eq!(
+        surface.methods[1].outputs[0].ty.to_string(),
+        "<unsupported>"
+    );
+    assert!(
+        surface
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code.as_deref() == Some("SC0231")
+                    && diagnostic
+                        .message
+                        .contains("mapping values are not supported")
+            })
+            .count()
+            >= 2,
+        "{:?}",
+        surface.diagnostics
+    );
     assert!(contract_abi_json(&db, module, contract).is_err());
 }
 
 #[test]
-fn tuple_typed_constructor_field_does_not_make_a_user_adt_abi_safe() {
-    let db = TestDb::default();
-    let module = parse_module(
-        &db,
+fn calldata_arrays_nested_in_derived_adt_outputs_remain_input_only() {
+    let (mut db, key) = db_with_main(
         r#"
-data Wrap = Wrap((word, bool));
+import std.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
+data Bag = Bag(calldata(array(uint256)));
+data Outer = Outer(Bag);
+
+contract InvalidOutputs {
+  public function bag(values:calldata(array(uint256))) -> Bag { return Bag(values); }
+  public function outer(values:calldata(array(uint256))) -> Outer {
+    return Outer(Bag(values));
+  }
+}
+"#,
+    );
+    insert_real_std_modules(&mut db);
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let contract = contract_named(&db, module, "InvalidOutputs");
+    let surface = contract_dispatch_surface(&db, module, contract);
+
+    assert!(surface.methods.iter().all(|method| {
+        method.inputs[0].ty.to_string() == "uint256[]"
+            && method.outputs[0].ty.to_string() == "<unsupported>"
+    }));
+    assert!(
+        surface
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code.as_deref() == Some("SC0231")
+                    && diagnostic
+                        .message
+                        .contains("calldata(array(t)) is input-only")
+            })
+            .count()
+            >= 2,
+        "{:?}",
+        surface.diagnostics
+    );
+    assert!(contract_abi_json(&db, module, contract).is_err());
+}
+
+#[test]
+fn tuple_typed_constructor_field_uses_the_structural_generic_signature() {
+    let (mut db, key) = db_with_main(
+        r#"
+import std.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
+data Wrap = Wrap((uint256, bool));
 
 contract Shapes {
   public function roundtrip(value: Wrap) -> Wrap { return value; }
 }
 "#,
     );
+    insert_real_std_modules(&mut db);
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
     let contract = contract_named(&db, module, "Shapes");
     let surface = contract_dispatch_surface(&db, module, contract);
 
     assert!(
-        surface.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code.as_deref() == Some("SC0231")
-                && diagnostic
-                    .message
-                    .contains("user-defined ADTs are not supported")
-        }),
+        surface
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("SC0231")),
         "{:?}",
         surface.diagnostics
     );
-    assert_eq!(surface.methods[0].signature, "roundtrip(<unsupported>)");
-    assert!(contract_abi_json(&db, module, contract).is_err());
+    assert_eq!(surface.methods[0].signature, "roundtrip(uint256,bool)");
+    assert_eq!(surface.methods[0].inputs[0].ty.to_string(), "Wrap");
+    assert_eq!(surface.methods[0].outputs[0].ty.to_string(), "Wrap");
+    assert!(contract_abi_json(&db, module, contract).is_ok());
 }
 
 #[test]
@@ -1083,33 +1251,230 @@ contract Shapes {
 }
 
 #[test]
-fn multi_constructor_adt_is_rejected_from_the_canonical_abi() {
-    let db = TestDb::default();
-    let module = parse_module(
-        &db,
+fn direct_dynamic_sum_adt_supports_input_output_and_roundtrip() {
+    let (mut db, key) = db_with_main(
         r#"
-data Choice = Left(word) | Right(bool);
+import std.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
 
-contract Shapes {
-  public function choose(x: Choice) -> word { return 0; }
+data D2 = L(uint256) | R(memory(bytes));
+
+contract SumRoundtrip {
+  public function rtD2(x: D2) -> D2 { return x; }
 }
 "#,
     );
-    let contract = contract_named(&db, module, "Shapes");
+    insert_real_std_modules(&mut db);
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let contract = contract_named(&db, module, "SumRoundtrip");
     let surface = contract_dispatch_surface(&db, module, contract);
 
     assert!(
-        surface.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code.as_deref() == Some("SC0231")
-                && diagnostic
-                    .message
-                    .contains("user-defined ADTs are not supported")
-        }),
+        surface
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("SC0231")),
         "{:?}",
         surface.diagnostics
     );
-    assert_eq!(surface.methods[0].signature, "choose(<unsupported>)");
+    let method = &surface.methods[0];
+    assert_eq!(method.signature, "rtD2(sum(uint256,bytes))");
+    assert_eq!(method.selector.to_hex(), "0x219ee3fb");
+    assert_eq!(method.inputs[0].ty.to_string(), "D2");
+    assert_eq!(method.outputs[0].ty.to_string(), "D2");
+    let abi = contract_abi_json(&db, module, contract).expect("direct sum ADT ABI");
+    assert_eq!(abi.matches("\"type\": \"D2\"").count(), 2, "{abi}");
+}
+
+#[test]
+fn imported_direct_adt_uses_definition_side_abi_derivation() {
+    let (mut db, key) = db_with_main(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+import model.{*};
+
+contract Imported {
+  public function roundtrip(payload:Payload) -> Payload { return payload; }
+}
+"#,
+    );
+    insert_real_std_modules(&mut db);
+    insert_module_source(
+        &mut db,
+        ModuleKey {
+            library: LibraryId::Main,
+            logical_path: vec!["model".to_owned()],
+        },
+        "/main/model.solc",
+        r#"
+import std.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+export { Payload(*) };
+
+data Payload = Left(uint256) | Right(uint256);
+"#,
+    );
+
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let contract = contract_named(&db, module, "Imported");
+    let surface = contract_dispatch_surface(&db, module, contract);
+
+    assert!(
+        surface
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("SC0231")),
+        "{:?}",
+        surface.diagnostics
+    );
+    let method = &surface.methods[0];
+    assert_eq!(method.signature, "roundtrip(sum(uint256,uint256))");
+    assert_eq!(method.inputs[0].ty.to_string(), "Payload");
+    assert_eq!(method.outputs[0].ty.to_string(), "Payload");
+    let abi = contract_abi_json(&db, module, contract).expect("imported direct ADT ABI");
+    assert_eq!(abi.matches("\"type\": \"Payload\"").count(), 2, "{abi}");
+}
+
+#[test]
+fn imported_output_only_adt_requires_definition_side_abi_derivation() {
+    let (mut db, key) = db_with_main(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+import model.{*};
+
+contract Imported {
+  public function make() -> Payload { return Payload.Left(uint256(1)); }
+}
+"#,
+    );
+    insert_real_std_modules(&mut db);
+    insert_module_source(
+        &mut db,
+        ModuleKey {
+            library: LibraryId::Main,
+            logical_path: vec!["model".to_owned()],
+        },
+        "/main/model.solc",
+        r#"
+import std.{*};
+import std.Generic.{*};
+export { Payload(*) };
+
+data Payload = Left(uint256) | Right(uint256);
+"#,
+    );
+
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let contract = contract_named(&db, module, "Imported");
+    let surface = contract_dispatch_surface(&db, module, contract);
+
+    assert_eq!(surface.methods[0].signature, "make()");
+    assert_eq!(
+        surface.methods[0].outputs[0].ty.to_string(),
+        "<unsupported>"
+    );
+    assert!(surface.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code.as_deref() == Some("SC0231")
+            && diagnostic
+                .message
+                .contains("defining module does not enable compiler-owned ABI derivation")
+    }));
     assert!(contract_abi_json(&db, module, contract).is_err());
+}
+
+fn db_with_reexported_abi_adt(api_source: &str) -> (TestDb, ModuleKey) {
+    let (mut db, key) = db_with_main(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+import api.{Payload};
+
+contract Reexported {
+  public function roundtrip(payload:Payload) -> Payload { return payload; }
+}
+"#,
+    );
+    insert_real_std_modules(&mut db);
+    insert_module_source(
+        &mut db,
+        ModuleKey {
+            library: LibraryId::Main,
+            logical_path: vec!["base".to_owned()],
+        },
+        "/main/base.solc",
+        r#"
+import std.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+export { Payload(*) };
+
+data Payload = Left(uint256) | Right(uint256);
+"#,
+    );
+    insert_module_source(
+        &mut db,
+        ModuleKey {
+            library: LibraryId::Main,
+            logical_path: vec!["api".to_owned()],
+        },
+        "/main/api.solc",
+        api_source,
+    );
+    (db, key)
+}
+
+#[test]
+fn reference_reexport_does_not_expose_definition_side_abi_evidence() {
+    let (db, key) = db_with_reexported_abi_adt("export base.{Payload(*)};");
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let contract = contract_named(&db, module, "Reexported");
+    let surface = contract_dispatch_surface(&db, module, contract);
+
+    assert_eq!(surface.methods[0].signature, "roundtrip(<unsupported>)");
+    assert_eq!(surface.methods[0].inputs[0].ty.to_string(), "<unsupported>");
+    assert_eq!(
+        surface.methods[0].outputs[0].ty.to_string(),
+        "<unsupported>"
+    );
+    assert!(surface.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code.as_deref() == Some("SC0231")
+            && diagnostic
+                .message
+                .contains("ABIAttribs and ABIDecode evidence is not visible")
+    }));
+    assert!(contract_abi_json(&db, module, contract).is_err());
+}
+
+#[test]
+fn instance_import_in_reexport_module_exposes_definition_side_abi_evidence() {
+    let (db, key) = db_with_reexported_abi_adt("import base;\nexport base.{Payload(*)};");
+    let file = db.module_files[&key];
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let contract = contract_named(&db, module, "Reexported");
+    let surface = contract_dispatch_surface(&db, module, contract);
+
+    assert!(
+        surface
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("SC0231")),
+        "{:?}",
+        surface.diagnostics
+    );
+    let method = &surface.methods[0];
+    assert_eq!(method.signature, "roundtrip(sum(uint256,uint256))");
+    assert_eq!(method.inputs[0].ty.to_string(), "Payload");
+    assert_eq!(method.outputs[0].ty.to_string(), "Payload");
+    let abi = contract_abi_json(&db, module, contract).expect("reexported direct ADT ABI");
+    assert_eq!(abi.matches("\"type\": \"Payload\"").count(), 2, "{abi}");
 }
 
 #[test]

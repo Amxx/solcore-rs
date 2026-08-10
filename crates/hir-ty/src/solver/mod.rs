@@ -77,6 +77,9 @@ use derived_abi::{
     DerivedAbiClauseSource, push_derived_abi_clauses, resolved_abi_clause_source,
     visible_abi_clause_source,
 };
+pub(crate) use derived_abi::{
+    definition_supports_derived_abi, ty_mentions_adt as derived_abi_rep_mentions_adt,
+};
 pub(crate) use derived_class::class_derivation_diagnostics;
 pub use derived_class::derived_class_plans;
 use derived_class::derived_class_plans_with_resolutions;

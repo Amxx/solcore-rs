@@ -76,6 +76,25 @@ fn abi_clause_source_from_lookup<'db>(
     })
 }
 
+/// Returns whether `module` enables the compiler-owned ABI instances emitted
+/// alongside an automatically derived `Generic` representation.
+///
+/// This intentionally inspects the ADT's defining module. Importing
+/// `std.ABIGeneric` only at a use site must not retroactively manufacture the
+/// concrete `ABIAttribs`/`ABIDecode` instances that DeriveGeneric would have
+/// emitted for the definition.
+pub(crate) fn definition_supports_derived_abi<'db>(db: &'db dyn Db, module: Module<'db>) -> bool {
+    if let Some(module_id) =
+        nameres::module_id_for_source_file(db, module.def_id_value(db).file(db))
+    {
+        return visible_abi_clause_source(db, &nameres::module_import_surface(db, module_id))
+            .is_some();
+    }
+
+    let item_resolutions = hir_nameres::resolve_item_type_facts(db, module);
+    resolved_abi_clause_source(db, module, &item_resolutions).is_some()
+}
+
 fn def_from_resolution_named<'db>(
     db: &'db dyn Db,
     resolution: &hir_nameres::Resolution<'db>,
@@ -191,7 +210,7 @@ pub(super) fn push_derived_abi_clauses<'db>(
     });
 }
 
-fn ty_mentions_adt<'db>(db: &'db dyn Db, ty: Ty<'db>, needle: DefId<'db>) -> bool {
+pub(crate) fn ty_mentions_adt<'db>(db: &'db dyn Db, ty: Ty<'db>, needle: DefId<'db>) -> bool {
     match ty.kind(db) {
         TyKind::Named { ctor, args } => {
             matches!(
