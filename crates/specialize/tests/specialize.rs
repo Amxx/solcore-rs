@@ -1551,6 +1551,95 @@ contract TupleSelector {
 }
 
 #[test]
+fn dispatch_selector_patch_prefers_the_longest_method_name() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
+data XDispatchNameTy_D_veryLongX = Wrapped(uint256);
+
+contract C {
+  public function putOpt(k: uint256, v: uint256) -> () { return (); }
+  public function putOptPair(k: uint256, a: uint256, b: uint256) -> () { return (); }
+  public function clearOpt(k: uint256) -> () { return (); }
+  public function clearOptPair(k: uint256) -> () { return (); }
+  public function foo(k: uint256) -> () { return (); }
+  public function foo_bar(k: uint256, v: uint256) -> () { return (); }
+  public function f(x: XDispatchNameTy_D_veryLongX) -> uint256 { return 7; }
+}
+
+contract D {
+  public function veryLong(k: uint256) -> uint256 { return k; }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let selector_helper = |marker: &str| {
+        output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Function(function)
+                    if function.name.starts_with("dispatch_selector_matches")
+                        && function.name.contains(marker) =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("selector helper for {marker}"))
+    };
+
+    let put_opt = selector_helper("DispatchNameTy_C_putOpt_d");
+    assert!(stmts_have_number_literal(&put_opt.body, "489078201"));
+    assert!(!stmts_have_number_literal(&put_opt.body, "3768177169"));
+
+    let put_opt_pair = selector_helper("DispatchNameTy_C_putOptPair_d");
+    assert!(stmts_have_number_literal(&put_opt_pair.body, "3768177169"));
+    assert!(!stmts_have_number_literal(&put_opt_pair.body, "489078201"));
+
+    let clear_opt = selector_helper("DispatchNameTy_C_clearOpt_d");
+    assert!(stmts_have_number_literal(&clear_opt.body, "986064138"));
+    assert!(!stmts_have_number_literal(&clear_opt.body, "3508849225"));
+
+    let clear_opt_pair = selector_helper("DispatchNameTy_C_clearOptPair_d");
+    assert!(stmts_have_number_literal(
+        &clear_opt_pair.body,
+        "3508849225"
+    ));
+    assert!(!stmts_have_number_literal(
+        &clear_opt_pair.body,
+        "986064138"
+    ));
+
+    let foo = selector_helper("DispatchNameTy_C_foo_d");
+    assert!(stmts_have_number_literal(&foo.body, "801029432"));
+    assert!(!stmts_have_number_literal(&foo.body, "3185083862"));
+
+    let foo_bar = selector_helper("DispatchNameTy_C_foo_bar_d");
+    assert!(stmts_have_number_literal(&foo_bar.body, "3185083862"));
+    assert!(!stmts_have_number_literal(&foo_bar.body, "801029432"));
+
+    let f = selector_helper("DispatchNameTy_C_f_d");
+    assert!(
+        f.name.contains("DispatchNameTy_D_veryLong"),
+        "the direct ADT argument must exercise a later marker match: {}",
+        f.name
+    );
+    assert!(stmts_have_number_literal(&f.body, "3017696395"));
+    assert!(!stmts_have_number_literal(&f.body, "1127644546"));
+
+    let very_long = selector_helper("DispatchNameTy_D_veryLong_d");
+    assert!(stmts_have_number_literal(&very_long.body, "1127644546"));
+    assert!(!stmts_have_number_literal(&very_long.body, "3017696395"));
+}
+
+#[test]
 fn constructor_overlay_roots_three_argument_deployment_main() {
     let output = specialize_src_with_std(
         r#"

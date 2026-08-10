@@ -1170,9 +1170,15 @@ fn patch_runtime_dispatch_selectors(module: &mut MonoModule<'_>, selectors: &[(S
         if !function.name.starts_with("dispatch_selector_matches") {
             continue;
         }
-        let Some((_, selector)) = selectors
+        let Some((_, _, selector)) = selectors
             .iter()
-            .find(|(marker, _)| function.name.contains(marker))
+            .filter_map(|(marker, selector)| {
+                function
+                    .name
+                    .find(marker)
+                    .map(|position| (position, marker.len(), selector))
+            })
+            .min_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)))
         else {
             continue;
         };
