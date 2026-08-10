@@ -1815,6 +1815,32 @@ function rebind(
 }
 
 #[test]
+fn importless_contract_field_assignment_keeps_the_declared_value_type() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+contract C {
+  value:word;
+
+  function write(flag:bool) -> () {
+    value = flag;
+    return ();
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function_with_solver(&db, module, "write");
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
 fn storage_load_and_assign_use_can_store_result_improvement() {
     let (db, key) = db_with_array_std(
         r#"

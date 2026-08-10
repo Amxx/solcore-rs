@@ -1519,6 +1519,12 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         span: Span<'db>,
     ) -> Option<MonoExpr<'db>> {
         let slot = self.contract_field_ref(field, span)?;
+        // A storage-array field is already an array handle. Loading it through
+        // CanStore would unnecessarily pull the element-copy evidence used by
+        // whole-array assignment into ordinary reads such as push or indexing.
+        if ty_is_storage_array(self.driver.db, slot.ty.ty()) && slot.ty.ty() == result_ty {
+            return Some(slot);
+        }
         self.resolved_contract_field_class_call("CanStore", "load", vec![slot], result_ty, span)
     }
 

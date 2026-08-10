@@ -26,10 +26,11 @@ impl<'db> InferCtx<'db> {
             return false;
         };
         let is_contract_field = self.is_contract_field_assign_target_expr(body, lhs);
+        let uses_assign = is_contract_field && self.lookup_class_id("Assign").is_some();
         if matches!(body.exprs(self.db).get(rhs).kind, ExprKind::Array(_)) && is_contract_field {
             return self.infer_storage_array_literal_assign(body, lhs, rhs, lhs_ty);
         }
-        let expected_rhs = if is_contract_field {
+        let expected_rhs = if uses_assign {
             self.engine.fresh_var()
         } else {
             self.loaded_ty_for_storage_ty(lhs_ty.clone())
@@ -37,7 +38,7 @@ impl<'db> InferCtx<'db> {
         };
         let rhs_ty = self.infer_expr_expected(body, rhs, Some(expected_rhs.clone()));
         self.unify_expr(body, rhs, expected_rhs, rhs_ty.clone());
-        if is_contract_field {
+        if uses_assign {
             // The reference lowers a field write through `Assign.assign`.
             // A specific Assign instance may intentionally accept a value
             // different from the field's ordinary CanStore load type.
@@ -570,6 +571,13 @@ impl<'db> InferCtx<'db> {
         let loaded = self
             .loaded_ty_for_storage_ty(storage_ty.clone())
             .unwrap_or_else(|| self.engine.fresh_var());
+        // Reading an array field yields its storage handle. Requiring the
+        // array's CanStore instance here would also require StorageCopy for
+        // the element type, even though that constraint is only needed by a
+        // whole-array write.
+        if self.storage_array_elem_ty(loaded.clone()).is_some() {
+            return loaded;
+        }
         self.push_can_store_obligation(storage_ty, loaded.clone(), ObligationSource::Scheme);
         loaded
     }

@@ -921,9 +921,9 @@ contract DirectWriter {
         direct_main.contains("_setv_"),
         "{direct_main}\n{direct_hull}"
     );
-    assert!(direct_hull.contains("sstore(0,"), "{direct_hull}");
+    assert!(direct_hull.contains("sstore("), "{direct_hull}");
     assert!(
-        direct_main.contains("return sload(0)"),
+        direct_main.contains("return CanStore_load_") && direct_main.contains("(0)"),
         "{direct_main}\n{direct_hull}"
     );
     assert!(
