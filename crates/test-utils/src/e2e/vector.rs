@@ -13,7 +13,12 @@ use super::{
     configured_anvil_hardfork, decode_hex_data, encode_hex,
 };
 
-pub const RAW_E2E_DEFAULT_EVM_VERSION: &str = "prague";
+/// EVM target used to compile and execute every upstream raw vector.
+///
+/// The fixture's optional `evmVersion` is retained as upstream metadata, but
+/// both backend runners intentionally use one Osaka runtime for the complete
+/// raw-vector corpus.
+pub const RAW_E2E_TARGET_EVM_VERSION: &str = "osaka";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum E2eExecution {
@@ -41,9 +46,7 @@ pub struct RawE2eVector {
 
 impl RawE2eVector {
     pub fn effective_evm_version(&self) -> &str {
-        self.evm_version
-            .as_deref()
-            .unwrap_or(RAW_E2E_DEFAULT_EVM_VERSION)
+        RAW_E2E_TARGET_EVM_VERSION
     }
 }
 
@@ -428,7 +431,40 @@ mod tests {
             Some(vec![0x60, 0x00])
         );
         assert!(successful.calls.is_empty());
-        assert_eq!(successful.effective_evm_version(), "prague");
+        assert_eq!(successful.evm_version, None);
+        assert_eq!(successful.effective_evm_version(), "osaka");
+    }
+
+    #[test]
+    fn raw_vectors_always_target_osaka_without_rewriting_metadata() {
+        for (declared, expected_metadata) in [
+            (None, None),
+            (Some("prague"), Some("prague")),
+            (Some("osaka"), Some("osaka")),
+        ] {
+            let evm_version = declared
+                .map(|version| format!(r#", "evmVersion": "{version}""#))
+                .unwrap_or_default();
+            let vector = parse_raw_e2e_vector(&format!(
+                r#"{{
+                  "target": {{
+                    "contract": "C"{evm_version},
+                    "tests": [{{
+                      "input": {{ "calldata": "", "value": "0" }},
+                      "kind": "constructor"
+                    }}]
+                  }}
+                }}"#
+            ))
+            .expect("valid target vector");
+
+            assert_eq!(vector.evm_version.as_deref(), expected_metadata);
+            assert_eq!(vector.effective_evm_version(), RAW_E2E_TARGET_EVM_VERSION);
+            assert_eq!(
+                E2eExecution::Raw(vector).effective_evm_version(),
+                RAW_E2E_TARGET_EVM_VERSION
+            );
+        }
     }
 
     #[test]

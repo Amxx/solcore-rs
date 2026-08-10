@@ -13,9 +13,9 @@ use solcore_sonatina::translate_hull_program;
 use solcore_test_utils::{
     define_frontend_test_db,
     e2e::{
-        AbiShape, E2eExecution, E2eFailure, FailureKind, ResolvedE2eCall, e2e_enabled,
-        e2e_pipeline_only, e2e_required, encode_hex, load_raw_e2e_vector, parse_e2e_directive,
-        resolve_e2e_comments, with_shared_evm_harness,
+        AbiShape, E2eExecution, E2eFailure, FailureKind, RAW_E2E_TARGET_EVM_VERSION,
+        ResolvedE2eCall, e2e_enabled, e2e_pipeline_only, e2e_required, encode_hex,
+        load_raw_e2e_vector, parse_e2e_directive, resolve_e2e_comments, with_shared_evm_harness,
     },
     load_fixture_case_with_file_urls, load_reachable_modules_with_file_urls,
     repo_root_from_manifest, run_in_large_stack,
@@ -106,7 +106,8 @@ fn require_sonatina_evm_version(evm_version: &str) -> Result<(), E2eFailure> {
 
 #[test]
 fn sonatina_rejects_non_osaka_execution_targets() {
-    assert!(require_sonatina_evm_version("osaka").is_ok());
+    assert_eq!(RAW_E2E_TARGET_EVM_VERSION, "osaka");
+    assert!(require_sonatina_evm_version(RAW_E2E_TARGET_EVM_VERSION).is_ok());
     let error = require_sonatina_evm_version("prague").unwrap_err();
     assert!(error.message.contains("targets only Osaka"), "{error}");
 }

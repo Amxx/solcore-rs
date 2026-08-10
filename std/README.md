@@ -52,7 +52,7 @@ E2E=1 E2E_REQUIRED=1 cargo test --profile e2e \
   --nocapture --test-threads=1
 ```
 
-The e136 raw-vector set contains Prague targets and therefore the complete set
-runs through Yul. The current Sonatina dependency supports Osaka only; see
-[`tests/e2e/README.md`](../tests/e2e/README.md) for its filtered validation
-command.
+The byte-exact e136 raw-vector metadata is preserved, while both Yul and
+Sonatina compile and execute the complete set against Osaka. See
+[`tests/e2e/README.md`](../tests/e2e/README.md) for the full validation
+commands.
