@@ -358,6 +358,10 @@ fn match_coverage_conservative_cases_emit_no_false_diagnostics() {
 
 #[test]
 fn reference_rejected_corpus_stays_rejected() {
+    solcore_test_utils::run_in_large_stack(reference_rejected_corpus_stays_rejected_impl);
+}
+
+fn reference_rejected_corpus_stays_rejected_impl() {
     let repo = repo_root();
     let corpus_root = repo.join("crates/parser/tests/fixtures/corpus");
     let verdicts = fs::read_to_string(corpus_root.join("reference-frontend.tsv"))
