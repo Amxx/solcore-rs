@@ -10,14 +10,16 @@ they are not the language specification.
 - Haskell reference: [`argotorg/solcore@e1361599`](https://github.com/argotorg/solcore/tree/e13615992388cd7bfd59eef5a2b6f61ddc37da1f).
 - Rust implementation: the `catchup` branch while it converges on that reference.
 - Standard library target: the byte-identical `e1361599` snapshot in [`std/`](std/).
-- Validation date: 2026-08-09.
+- Validation date: 2026-08-10.
 
-The reference corpus in
+The complete 497-source reference corpus in
 [`reference-frontend.tsv`](crates/parser/tests/fixtures/corpus/reference-frontend.tsv)
-was produced with Haskell flags `-n -g`: specialization/Hull emission and
-generated contract dispatch were disabled. It used the default legacy
-type-class resolver. Its 278 passes, 153 failures, and two timeouts describe
-that configuration, not the whole Haskell compiler.
+was regenerated from the exact e136 snapshot with Haskell flags `-n -g`:
+specialization/Hull emission and generated contract dispatch were disabled. It
+used the default legacy type-class resolver. Its 335 passes, 160 failures, and
+two timeouts describe that configuration, not the whole Haskell compiler. The
+[corpus README](crates/parser/tests/fixtures/corpus/README.md) records the exact
+command, timeout policy, and diagnostic-code sentinel.
 
 The Rust accepted-corpus gate in
 [`frontend_smoke.rs`](crates/hir-ty/tests/frontend_smoke.rs) runs the full Rust
@@ -47,10 +49,11 @@ the compiler behaviors already agree once the same options are used.
 | Recursive/table-reuse fixtures | Haskell legacy rejects `super-class-recursive-arg`, `tabled-answer-reuse`, and `tabled-mutual-chain`; Haskell tabled mode and Rust accept them. | These are not semantic differences under the tabled resolver. Make tabled canonical, or record the mode in each verdict. **Fix Haskell configuration and the harness.** |
 | Polymorphic comptime argument ([fixture](crates/parser/tests/fixtures/corpus/fail/test/examples/comptime/ct_param_poly_runtime.solc)) | The Haskell legacy frontend first reports ambiguity. Both Haskell tabled full-pipeline mode and Rust specialization reject a runtime value passed to a comptime parameter; the Rust frontend-only parity probe intentionally defers it. | The latent comptime obligation is already preserved through Rust specialization. **Keep the specialization regression and record the phase in the harness.** |
 | Parameterized contract `main` ([fixture](crates/parser/tests/fixtures/corpus/ok/test/examples/cases/multi-stmt-var-leaf.solc)) | Haskell suppresses generated dispatch whenever a local `main` exists and accepts parameters; Rust rejects them because the runtime entry receives no arguments. | A source runtime entry must be zero-argument. **Fix Haskell dispatch validation; keep Rust.** |
-| Missing helper imports (`field-helper-cxt-collision`, `pair-bug`) | Haskell `-g` verdicts pass; both full frontends fail because the fixtures omit `std.dispatch`. | This is a mode mismatch. Compare both with dispatch or both without it. **Fix the harness/fixtures.** |
+| Missing helper imports (`contract-local-derive`, `contract-local-type-same-name`, `field-helper-cxt-collision`, `pair-bug`, `ufcs-no-conflict`) | Haskell `-g` verdicts pass; both full frontends fail because the fixtures omit `std.dispatch`. | This is a mode mismatch. Compare both with dispatch or both without it. **Fix the harness/fixtures.** |
 | Primitive `word` in public ABI | Both metadata emitters call it `uint256`, but shared std cannot dispatch source `word`. Both compilers report missing evidence; current Rust tabled resolution terminates with a bounded `SC0207`. | Add complete `word` evidence in the **upstream Haskell std**, then re-vendor. Keep a Rust regression proving bounded failure while evidence is missing. |
 | User ADTs in public ABI | At `e1361599`, upstream supports non-recursive, compiler-derived `Generic` ADTs both directly and under `calldata(array(T))`; runtime selectors spell the Generic representation structurally. Its `ContractDispatch.abiTypeOf` emits source metadata only for a nullary `TyCon n []`, so a concrete parameterized ADT can derive runtime evidence but still fails upstream ABI JSON emission. Rust mirrors the nullary surface and intentionally extends metadata to source spellings such as `Point(uint256)`. Recursive, excluded, and manually represented ADTs lack the derived decode path. | Keep the safe Rust parameterized-metadata extension, but do not describe it as exact e136 emitter parity. Keep non-derived forms rejected with structured diagnostics, and never infer ABI meaning from a same-named user `array`/`calldata` type. |
-| ABI type validation | Haskell passes other nullary names through and uses `error` for unsupported shapes. Rust uses canonical checks and diagnostics. | Validate against the dispatchable ABI surface. **Fix the Haskell ABI emitter; keep Rust's diagnostic model.** |
+| Derived ADTs in storage | e136 and Rust derive per-type `StorageSize` and `storage(T):CanStore(T)` for eligible, non-recursive compiler-owned `Generic` ADTs when `std.StorageGeneric` is visible in the definition module. Direct fields, ADTs as mapping values, and `memory(bytes)`/`memory(string)` leaves are supported. Recursive ADTs and an ADT field whose leaf is a whole mapping remain unstorable. | This is parity. Keep derivation compiler-owned and definition-scoped, and reject unsupported leaves or recursion at the storage use site with structured diagnostics. The no-dispatch ledger's recursive-ADT pass is a phase difference, not a semantic acceptance. |
+| ABI type validation | Haskell passes other nullary names through and uses `error` for unsupported shapes. Rust uses canonical checks and diagnostics, including rejection of `memory(DynArray(address))` outputs in `storage_array` and `ufcs_array`. | Validate against the dispatchable ABI surface. **Fix the Haskell ABI emitter; keep Rust's diagnostic model.** |
 | Signature/selector collisions | Rust rejects duplicate signatures and distinct signatures with the same four-byte selector. Haskell has no equivalent preflight. | Reject both before code generation. **Fix Haskell dispatch generation.** |
 | Nested tuple boundary | Both flatten the language's right-nested pair representation at the top ABI boundary. | This is shared. **Fix both compilers and the language ABI design together** if nested boundaries must be preserved. |
 
@@ -59,9 +62,9 @@ the compiler behaviors already agree once the same options are used.
 ### Syntax and ordinary type checking
 
 Haskell
-[`forPostP`](https://github.com/argotorg/solcore/blob/ac6f8957a78dc53248dbe053f1ddbc2a2201b81f/src/Solcore/Frontend/Parser/Stmt.hs#L113-L120)
+[`forPostP`](https://github.com/argotorg/solcore/blob/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/src/Solcore/Frontend/Parser/Stmt.hs#L116-L123)
 uses only `forAssignP`, while its init parser also uses `forLetP`. The same
-revision's [syntax documentation](https://github.com/argotorg/solcore/blob/ac6f8957a78dc53248dbe053f1ddbc2a2201b81f/doc/src/sail/syntax.md#L333-L339)
+revision's [syntax documentation](https://github.com/argotorg/solcore/blob/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/doc/src/sail/syntax.md#L333-L339)
 says the post clause follows the init grammar. Rust's
 [`parsed_stmt_parser`](crates/parser/src/parse/stmt.rs) uses one `for_item` for
 both positions. Haskell is the outlier.
@@ -74,9 +77,9 @@ implementation signature. Rust's `SC0221` should remain.
 ### Resolver and comptime modes
 
 Haskell defaults to `LegacyResolution` in
-[`Options.hs`](https://github.com/argotorg/solcore/blob/ac6f8957a78dc53248dbe053f1ddbc2a2201b81f/src/Solcore/Pipeline/Options.hs#L55-L72),
+[`Options.hs`](https://github.com/argotorg/solcore/blob/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/src/Solcore/Pipeline/Options.hs#L55-L72),
 while its tabled tests select `TabledResolution` in
-[`test/Cases.hs`](https://github.com/argotorg/solcore/blob/ac6f8957a78dc53248dbe053f1ddbc2a2201b81f/test/Cases.hs#L628-L657).
+[`test/Cases.hs`](https://github.com/argotorg/solcore/blob/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/test/Cases.hs#L642-L673).
 Direct runs confirm that the three recursive/reuse fixtures pass in tabled
 mode. Their legacy failures must not be described as Rust solver extensions.
 
@@ -85,7 +88,7 @@ semantic difference. Haskell tabled full-pipeline mode and Rust specialization
 both report a runtime value passed to `Wrap.unwrap`'s comptime parameter, while
 the Rust frontend-only corpus probe has not reached that phase. Haskell also
 intentionally defers polymorphic cases in
-[`Frontend/ComptimeCheck.hs`](https://github.com/argotorg/solcore/blob/ac6f8957a78dc53248dbe053f1ddbc2a2201b81f/src/Solcore/Frontend/ComptimeCheck.hs#L196-L215).
+[`Frontend/ComptimeCheck.hs`](https://github.com/argotorg/solcore/blob/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/src/Solcore/Frontend/ComptimeCheck.hs#L196-L215).
 Rust already has latent-call analysis in
 [`infer/comptime.rs`](crates/hir-ty/src/infer/comptime.rs) and specialization
 checks in [`evaluate/core.rs`](crates/specialize/src/evaluate/core.rs); the
@@ -94,7 +97,7 @@ obligation survives into that check and produces `SC0409`.
 ### Contract lowering and parity configuration
 
 Haskell
-[`contractDispatchTopDecls`](https://github.com/argotorg/solcore/blob/ac6f8957a78dc53248dbe053f1ddbc2a2201b81f/src/Solcore/Desugarer/ContractDispatch.hs#L36-L43)
+[`contractDispatchTopDecls`](https://github.com/argotorg/solcore/blob/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/src/Solcore/Desugarer/ContractDispatch.hs#L36-L43)
 suppresses generated runtime dispatch for any contract-local `main`, without an
 arity check. Rust mirrors suppression but adds
 [`contract_runtime_main_diagnostics`](crates/hir-ty/src/contract/dispatch.rs),
@@ -103,21 +106,54 @@ the same validation.
 
 Ordinary Haskell corpus tests and the verdict generator disable dispatch. Rust
 `reference_accepted_corpus_passes_the_full_frontend` enables it. Thus
-`field-helper-cxt-collision` and `pair-bug` pass only the Haskell no-dispatch
-run; a Haskell full run rejects the same missing `std.dispatch` names. They do
-not demonstrate implicit Haskell bindings.
+`contract-local-derive`, `contract-local-type-same-name`,
+`field-helper-cxt-collision`, `pair-bug`, and `ufcs-no-conflict` pass only the
+Haskell no-dispatch run; a Haskell full run rejects the same missing
+`std.dispatch` names. They do not demonstrate implicit Haskell bindings.
 
 The current
 [`rust-rejected-reference-passes.tsv`](crates/parser/tests/fixtures/corpus/rust-rejected-reference-passes.tsv)
-has 67 diagnostic rows across 45 paths. Thirty-nine paths are intentional Rust
-negative `imports/*` fixtures; only six unique non-import paths remain as
+has 91 diagnostic rows across 51 paths. Thirty-nine paths are intentional Rust
+negative `imports/*` fixtures; only 12 unique non-import paths remain as
 reference compatibility cases. Manifest row counts are not
 semantic-difference counts.
+
+### Derived ADT storage
+
+Upstream e136's
+[`DeriveGeneric`](https://github.com/argotorg/solcore/blob/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/src/Solcore/Desugarer/DeriveGeneric.hs#L31-L47)
+uses the `StorageDeriving` marker exported by
+[`std.StorageGeneric`](std/StorageGeneric.solc) to emit concrete
+`StorageSize` and `storage(T):CanStore(T)` instances beside each eligible
+compiler-derived `Generic` instance. The structural std implementation stores
+sum, product, and unit representations leaf by leaf; it also bridges dynamic
+`memory(bytes)` and `memory(string)` leaves. This supports direct ADT contract
+fields, nested ADTs, and ADTs used as mapping values without making whole
+mappings copyable values.
+
+Rust mirrors that definition-side plan in
+[`solver/derived_storage.rs`](crates/hir-ty/src/solver/derived_storage.rs) and
+emits the concrete specialized methods in
+[`specialize/derived_storage.rs`](crates/specialize/src/specialize/derived_storage.rs).
+Definition-side evidence remains available to importing consumers without
+letting a consumer import retroactively enable derivation. The dedicated
+[`derived_storage_frontend.rs`](crates/hir-ty/tests/derived_storage_frontend.rs)
+regressions pin that boundary and reject recursive ADTs and mapping-valued ADT
+fields, including an otherwise-unused mapping-valued field; the storage E2E
+fixtures cover direct, nested, mapping-value, enum, boolean, and dynamic-leaf
+round trips.
+
+`storage-adt-recursive-fail.solc` passes only in the `-g` reference ledger
+because generated dispatch never makes its constructor/storage obligation
+reachable. The full e136 frontend and the Rust full-frontend gate both reject
+the required recursive storage assignment (`CanStore` upstream and the
+corresponding `Assign` obligation in Rust). Its allowance is therefore a
+recorded phase difference, not a Rust/Haskell semantic divergence.
 
 ### ABI metadata, selectors, and runtime evidence
 
 Haskell
-[`abiTypeOf`](https://github.com/argotorg/solcore/blob/ac6f8957a78dc53248dbe053f1ddbc2a2201b81f/src/Solcore/Desugarer/ContractDispatch.hs#L385-L398)
+[`abiTypeOf`](https://github.com/argotorg/solcore/blob/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/src/Solcore/Desugarer/ContractDispatch.hs#L385-L405)
 and Rust [`abi_type_of`](crates/hir-ty/src/contract/abi.rs) render primitive
 `word` as `uint256`. Runtime dispatch is separate: generated `Method` values
 retain source types and require classes from `std.dispatch` and `std`.
@@ -194,6 +230,13 @@ perform the same preflight, replace partial ABI-renderer errors with structured
 diagnostics, and replace arbitrary nullary-name passthrough with a canonical
 allowlist or evidence-based query.
 
+The `storage_array` and `ufcs_array` rows in the Rust rejection allowance are
+also phase-sensitive: the e136 verdict was recorded with generated dispatch
+disabled, while Rust's full gate reaches external ABI validation. Rust rejects
+their `memory(DynArray(address))` result with `SC0231` because only canonical
+`memory(string)` and `memory(bytes)` currently have matching metadata and
+runtime evidence. Keeping the structured rejection is intentional.
+
 ## Standard-library recommendation
 
 The `.solc` files in [`std/`](std/) are a shared compatibility artifact, not a
@@ -247,11 +290,17 @@ compiler-private dependency mechanism.
 After a std update, verify the copies and then the full pipelines:
 
 ```sh
-for file in ABIGeneric.solc Generic.solc dispatch.solc opcodes.solc std.solc; do
+for file in ABIGeneric.solc Generic.solc StorageGeneric.solc dispatch.solc \
+  eip712.solc eip7951.solc opcodes.solc std.solc; do
   cmp "std/$file" "crates/parser/tests/fixtures/corpus/ok/std/$file" || exit 1
 done
 cargo test -p solcore-parser -p solcore-hir-ty -p solcore-specialize --locked
 E2E=1 E2E_REQUIRED=1 cargo test --profile e2e \
-  -p solcore-yul -p solcore-sonatina --test e2e --locked -- \
+  -p solcore-yul --test e2e --locked -- \
   --nocapture --test-threads=1
 ```
+
+The e136 raw-vector set contains Prague targets and therefore the complete set
+runs through Yul. The current Sonatina dependency supports Osaka only; use the
+filtered Sonatina command documented in
+[`tests/e2e/README.md`](tests/e2e/README.md).
