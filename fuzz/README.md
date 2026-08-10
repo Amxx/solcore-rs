@@ -20,6 +20,13 @@ cargo afl fuzz -i fuzz/corpus/backend -o fuzz/findings/backend \
   fuzz/target/release/backend
 ```
 
+Each forked child processes at most 10 inputs before AFL++ replaces it. Parser
+and compiler state is reclaimed after every input; this finite child lifetime is
+an additional guard against allocator/thread-local high-water memory and future
+dependency regressions. Set `AFL_FUZZER_LOOPCOUNT` explicitly to tune the limit
+for a measured campaign, and only raise it after checking per-worker RSS under
+the campaign's real corpus.
+
 For campaigns on `fuzz-01`, use tofu's `solcore-rs-fuzz` helper.  It reuses the
 host's Slurm artifact/metadata handling and gives every target a separate
 shared corpus at `/data/fuzz-corpora/solcore-rs/<target>/`.
