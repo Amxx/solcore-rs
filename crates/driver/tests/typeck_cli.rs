@@ -876,13 +876,16 @@ contract C {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("error[SC0421]"), "stderr:\n{stderr}");
+    assert!(stderr.contains("error[SC0411]"), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("cannot lower literal `\"nope\"` to Hull"),
+        stderr.contains("runtime lowering cannot represent `string` in return type of `main`"),
         "stderr:\n{stderr}"
     );
-    assert!(!stderr.contains("UnsupportedType {"), "stderr:\n{stderr}");
-    assert!(!stderr.contains("HULL-EMIT"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("IntegerErasure {"), "stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("specialization failed"),
+        "stderr:\n{stderr}"
+    );
 }
 
 #[test]
