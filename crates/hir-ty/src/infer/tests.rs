@@ -1849,6 +1849,101 @@ contract C {
 }
 
 #[test]
+fn contract_field_assignment_uses_specific_assign_evidence() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+pragma no-patterson-condition Assign;
+
+data storage(t) = storage(word);
+data mapping(k, v) = mapping(word);
+data Foo = Foo(word);
+
+forall dst value . class dst:CanStore(value) {
+  function store(dst:dst, value:value) -> ();
+  function load(dst:dst) -> value;
+}
+
+forall lhs rhs . class lhs:Assign(rhs) {
+  function assign(lhs:lhs, rhs:rhs) -> ();
+}
+
+instance storage(word):CanStore(word) {
+  function store(dst:storage(word), value:word) -> () { return (); }
+  function load(dst:storage(word)) -> word { return 0; }
+}
+
+forall a b . a:CanStore(b) => instance a:Assign(b) {
+  function assign(lhs:a, rhs:b) -> () { CanStore.store(lhs, rhs); }
+}
+
+instance storage(word):Assign(bool) {
+  function assign(lhs:storage(word), rhs:bool) -> () { return (); }
+}
+
+instance storage(mapping(word, word)):CanStore(storage(mapping(word, word))) {
+  function store(
+    dst:storage(mapping(word, word)),
+    value:storage(mapping(word, word))
+  ) -> () { return (); }
+  function load(
+    dst:storage(mapping(word, word))
+  ) -> storage(mapping(word, word)) { return storage(0); }
+}
+
+instance storage(mapping(word, word)):Assign(Foo) {
+  function assign(lhs:storage(mapping(word, word)), rhs:Foo) -> () { return (); }
+}
+
+contract C {
+  value:word;
+  values:mapping(word, word);
+
+  function write(flag:bool) -> () {
+    value = flag;
+    return ();
+  }
+
+  function writeAnnotated(flag:bool) -> () {
+    value : storage(word) = flag;
+    return ();
+  }
+
+  function writeMapping(value:Foo) -> () {
+    values = value;
+    return ();
+  }
+}
+"#,
+    );
+    let module_id = module_id_from_key(&db, &key);
+    let module = module_hir(&db, module_id).expect("module hir");
+    let storage_word = adt_ty(&db, module, "storage", vec![Ty::word(&db)]);
+    let bool_ty = Ty::named(&db, TyCtor::Builtin(BuiltinTyCtor::Bool), Vec::new());
+    let mapping = adt_ty(&db, module, "mapping", vec![Ty::word(&db), Ty::word(&db)]);
+    let storage_mapping = adt_ty(&db, module, "storage", vec![mapping]);
+    let foo = adt_ty(&db, module, "Foo", Vec::new());
+
+    for (name, storage_ty, value_ty) in [
+        ("write", storage_word, bool_ty),
+        ("writeAnnotated", storage_word, bool_ty),
+        ("writeMapping", storage_mapping, foo),
+    ] {
+        let (_, result) = infer_module_function_with_solver(&db, module_id, name);
+        assert_no_typeck(&result);
+        assert!(
+            has_user_obligation(&db, &result, "Assign", storage_ty, &[value_ty]),
+            "{name}: {:?}",
+            result.obligations
+        );
+        assert!(
+            !has_user_obligation(&db, &result, "CanStore", storage_ty, &[value_ty]),
+            "{name}: {:?}",
+            result.obligations
+        );
+    }
+}
+
+#[test]
 fn compound_storage_array_index_recognizes_parameter_handles() {
     let (db, key) = db_with_array_std(
         r#"

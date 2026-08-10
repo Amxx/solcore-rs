@@ -60,6 +60,7 @@ mod canonical;
 mod derived_abi;
 mod derived_class;
 mod derived_generic;
+mod derived_storage;
 mod display;
 mod engine;
 mod env;
@@ -84,8 +85,16 @@ pub use derived_generic::{
     derived_generic_instance_plan, derived_generic_plan, generic_derivation_diagnostics,
 };
 use derived_generic::{
-    derived_generic_instance_plan_with_resolutions, imported_generic_class, local_adt_infos,
-    local_generic_class, visible_generic_class,
+    derived_generic_instance_plan_with_resolutions, derived_generic_plan_with_resolutions,
+    imported_generic_class, local_adt_infos, local_generic_class, visible_generic_class,
+};
+pub(crate) use derived_storage::{
+    DerivedCanStoreImplementationFailure, contract_field_storage_predicate,
+    derived_can_store_implementation_failure,
+};
+use derived_storage::{
+    DerivedStorageClauseSource, push_derived_storage_clauses, resolved_storage_clause_source,
+    visible_storage_clause_source,
 };
 use display::{display_scheme_source, display_vars};
 use engine::{Answer, TabledEngine};
@@ -134,6 +143,9 @@ pub struct ModuleTraitEnvSource<'db> {
     pub instance_origins: Vec<nameres::Origin<'db>>,
     /// Local source for derived `Generic` clauses, when `Generic` is visible.
     pub derived_generic: Option<DerivedGenericClauseSource<'db>>,
+    /// Consumer module whose instance-visible imported modules contribute
+    /// definition-side compiler-derived instances.
+    pub derived_generic_imports: ModuleId<'db>,
     /// Instance-visible modules whose ADTs contribute derived class clauses.
     pub derived_class_modules: Vec<ModuleId<'db>>,
 }
@@ -147,6 +159,8 @@ pub struct DerivedGenericClauseSource<'db> {
     pub generic: DefId<'db>,
     /// ABI marker and support definitions visible beside `Generic`.
     abi: Option<DerivedAbiClauseSource<'db>>,
+    /// Storage marker and support definitions visible beside `Generic`.
+    storage: Option<DerivedStorageClauseSource<'db>>,
 }
 
 /// Source layout for a base trait environment.
@@ -241,6 +255,18 @@ pub enum DerivedClauseKind<'db> {
         adt: DefId<'db>,
         /// `WordReader` class used by the synthesized instance context.
         word_reader: DefId<'db>,
+    },
+    /// Concrete `T:StorageSize` instance backed by `T`'s Generic representation.
+    StorageSize {
+        /// ADT whose storage-size instance was synthesized.
+        adt: DefId<'db>,
+    },
+    /// Concrete `storage(T):CanStore(T)` instance.
+    CanStore {
+        /// ADT whose storage instance was synthesized.
+        adt: DefId<'db>,
+        /// `StorageSize` class used by the synthesized instance context.
+        storage_size: DefId<'db>,
     },
     /// Class instance requested by an ADT `derive` attribute.
     Class {

@@ -579,6 +579,7 @@ impl<'db> Emitter<'db> {
                 },
             },
             MonoExprKind::TypeAnnot { expr: inner, .. } => self.emit_expr(inner),
+            MonoExprKind::Proxy(_) if hull_ty_word_slots(&ty) == Some(0) => Expr::unit(expr.span),
             MonoExprKind::Match { scrutinee, arms } => {
                 self.emit_match_expr(expr, &ty, scrutinee, arms)
             }

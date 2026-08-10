@@ -3439,6 +3439,182 @@ contract ArrayCopy {
 }
 
 #[test]
+fn contract_fields_lower_through_storage_classes_and_prefix_offsets() {
+    let (db, main_file, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+
+contract FieldAccess {
+  first : uint256;
+  second : uint256;
+  third : uint256;
+  values : array(uint256);
+  balances : mapping(uint256, uint256);
+
+  function readFirst() -> uint256 { return first; }
+  function writeSecond(v:uint256) -> () { second = v; return (); }
+  function bumpThird(v:uint256) -> () { third += v; return (); }
+  function replaceValues() -> () { values = [uint256(4), uint256(5)]; return (); }
+  function readValue(k:uint256) -> uint256 { return values[k]; }
+  function readBalance(k:uint256) -> uint256 { return balances[k]; }
+
+  function main() -> uint256 {
+    writeSecond(uint256(1));
+    bumpThird(uint256(2));
+    replaceValues();
+    balances[uint256(0)] = third;
+    values[uint256(0)] = second;
+    return readFirst() + readValue(uint256(0)) + readBalance(uint256(0));
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let source_function = |name: &str| {
+        output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Function(function)
+                    if function.source.is_some_and(|def| {
+                        def.file(db) == main_file && def.name(db).as_deref() == Some(name)
+                    }) =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing source specialization for {name}"))
+    };
+    let read_first = source_function("readFirst");
+    let read_first_calls = function_call_names(read_first);
+    assert!(
+        read_first_calls
+            .iter()
+            .any(|candidate| candidate.starts_with("CanStore_load_")),
+        "{read_first:#?}"
+    );
+    assert!(
+        stmts_have_number_literal(&read_first.body, "0"),
+        "first field must use StorageSize(Unit) = 0: {read_first:#?}"
+    );
+
+    let write_second = source_function("writeSecond");
+    let write_second_calls = function_call_names(write_second);
+    assert!(
+        write_second_calls
+            .iter()
+            .any(|candidate| candidate.starts_with("Assign_assign_")),
+        "{write_second:#?}"
+    );
+    assert!(
+        stmts_have_number_literal(&write_second.body, "1"),
+        "second field must use StorageSize(Pair(uint256, Unit)) = 1: {write_second:#?}"
+    );
+
+    let bump_third = source_function("bumpThird");
+    let bump_third_calls = function_call_names(bump_third);
+    assert!(
+        bump_third_calls
+            .iter()
+            .any(|candidate| candidate.starts_with("Assign_assign_")),
+        "{bump_third:#?}"
+    );
+    assert!(
+        bump_third_calls
+            .iter()
+            .any(|candidate| candidate.starts_with("CanStore_load_")),
+        "{bump_third:#?}"
+    );
+    assert!(
+        stmts_have_number_literal(&bump_third.body, "2"),
+        "third field must use StorageSize(Pair(uint256, Pair(uint256, Unit))) = 2: {bump_third:#?}"
+    );
+
+    let replace_values = source_function("replaceValues");
+    let replace_values_calls = function_call_names(replace_values);
+    assert!(
+        replace_values_calls
+            .iter()
+            .any(|candidate| candidate.contains("storeArrayLit")),
+        "{replace_values:#?}"
+    );
+
+    for (name, expected_kind, expected_offset) in [
+        ("readValue", MonoStorageIndexKind::Array, "3"),
+        ("readBalance", MonoStorageIndexKind::Mapping, "4"),
+    ] {
+        let function = source_function(name);
+        let mut indexes = Vec::new();
+        collect_storage_indexes_in_stmts(&function.body, &mut indexes);
+        let [(kind, base)] = indexes.as_slice() else {
+            panic!("expected one storage index in {name}: {function:#?}");
+        };
+        assert_eq!(*kind, expected_kind, "{function:#?}");
+        assert!(
+            expr_has_number_literal(base, expected_offset),
+            "collection field base must use its StorageSize prefix offset {expected_offset}: {function:#?}"
+        );
+        let mut base_calls = BTreeSet::new();
+        collect_expr_call_names(base, &mut base_calls);
+        assert!(
+            !base_calls
+                .iter()
+                .any(|candidate| candidate.starts_with("CanStore_load_")),
+            "collection field base must remain a raw slot and not be loaded before indexing: {function:#?}"
+        );
+    }
+}
+
+#[test]
+fn partial_contract_field_support_does_not_fall_back_to_legacy_slots() {
+    let read = specialize_src_with_std(
+        r#"
+import std.{Proxy, storage, StorageSize};
+
+contract C {
+  value : word;
+  function main() -> word { return value; }
+}
+"#,
+    );
+    assert!(
+        read.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SpecializeDiagnosticKind::MissingEvidence { context }
+                if context == "canonical contract field read support"
+        )),
+        "{:#?}",
+        read.diagnostics
+    );
+
+    let write = specialize_src_with_std(
+        r#"
+import std.{Proxy, storage, StorageSize, CanStore};
+
+contract C {
+  value : word;
+  function main() -> word {
+    value = value;
+    return value;
+  }
+}
+"#,
+    );
+    assert!(
+        write.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SpecializeDiagnosticKind::MissingEvidence { context }
+                if context == "canonical contract field write support"
+        )),
+        "{:#?}",
+        write.diagnostics
+    );
+}
+
+#[test]
 fn array_indexes_preserve_non_identity_typedef_representations() {
     let (db, main_file, output) = specialize_src_with_std_and_db(
         r#"
@@ -4147,6 +4323,131 @@ fn expr_has_storage_array_index(expr: &MonoExpr<'_>) -> bool {
         | MonoExprKind::Lit(_)
         | MonoExprKind::Proxy(_)
         | MonoExprKind::Error => false,
+    }
+}
+
+fn collect_storage_indexes_in_stmts<'a, 'db>(
+    stmts: &'a [MonoStmt<'db>],
+    indexes: &mut Vec<(MonoStorageIndexKind, &'a MonoExpr<'db>)>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            MonoStmtKind::Let { init, .. } => {
+                if let Some(init) = init {
+                    collect_storage_indexes(init, indexes);
+                }
+            }
+            MonoStmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    collect_storage_indexes(expr, indexes);
+                }
+            }
+            MonoStmtKind::Expr(expr) => collect_storage_indexes(expr, indexes),
+            MonoStmtKind::Assign { lhs, rhs, .. } => {
+                collect_storage_indexes(lhs, indexes);
+                collect_storage_indexes(rhs, indexes);
+            }
+            MonoStmtKind::Match { scrutinees, arms } => {
+                for scrutinee in scrutinees {
+                    collect_storage_indexes(scrutinee, indexes);
+                }
+                for arm in arms {
+                    collect_storage_indexes_in_stmts(&arm.body, indexes);
+                }
+            }
+            MonoStmtKind::For {
+                init,
+                cond,
+                post,
+                body,
+            } => {
+                collect_storage_indexes_in_stmts(init, indexes);
+                collect_storage_indexes(cond, indexes);
+                collect_storage_indexes_in_stmts(post, indexes);
+                collect_storage_indexes_in_stmts(body, indexes);
+            }
+            MonoStmtKind::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                collect_storage_indexes(cond, indexes);
+                collect_storage_indexes_in_stmts(then_body, indexes);
+                if let Some(else_body) = else_body {
+                    collect_storage_indexes_in_stmts(else_body, indexes);
+                }
+            }
+            MonoStmtKind::Block(body) => collect_storage_indexes_in_stmts(body, indexes),
+            MonoStmtKind::Assembly(_)
+            | MonoStmtKind::Break
+            | MonoStmtKind::Continue
+            | MonoStmtKind::Error => {}
+        }
+    }
+}
+
+fn collect_storage_indexes<'a, 'db>(
+    expr: &'a MonoExpr<'db>,
+    indexes: &mut Vec<(MonoStorageIndexKind, &'a MonoExpr<'db>)>,
+) {
+    match &expr.kind {
+        MonoExprKind::StorageIndex {
+            storage_kind,
+            base,
+            index,
+        } => {
+            indexes.push((*storage_kind, base));
+            collect_storage_indexes(base, indexes);
+            collect_storage_indexes(index, indexes);
+        }
+        MonoExprKind::Call { args, .. }
+        | MonoExprKind::Con { args, .. }
+        | MonoExprKind::Tuple(args) => {
+            for arg in args {
+                collect_storage_indexes(arg, indexes);
+            }
+        }
+        MonoExprKind::ClosureDispatch { callee, args } => {
+            collect_storage_indexes(callee, indexes);
+            for arg in args {
+                collect_storage_indexes(arg, indexes);
+            }
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. }
+        | MonoExprKind::Index {
+            base: lhs,
+            index: rhs,
+        }
+        | MonoExprKind::MemoryArrayIndex {
+            base: lhs,
+            index: rhs,
+        } => {
+            collect_storage_indexes(lhs, indexes);
+            collect_storage_indexes(rhs, indexes);
+        }
+        MonoExprKind::UnaryOp { expr, .. }
+        | MonoExprKind::TypeAnnot { expr, .. }
+        | MonoExprKind::Field { base: expr, .. } => collect_storage_indexes(expr, indexes),
+        MonoExprKind::Match { scrutinee, arms } => {
+            collect_storage_indexes(scrutinee, indexes);
+            for arm in arms {
+                collect_storage_indexes(&arm.expr, indexes);
+            }
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_storage_indexes(cond, indexes);
+            collect_storage_indexes(then_expr, indexes);
+            collect_storage_indexes(else_expr, indexes);
+        }
+        MonoExprKind::Lambda { body, .. } => collect_storage_indexes_in_stmts(body, indexes),
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Error => {}
     }
 }
 
@@ -5196,4 +5497,249 @@ fn derived_abi_wrappers_replay_definition_side_evidence() {
                     if method == "ABIAttribs.headSize"
             )
     )));
+}
+#[test]
+fn derived_storage_wrappers_delegate_to_the_generic_representation_once() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+pragma no-coverage-condition;
+
+data Proxy(t) = Proxy;
+data storage(t) = storage(word);
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+forall self . class self:StorageDeriving {}
+forall self . class self:StorageSize {
+  function size(x:Proxy(self)) -> word;
+}
+forall slot value . class slot:CanStore(value) {
+  function store(r:slot, v:value) -> ();
+  function load(r:slot) -> value;
+}
+
+instance word:StorageSize {
+  function size(x:Proxy(word)) -> word {
+    assembly { sstore(0, 1) }
+    return 1;
+  }
+}
+instance storage(word):CanStore(word) {
+  function store(r:storage(word), v:word) -> () {
+    match r {
+    | storage(slot) => assembly { sstore(slot, v) }
+    }
+  }
+  function load(r:storage(word)) -> word {
+    match r {
+    | storage(slot) =>
+      let result:word;
+      assembly { result := sload(slot) }
+      return result;
+    }
+  }
+}
+
+data Box(a) = Box(a);
+
+function main(r:storage(Box(word)), v:Box(word)) -> Box(word) {
+  let first = StorageSize.size(Proxy:Proxy(Box(word)));
+  let second = StorageSize.size(Proxy:Proxy(Box(word)));
+  CanStore.store(r, v);
+  return CanStore.load(r);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let derived = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(&function.origin, MonoFunctionOrigin::DerivedGeneric { .. }) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for method in ["StorageSize.size", "CanStore.store", "CanStore.load"] {
+        assert_eq!(
+            derived
+                .iter()
+                .filter(|function| matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                        if candidate == method
+                ))
+                .count(),
+            1,
+            "derived storage wrapper was missing or duplicated: {method}: {derived:#?}",
+        );
+    }
+
+    let size = derived
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { method, .. } if method == "StorageSize.size"
+            )
+        })
+        .expect("derived StorageSize wrapper");
+    assert!(matches!(
+        size.body.as_slice(),
+        [MonoStmt {
+            kind: MonoStmtKind::Return(Some(MonoExpr {
+                kind: MonoExprKind::Call { args, .. },
+                ..
+            })),
+            ..
+        }] if matches!(
+            args.as_slice(),
+            [MonoExpr {
+                kind: MonoExprKind::Proxy(rep),
+                ..
+            }] if rep.ty().display(db) == "word"
+        )
+    ));
+
+    for method in ["CanStore.store", "CanStore.load"] {
+        let wrapper = derived
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                        if candidate == method
+                )
+            })
+            .expect("derived CanStore wrapper");
+        assert!(matches!(
+            wrapper.body.as_slice(),
+            [MonoStmt {
+                kind: MonoStmtKind::Match { arms, .. },
+                ..
+            }] if matches!(
+                arms.as_slice(),
+                [solcore_specialize::MonoArm { body, .. }]
+                    if matches!(
+                        body.as_slice(),
+                        [MonoStmt {
+                            kind: MonoStmtKind::Return(Some(_)),
+                            ..
+                        }]
+                    )
+            )
+        ));
+    }
+}
+
+#[test]
+fn derived_can_store_rejects_a_mapping_value_leaf_during_specialization() {
+    let (_db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+pragma no-coverage-condition;
+
+data storage(t) = storage(word);
+data mapping(k, v) = mapping(word);
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+forall self . class self:StorageDeriving {}
+forall self . class self:StorageSize {}
+forall slot value . class slot:CanStore(value) {
+  function store(r:slot, v:value) -> ();
+  function load(r:slot) -> value;
+}
+
+instance word:StorageSize {}
+forall k v . instance mapping(k, v):StorageSize {}
+forall k v . instance storage(mapping(k, v)):CanStore(storage(mapping(k, v))) {}
+
+data Wrapper = Wrapper(mapping(word, word));
+
+function main(r:storage(Wrapper)) -> Wrapper {
+  return CanStore.load(r);
+}
+"#,
+    );
+
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SpecializeDiagnosticKind::UnsupportedEvidence { context }
+                if context == "cannot generate CanStore.load"
+        )),
+        "{:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn derived_storage_wrappers_replay_definition_side_evidence() {
+    let fixture = repo_root()
+        .join("crates/specialize/tests/fixtures/derived_storage_evidence_replay/main.solc");
+    let output = specialize_fixture(&fixture);
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    for method in ["StorageSize.size", "CanStore.store", "CanStore.load"] {
+        assert!(
+            output.module.items.iter().any(|item| matches!(
+                item,
+                MonoItem::Function(function)
+                    if matches!(
+                        &function.origin,
+                        MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                            if candidate == method
+                    )
+            )),
+            "missing {method}: {:#?}",
+            output.module
+        );
+    }
+}
+
+#[test]
+fn contract_field_calls_use_definition_module_evidence() {
+    let fixture = repo_root()
+        .join("crates/specialize/tests/fixtures/storage_field_definition_evidence/main.solc");
+    let output = specialize_fixture(&fixture);
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let loads = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "CanStore" && method == "load"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(loads.len(), 1, "{:#?}", output.module);
+    assert!(
+        !stmts_have_number_literal(&loads[0].body, "99"),
+        "consumer-only competing evidence leaked into the contract field read: {:#?}",
+        loads[0]
+    );
 }

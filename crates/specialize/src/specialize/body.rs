@@ -343,6 +343,13 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             }
             StmtKind::Assign { op, lhs, rhs }
                 if *op == hir::ast::function::AssignOp::Plain
+                    && self.contract_field_resolution(*lhs).is_some()
+                    && self.has_any_canonical_contract_field_access_support() =>
+            {
+                MonoStmtKind::Block(self.contract_field_store(*lhs, *rhs, span)?)
+            }
+            StmtKind::Assign { op, lhs, rhs }
+                if *op == hir::ast::function::AssignOp::Plain
                     && self.is_storage_array_field(*lhs) =>
             {
                 MonoStmtKind::Expr(self.storage_array_field_assign(*lhs, *rhs, span)?)
@@ -484,6 +491,17 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 ty: mono_ty,
                 kind,
             };
+            self.lowered_exprs.insert(expr_id, mono_expr.clone());
+            return Some(mono_expr);
+        }
+        if let Some(hir_nameres::Resolution::Field(field)) = self.expr_resolution(expr_id)
+            && self.has_any_canonical_contract_field_access_support()
+        {
+            if !self.has_canonical_contract_field_read_access() {
+                self.push_missing_contract_field_support("field read", expr.span);
+                return None;
+            }
+            let mono_expr = self.contract_field_load(field, ty, expr.span)?;
             self.lowered_exprs.insert(expr_id, mono_expr.clone());
             return Some(mono_expr);
         }
@@ -1375,6 +1393,74 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         Some(array)
     }
 
+    fn contract_field_store(
+        &mut self,
+        lhs: Id<Expr<'db>>,
+        rhs: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<Vec<MonoStmt<'db>>> {
+        let field = self.contract_field_resolution(lhs)?;
+        let lhs_span = self.body.exprs(self.driver.db).get(lhs).span;
+        if !self.has_canonical_contract_field_ref_access() {
+            self.push_missing_contract_field_support("field write", lhs_span);
+            return None;
+        }
+        let rhs_is_literal = matches!(
+            &self.body.exprs(self.driver.db).get(rhs).kind,
+            ExprKind::Array(_)
+        );
+        if rhs_is_literal {
+            if !self.has_visible_canonical_term_def("storeArrayLit") {
+                self.push_missing_contract_field_support("array-literal field write", span);
+                return None;
+            }
+        } else if !self
+            .has_visible_canonical_type_def("Assign", hir_nameres::DefResolutionKind::Class)
+        {
+            self.push_missing_contract_field_support("field write", span);
+            return None;
+        }
+        let slot = self.contract_field_ref(field, lhs_span)?;
+        let slot_id = MonoId {
+            name: format!("$contract_field_slot_{}", span.begin().as_u32()),
+            ty: slot.ty,
+            span: lhs_span,
+        };
+        let slot_var = MonoExpr {
+            span: lhs_span,
+            ty: slot.ty,
+            kind: MonoExprKind::Var(slot_id.clone()),
+        };
+        let rhs = self.expr(rhs)?;
+        let unit = Ty::unit(self.driver.db);
+        let store = if rhs_is_literal {
+            self.synthetic_std_call("storeArrayLit", vec![slot_var.clone(), rhs], unit, span)?
+        } else {
+            self.resolved_contract_field_class_call(
+                "Assign",
+                "assign",
+                vec![slot_var.clone(), rhs],
+                unit,
+                span,
+            )?
+        };
+        Some(vec![
+            MonoStmt {
+                span,
+                kind: MonoStmtKind::Let {
+                    mode: LetMode::Runtime,
+                    id: slot_id,
+                    ty: Some(slot.ty),
+                    init: Some(slot),
+                },
+            },
+            MonoStmt {
+                span,
+                kind: MonoStmtKind::Expr(store),
+            },
+        ])
+    }
+
     fn storage_array_field_assign(
         &mut self,
         lhs: Id<Expr<'db>>,
@@ -1424,6 +1510,110 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 origin: MonoCallOrigin::ByName,
             },
         })
+    }
+
+    fn contract_field_load(
+        &mut self,
+        field: hir_nameres::FieldId<'db>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let slot = self.contract_field_ref(field, span)?;
+        self.resolved_contract_field_class_call("CanStore", "load", vec![slot], result_ty, span)
+    }
+
+    fn contract_field_ref(
+        &mut self,
+        field: hir_nameres::FieldId<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let field_tys = self.contract_field_tys(field, span)?;
+        let field_ty = *field_tys.get(field.index.as_usize())?;
+        let offset_ty = field_tys[..field.index.as_usize()].iter().rev().fold(
+            Ty::unit(self.driver.db),
+            |tail, head| {
+                Ty::named(
+                    self.driver.db,
+                    TyCtor::Builtin(BuiltinTyCtor::Pair),
+                    vec![*head, tail],
+                )
+            },
+        );
+        let proxy_ty = self.canonical_std_adt_ty("Proxy", vec![offset_ty])?;
+        let proxy = MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(proxy_ty, "contract field offset proxy", span)?,
+            kind: MonoExprKind::Proxy(self.driver.mono_ty(
+                offset_ty,
+                "contract field offset type",
+                span,
+            )?),
+        };
+        let offset = self.resolved_contract_field_class_call(
+            "StorageSize",
+            "size",
+            vec![proxy],
+            Ty::word(self.driver.db),
+            span,
+        )?;
+        let storage_ty = self.canonical_std_adt_ty("storage", vec![field_ty])?;
+        let mono_storage_ty =
+            self.driver
+                .mono_ty(storage_ty, "contract field storage reference", span)?;
+        Some(MonoExpr {
+            span,
+            ty: mono_storage_ty,
+            kind: MonoExprKind::TypeAnnot {
+                expr: Box::new(offset),
+                ty: mono_storage_ty,
+            },
+        })
+    }
+
+    fn contract_field_tys(
+        &mut self,
+        field: hir_nameres::FieldId<'db>,
+        span: Span<'db>,
+    ) -> Option<Vec<Ty<'db>>> {
+        let (module, contract) = self.driver.modules.iter().find_map(|module| {
+            module
+                .items(self.driver.db)
+                .iter()
+                .find_map(|item| match item {
+                    Item::ContractDef(contract)
+                        if contract.def_id_value(self.driver.db) == field.contract =>
+                    {
+                        Some((*module, *contract))
+                    }
+                    _ => None,
+                })
+        })?;
+        let Some(resolution) = self.driver.try_module_resolution(module) else {
+            self.driver.push_missing_module_resolution(Some(span));
+            return None;
+        };
+        let type_vars = type_var_bindings(
+            contract.def_id_value(self.driver.db),
+            contract.ty_param_elems(self.driver.db),
+        );
+        let lowerer = TypeLowering::from_item_resolutions(
+            self.driver.db,
+            &resolution.item_resolutions,
+            BinderEnv::from_type_vars(&type_vars),
+        );
+        let mut normalizer =
+            AliasNormalizer::new(self.driver.db, module, &resolution.item_resolutions);
+        contract
+            .fields(self.driver.db)
+            .iter()
+            .map(|field| {
+                let ty = normalizer.normalize_ty(lowerer.lower_field(field).ty);
+                let ty = self.subst.apply_ty(self.driver.db, ty);
+                Some(normalizer.normalize_ty(ty))
+            })
+            .collect()
     }
 
     fn storage_index_load(
@@ -1519,6 +1709,16 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         expr: Id<Expr<'db>>,
         span: Span<'db>,
     ) -> Option<MonoExpr<'db>> {
+        if let Some(field) = self.contract_field_resolution(expr)
+            && self.has_any_canonical_contract_field_access_support()
+        {
+            if !self.has_canonical_contract_field_ref_access() {
+                self.push_missing_contract_field_support("collection field reference", span);
+                return None;
+            }
+            let field_span = self.body.exprs(self.driver.db).get(expr).span;
+            return self.contract_field_ref(field, field_span);
+        }
         match &self.body.exprs(self.driver.db).get(expr).kind {
             ExprKind::Index { base, index } if self.is_storage_index_expr(*base) => {
                 self.storage_index_ref(*base, *index, span)
@@ -1717,6 +1917,63 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         })
     }
 
+    /// Resolves a synthesized contract-field call against the canonical class
+    /// that is visible in the source module. Unlike operator lowering, these
+    /// calls come from the upstream-generated FieldAccess instances and must
+    /// not consider unrelated reachable classes that happen to share a name.
+    fn resolved_contract_field_class_call(
+        &mut self,
+        class: &str,
+        method: &str,
+        args: Vec<MonoExpr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let class_def =
+            self.visible_canonical_type_def(class, hir_nameres::DefResolutionKind::Class)?;
+        let callee_ty = Ty::function(
+            self.driver.db,
+            args.iter().map(|arg| arg.ty.ty()).collect(),
+            result_ty,
+        );
+        let evidence = self.driver.solve_class_method_pred_in_module(
+            class_def,
+            method,
+            callee_ty,
+            self.info.module,
+            Some(span),
+        );
+        let Some(name) = evidence.and_then(|evidence| {
+            self.driver
+                .resolve_class_method_call(method, evidence, callee_ty, span, self.depth)
+        }) else {
+            self.driver.diagnostics.push(SpecializeDiagnostic {
+                kind: SpecializeDiagnosticKind::MissingEvidence {
+                    context: format!("{class}.{method}"),
+                },
+                span: Some(span),
+            });
+            return None;
+        };
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(result_ty, "contract field class call result", span)?,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: self
+                        .driver
+                        .mono_ty(callee_ty, "contract field class call callee", span)?,
+                    span,
+                },
+                args,
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
     fn synthetic_std_call(
         &mut self,
         name: &str,
@@ -1776,6 +2033,147 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             ty: self.driver.mono_ty(ty, "array index", span)?,
             kind: MonoExprKind::Lit(LitKind::Number(value.to_string())),
         })
+    }
+
+    fn contract_field_resolution(&self, expr: Id<Expr<'db>>) -> Option<hir_nameres::FieldId<'db>> {
+        match self.expr_resolution(expr) {
+            Some(hir_nameres::Resolution::Field(field)) => Some(field),
+            _ => match &self.body.exprs(self.driver.db).get(expr).kind {
+                ExprKind::TypeAnnot { expr, .. } => self.contract_field_resolution(*expr),
+                _ => None,
+            },
+        }
+    }
+
+    fn has_canonical_contract_field_ref_access(&self) -> bool {
+        self.has_visible_canonical_type_def("Proxy", hir_nameres::DefResolutionKind::Adt)
+            && self.has_visible_canonical_type_def("storage", hir_nameres::DefResolutionKind::Adt)
+            && self.has_visible_canonical_type_def(
+                "StorageSize",
+                hir_nameres::DefResolutionKind::Class,
+            )
+            && self
+                .has_visible_canonical_type_def("CanStore", hir_nameres::DefResolutionKind::Class)
+    }
+
+    fn has_canonical_contract_field_read_access(&self) -> bool {
+        self.has_canonical_contract_field_ref_access()
+    }
+
+    fn has_any_canonical_contract_field_access_support(&self) -> bool {
+        self.has_visible_canonical_type_def("Proxy", hir_nameres::DefResolutionKind::Adt)
+            || self.has_visible_canonical_type_def("storage", hir_nameres::DefResolutionKind::Adt)
+            || self.has_visible_canonical_type_def(
+                "StorageSize",
+                hir_nameres::DefResolutionKind::Class,
+            )
+            || self
+                .has_visible_canonical_type_def("CanStore", hir_nameres::DefResolutionKind::Class)
+            || self.has_visible_canonical_type_def("Assign", hir_nameres::DefResolutionKind::Class)
+            || self.has_visible_canonical_term_def("storeArrayLit")
+    }
+
+    fn push_missing_contract_field_support(&mut self, operation: &str, span: Span<'db>) {
+        self.driver.diagnostics.push(SpecializeDiagnostic {
+            kind: SpecializeDiagnosticKind::MissingEvidence {
+                context: format!("canonical contract {operation} support"),
+            },
+            span: Some(span),
+        });
+    }
+
+    fn has_visible_canonical_type_def(
+        &self,
+        name: &str,
+        expected_kind: hir_nameres::DefResolutionKind,
+    ) -> bool {
+        self.visible_canonical_type_def(name, expected_kind)
+            .is_some()
+    }
+
+    fn has_visible_canonical_term_def(&self, name: &str) -> bool {
+        self.visible_canonical_term_def(name).is_some()
+    }
+
+    fn visible_type_resolution(&self, name: &str) -> Option<hir_nameres::Resolution<'db>> {
+        let file = self
+            .info
+            .module
+            .def_id_value(self.driver.db)
+            .file(self.driver.db);
+        if let Some(module_id) = module_id_for_source_file(self.driver.db, file) {
+            let surface = nameres::module_import_surface(self.driver.db, module_id);
+            if let Some(resolution) = surface
+                .item_scope
+                .as_ref()
+                .and_then(|scope| scope.type_resolution(name))
+            {
+                return Some(resolution);
+            }
+            if let Some(resolution) = surface.types.get(name) {
+                return Some(resolution.clone());
+            }
+        }
+        self.driver
+            .try_module_resolution(self.info.module)
+            .and_then(|resolution| resolution.item_scope.type_resolution(name))
+    }
+
+    fn visible_term_resolution(&self, name: &str) -> Option<hir_nameres::Resolution<'db>> {
+        let file = self
+            .info
+            .module
+            .def_id_value(self.driver.db)
+            .file(self.driver.db);
+        if let Some(module_id) = module_id_for_source_file(self.driver.db, file) {
+            let surface = nameres::module_import_surface(self.driver.db, module_id);
+            if let Some(resolution) = surface
+                .item_scope
+                .as_ref()
+                .and_then(|scope| scope.term_resolution(name))
+            {
+                return Some(resolution);
+            }
+            if let Some(resolution) = surface.terms.get(name) {
+                return Some(resolution.clone());
+            }
+        }
+        self.driver
+            .try_module_resolution(self.info.module)
+            .and_then(|resolution| resolution.item_scope.term_resolution(name))
+    }
+
+    fn visible_canonical_type_def(
+        &self,
+        name: &str,
+        expected_kind: hir_nameres::DefResolutionKind,
+    ) -> Option<DefId<'db>> {
+        let hir_nameres::Resolution::Def { def, kind } = self.visible_type_resolution(name)? else {
+            return None;
+        };
+        if kind != expected_kind || !is_canonical_std_def_named(self.driver.db, def, name) {
+            return None;
+        }
+        match expected_kind {
+            hir_nameres::DefResolutionKind::Adt if self.driver.adts.contains_key(&def) => Some(def),
+            hir_nameres::DefResolutionKind::Class if self.driver.classes.contains_key(&def) => {
+                Some(def)
+            }
+            _ => None,
+        }
+    }
+
+    fn visible_canonical_term_def(&self, name: &str) -> Option<DefId<'db>> {
+        let hir_nameres::Resolution::Def {
+            def,
+            kind: hir_nameres::DefResolutionKind::Function,
+        } = self.visible_term_resolution(name)?
+        else {
+            return None;
+        };
+        (is_canonical_std_def_named(self.driver.db, def, name)
+            && self.driver.functions.contains_key(&def))
+        .then_some(def)
     }
 
     fn is_storage_array_field(&self, expr: Id<Expr<'db>>) -> bool {

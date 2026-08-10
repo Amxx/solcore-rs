@@ -315,6 +315,15 @@ fn hash_evidence<'db>(db: &'db dyn Db, evidence: &Evidence<'db>, state: &mut Def
                     hash_def_id(db, *adt, state);
                     hash_def_id(db, *word_reader, state);
                 }
+                DerivedClauseKind::StorageSize { adt } => {
+                    5u8.hash(state);
+                    hash_def_id(db, *adt, state);
+                }
+                DerivedClauseKind::CanStore { adt, storage_size } => {
+                    6u8.hash(state);
+                    hash_def_id(db, *adt, state);
+                    hash_def_id(db, *storage_size, state);
+                }
                 DerivedClauseKind::Class {
                     adt,
                     class,

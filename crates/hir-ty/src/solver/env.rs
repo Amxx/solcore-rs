@@ -33,11 +33,13 @@ pub fn trait_env_for_module<'db>(db: &'db dyn Db, module: ModuleId<'db>) -> Trai
             module,
             generic,
             abi: visible_abi_clause_source(db, &env),
+            storage: visible_storage_clause_source(db, &env),
         });
     let source = ModuleTraitEnvSource {
         superclass_modules: unique_modules(modules),
         instance_origins: env.instances.clone(),
         derived_generic,
+        derived_generic_imports: module,
         derived_class_modules: nameres::instance_import_modules(db, module),
     };
     TraitEnvId::new(
@@ -74,14 +76,18 @@ pub fn trait_env_from_module_resolution<'db>(
         .or_else(|| imported_generic_class(db, &module_resolution.item_resolutions))
     {
         let mut derived_builder = TraitClauseBuilder::new(db);
-        derived_builder.add_derived_generic_instances(
+        derived_builder.add_local_derived_generic_instances(
             module,
             &module_resolution.item_resolutions,
             generic,
             resolved_abi_clause_source(db, module, &module_resolution.item_resolutions),
+            resolved_storage_clause_source(db, module, &module_resolution.item_resolutions),
         );
         clause_sets.push(derived_builder.finish());
     }
+    let mut imported_derived_builder = TraitClauseBuilder::new(db);
+    imported_derived_builder.add_imported_derived_generic_instances(module);
+    clause_sets.push(imported_derived_builder.finish());
     let mut derived_builder = TraitClauseBuilder::new(db);
     derived_builder.add_derived_class_instances(module, &module_resolution.item_resolutions);
     clause_sets.push(derived_builder.finish());
@@ -167,16 +173,22 @@ fn trait_env_from_module_resolution_and_imports_impl<'db>(
         .or_else(|| visible_generic_class(db, imports))
     {
         let mut derived_builder = TraitClauseBuilder::new(db);
-        derived_builder.add_derived_generic_instances(
+        derived_builder.add_local_derived_generic_instances(
             module,
             &module_resolution.item_resolutions,
             generic,
             visible_abi_clause_source(db, imports).or_else(|| {
                 resolved_abi_clause_source(db, module, &module_resolution.item_resolutions)
             }),
+            visible_storage_clause_source(db, imports).or_else(|| {
+                resolved_storage_clause_source(db, module, &module_resolution.item_resolutions)
+            }),
         );
         clause_sets.push(derived_builder.finish());
     }
+    let mut imported_derived_builder = TraitClauseBuilder::new(db);
+    imported_derived_builder.add_imported_derived_generic_instances(module);
+    clause_sets.push(imported_derived_builder.finish());
     let mut derived_builder = TraitClauseBuilder::new(db);
     derived_builder.add_derived_class_instances(module, &module_resolution.item_resolutions);
     clause_sets.push(derived_builder.finish());
@@ -230,9 +242,20 @@ pub(super) fn base_trait_env_clauses<'db>(
                 extend_clause_set(
                     &mut clauses,
                     db,
-                    derived_generic_clause_set(db, source.module, source.generic, source.abi),
+                    derived_generic_clause_set(
+                        db,
+                        source.module,
+                        source.generic,
+                        source.abi,
+                        source.storage,
+                    ),
                 );
             }
+            extend_clause_set(
+                &mut clauses,
+                db,
+                imported_derived_generic_clause_set(db, source.derived_generic_imports),
+            );
             for module in &source.derived_class_modules {
                 extend_clause_set(&mut clauses, db, derived_class_clause_set(db, *module));
             }
@@ -320,10 +343,29 @@ fn derived_generic_clause_set<'db>(
     module: ModuleId<'db>,
     generic: DefId<'db>,
     abi: Option<DerivedAbiClauseSource<'db>>,
+    storage: Option<DerivedStorageClauseSource<'db>>,
 ) -> TraitClauseSetId<'db> {
     let mut builder = TraitClauseBuilder::new(db);
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
-        builder.add_derived_generic_instances(scope.module, &item_resolutions, generic, abi);
+        builder.add_local_derived_generic_instances(
+            scope.module,
+            &item_resolutions,
+            generic,
+            abi,
+            storage,
+        );
+    }
+    builder.finish()
+}
+
+#[salsa::tracked]
+fn imported_derived_generic_clause_set<'db>(
+    db: &'db dyn Db,
+    module: ModuleId<'db>,
+) -> TraitClauseSetId<'db> {
+    let mut builder = TraitClauseBuilder::new(db);
+    if let Some((scope, _)) = scope_resolution_for_module_id(db, module) {
+        builder.add_imported_derived_generic_instances(scope.module);
     }
     builder.finish()
 }
@@ -509,16 +551,15 @@ impl<'db> TraitClauseBuilder<'db> {
         self.clauses.push(fact.clause());
     }
 
-    fn add_derived_generic_instances(
+    fn add_local_derived_generic_instances(
         &mut self,
         module: Module<'db>,
         item_resolutions: &hir_nameres::ItemResolutionFacts<'db>,
         generic: DefId<'db>,
         abi: Option<DerivedAbiClauseSource<'db>>,
+        storage: Option<DerivedStorageClauseSource<'db>>,
     ) {
-        let mut seen = FxHashSet::default();
         for info in local_adt_infos(self.db, module) {
-            seen.insert(info.adt.def_id_value(self.db));
             let Some(plan) = derived_generic_instance_plan_with_resolutions(
                 self.db,
                 module,
@@ -532,51 +573,44 @@ impl<'db> TraitClauseBuilder<'db> {
             if let Some(abi) = abi {
                 push_derived_abi_clauses(self.db, &mut self.clauses, &info, &plan, abi);
             }
+            if let Some(storage) = storage {
+                push_derived_storage_clauses(self.db, &mut self.clauses, &info, &plan, storage);
+            }
         }
+    }
 
-        // Imported ADTs referenced by signatures need definition-side
-        // derived evidence during frontend type checking. Reconstructing it in
-        // the specializer is too late for generated std.dispatch obligations.
+    fn add_imported_derived_generic_instances(&mut self, module: Module<'db>) {
+        let mut seen = local_adt_infos(self.db, module)
+            .into_iter()
+            .map(|info| info.adt.def_id_value(self.db))
+            .collect::<FxHashSet<_>>();
+
+        // Compiler-derived instances obey ordinary instance visibility: every
+        // ADT in an explicitly imported module contributes its definition-side
+        // evidence, irrespective of whether the first use is in a signature or
+        // a function body. Re-export/reference edges intentionally do not enter
+        // this module set, matching explicit instance imports.
         let mut pending = VecDeque::new();
-        for resolution in &item_resolutions.types {
-            match &resolution.resolution {
-                hir_nameres::Resolution::Def {
-                    def,
-                    kind: hir_nameres::DefResolutionKind::Adt,
-                } => pending.push_back(*def),
-                hir_nameres::Resolution::Def {
-                    def,
-                    kind: hir_nameres::DefResolutionKind::TypeAlias,
-                } => {
-                    let alias_module =
-                        parse_file_to_hir(self.db, def.file(self.db)).module(self.db);
-                    let Some(binder_count) = type_alias_binder_count(self.db, alias_module, *def)
-                    else {
-                        continue;
-                    };
-                    let alias = Ty::named(
-                        self.db,
-                        TyCtor::User(crate::UserTyCtor {
-                            def: *def,
-                            kind: crate::UserTyCtorKind::Alias,
-                        }),
-                        (0..binder_count)
-                            .map(|index| Ty::bound(self.db, index))
-                            .collect(),
-                    );
-                    let normalized =
-                        AliasNormalizer::new(self.db, module, item_resolutions).normalize_ty(alias);
-                    collect_adt_defs_from_ty(self.db, normalized, &mut pending);
-                }
-                _ => {}
+        let Some(owner) =
+            nameres::module_id_for_source_file(self.db, module.def_id_value(self.db).file(self.db))
+        else {
+            return;
+        };
+        for visible_module in
+            nameres::instance_import_modules_for_hir_module(self.db, owner, module)
+        {
+            if visible_module == owner {
+                continue;
+            }
+            let Some(file) = self.db.module_file(visible_module) else {
+                continue;
+            };
+            let visible_hir = parse_file_to_hir(self.db, file).module(self.db);
+            for info in local_adt_infos(self.db, visible_hir) {
+                pending.push_back(info.adt.def_id_value(self.db));
             }
         }
 
-        // A directly referenced imported ADT can expose more imported ADTs in
-        // its derived representation. Close that dependency graph here so the
-        // generated ABI obligations see every definition-side `Generic`
-        // clause. Walking type arguments is significant for representations
-        // such as `Box(Inner)`, where `Inner` is not the representation head.
         while let Some(def) = pending.pop_front() {
             if !seen.insert(def) {
                 continue;
@@ -590,10 +624,10 @@ impl<'db> TraitClauseBuilder<'db> {
             };
             // Imported synthesized instances model the declarations that the
             // defining compilation unit would have emitted. In particular,
-            // importing ABIGeneric only at the use site must not retroactively
-            // enable ABI derivation for an ADT whose own module never saw the
-            // ABIDeriving marker.
-            let Some((definition_generic, definition_abi)) =
+            // importing ABIGeneric or StorageGeneric only at the use site must
+            // not retroactively enable derivation for an ADT whose own module
+            // never saw the corresponding marker.
+            let Some((definition_generic, definition_abi, definition_storage)) =
                 derived_sources_for_definition(self.db, definition_module)
             else {
                 continue;
@@ -606,10 +640,12 @@ impl<'db> TraitClauseBuilder<'db> {
             ) else {
                 continue;
             };
-            collect_adt_defs_from_ty(self.db, plan.rep, &mut pending);
             self.push_derived_generic_clause(&info, &plan, definition_generic);
             if let Some(abi) = definition_abi {
                 push_derived_abi_clauses(self.db, &mut self.clauses, &info, &plan, abi);
+            }
+            if let Some(storage) = definition_storage {
+                push_derived_storage_clauses(self.db, &mut self.clauses, &info, &plan, storage);
             }
         }
     }
@@ -668,13 +704,21 @@ impl<'db> TraitClauseBuilder<'db> {
 fn derived_sources_for_definition<'db>(
     db: &'db dyn Db,
     module: Module<'db>,
-) -> Option<(DefId<'db>, Option<DerivedAbiClauseSource<'db>>)> {
+) -> Option<(
+    DefId<'db>,
+    Option<DerivedAbiClauseSource<'db>>,
+    Option<DerivedStorageClauseSource<'db>>,
+)> {
     if let Some(module_id) =
         nameres::module_id_for_source_file(db, module.def_id_value(db).file(db))
     {
         let surface = nameres::module_import_surface(db, module_id);
         if let Some(generic) = visible_generic_class(db, &surface) {
-            return Some((generic, visible_abi_clause_source(db, &surface)));
+            return Some((
+                generic,
+                visible_abi_clause_source(db, &surface),
+                visible_storage_clause_source(db, &surface),
+            ));
         }
     }
 
@@ -685,7 +729,8 @@ fn derived_sources_for_definition<'db>(
     let generic = local_generic_class(db, module)
         .or_else(|| imported_generic_class(db, &item_resolutions))?;
     let abi = resolved_abi_clause_source(db, module, &item_resolutions);
-    Some((generic, abi))
+    let storage = resolved_storage_clause_source(db, module, &item_resolutions);
+    Some((generic, abi, storage))
 }
 
 fn canonical_std_string_types<'db>(db: &'db dyn Db) -> Vec<(Ty<'db>, Option<Ty<'db>>)> {
@@ -718,72 +763,6 @@ fn canonical_std_string_types<'db>(db: &'db dyn Db) -> Vec<(Ty<'db>, Option<Ty<'
             (source_string, memory_string)
         })
         .collect()
-}
-
-fn type_alias_binder_count<'db>(
-    db: &'db dyn Db,
-    module: Module<'db>,
-    def: DefId<'db>,
-) -> Option<u32> {
-    module
-        .items(db)
-        .iter()
-        .find_map(|item| type_alias_binder_count_in_item(db, *item, def, 0))
-}
-
-fn type_alias_binder_count_in_item<'db>(
-    db: &'db dyn Db,
-    item: Item<'db>,
-    def: DefId<'db>,
-    inherited: u32,
-) -> Option<u32> {
-    match item {
-        Item::TypeAlias(alias) if alias.def_id_value(db) == def => {
-            Some(inherited + alias.ty_param_elems(db).len() as u32)
-        }
-        Item::ContractDef(contract) => {
-            let inherited = inherited + contract.ty_param_elems(db).len() as u32;
-            contract.items(db).iter().find_map(|item| match *item {
-                ContractItem::TypeAlias(alias) => {
-                    type_alias_binder_count_in_item(db, Item::TypeAlias(alias), def, inherited)
-                }
-                ContractItem::FunctionDef(_)
-                | ContractItem::AdtDef(_)
-                | ContractItem::Error { .. } => None,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn collect_adt_defs_from_ty<'db>(db: &'db dyn Db, ty: Ty<'db>, defs: &mut VecDeque<DefId<'db>>) {
-    match ty.kind(db) {
-        TyKind::Named { ctor, args } => {
-            if let TyCtor::User(crate::UserTyCtor {
-                def,
-                kind: crate::UserTyCtorKind::Adt,
-            }) = ctor
-            {
-                defs.push_back(*def);
-            }
-            for arg in args {
-                collect_adt_defs_from_ty(db, *arg, defs);
-            }
-        }
-        TyKind::Function { params, ret } => {
-            for param in params {
-                collect_adt_defs_from_ty(db, *param, defs);
-            }
-            collect_adt_defs_from_ty(db, *ret, defs);
-        }
-        TyKind::Tuple(elems) => {
-            for elem in elems {
-                collect_adt_defs_from_ty(db, *elem, defs);
-            }
-        }
-        TyKind::Comptime(inner) => collect_adt_defs_from_ty(db, *inner, defs),
-        TyKind::Error | TyKind::Unknown | TyKind::BoundVar(_) => {}
-    }
 }
 
 fn invokable_arg_ty<'db>(db: &'db dyn Db, params: Vec<Ty<'db>>) -> Ty<'db> {

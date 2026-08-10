@@ -20,6 +20,9 @@ pub(super) struct Driver<'db> {
     pub(super) synthetic: FxHashMap<SyntheticKey<'db>, String>,
     pub(super) synthetic_order: Vec<SyntheticKey<'db>>,
     pub(super) synthetic_funs: FxHashMap<SyntheticKey<'db>, MonoFunction<'db>>,
+    pub(super) derived_storages: FxHashMap<DerivedStorageKey<'db>, String>,
+    pub(super) derived_storage_order: Vec<DerivedStorageKey<'db>>,
+    pub(super) derived_storage_funs: FxHashMap<DerivedStorageKey<'db>, MonoFunction<'db>>,
     pub(super) derived_abis: FxHashMap<DerivedAbiKey<'db>, String>,
     pub(super) derived_abi_order: Vec<DerivedAbiKey<'db>>,
     pub(super) derived_abi_funs: FxHashMap<DerivedAbiKey<'db>, MonoFunction<'db>>,
@@ -115,6 +118,24 @@ pub(super) struct DerivedAbiKey<'db> {
     pub(super) sub_evidence: Vec<Evidence<'db>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum DerivedStorageFamily {
+    Size,
+    CanStore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct DerivedStorageKey<'db> {
+    pub(super) adt: DefId<'db>,
+    pub(super) family: DerivedStorageFamily,
+    /// `StorageSize` context class for CanStore; absent for StorageSize itself.
+    pub(super) storage_size: Option<DefId<'db>>,
+    pub(super) method: String,
+    pub(super) pred: Pred<'db>,
+    pub(super) target_ty: Ty<'db>,
+    pub(super) sub_evidence: Vec<Evidence<'db>>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PendingSpec<'db> {
     pub(super) key: SpecKey<'db>,
@@ -158,6 +179,9 @@ impl<'db> Driver<'db> {
             synthetic: FxHashMap::default(),
             synthetic_order: Vec::new(),
             synthetic_funs: FxHashMap::default(),
+            derived_storages: FxHashMap::default(),
+            derived_storage_order: Vec::new(),
+            derived_storage_funs: FxHashMap::default(),
             derived_abis: FxHashMap::default(),
             derived_abi_order: Vec::new(),
             derived_abi_funs: FxHashMap::default(),
@@ -200,6 +224,11 @@ impl<'db> Driver<'db> {
         }
         for key in &self.synthetic_order {
             if let Some(fun) = self.synthetic_funs.get(key) {
+                items.push(MonoItem::Function(fun.clone()));
+            }
+        }
+        for key in &self.derived_storage_order {
+            if let Some(fun) = self.derived_storage_funs.get(key) {
                 items.push(MonoItem::Function(fun.clone()));
             }
         }

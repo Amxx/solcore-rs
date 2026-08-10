@@ -1317,9 +1317,6 @@ impl<'db> TypeckDiagnosticCollector<'db> {
         inherited_type_vars: &[hir_nameres::TypeVarBinding<'db>],
     ) {
         for (index, field) in contract.fields(self.db).iter().enumerate() {
-            if field.init().is_none() {
-                continue;
-            }
             let field_lowerer = TypeLowering::from_item_resolutions(
                 self.db,
                 &self.item_resolutions,
@@ -1337,6 +1334,12 @@ impl<'db> TypeckDiagnosticCollector<'db> {
                     .map(alias_error_to_diagnostic)
                     .map(|diagnostic| AnyDiagnostic::Typeck(diagnostic.lower())),
             );
+
+            self.contract_field_storage_obligation(field, field_ty, inherited_type_vars);
+
+            if field.init().is_none() {
+                continue;
+            }
 
             let body = self.field_initializer_body(contract, field, index as u32);
             let context = hir_nameres::BodyResolutionContext {
@@ -1384,6 +1387,98 @@ impl<'db> TypeckDiagnosticCollector<'db> {
                     .map(|diagnostic| AnyDiagnostic::Typeck(diagnostic.lower())),
             );
         }
+    }
+
+    fn contract_field_storage_obligation(
+        &mut self,
+        field: &FieldDef<'db>,
+        field_ty: Ty<'db>,
+        inherited_type_vars: &[hir_nameres::TypeVarBinding<'db>],
+    ) {
+        if ty_contains_error(field_ty, self.db) {
+            return;
+        }
+        let imports = self.env.import_surface();
+        let Some(pred) =
+            crate::solver::contract_field_storage_predicate(self.db, &imports, field_ty)
+        else {
+            return;
+        };
+        let report = solve_report(
+            self.db,
+            self.trait_env,
+            canonical_goal_with_allowed(self.db, pred, Vec::new()),
+        );
+        if let Solution::Unique { evidence, .. } = &report.solution {
+            if let Some(crate::solver::DerivedCanStoreImplementationFailure {
+                pred: implementation_pred,
+                report: implementation_report,
+            }) = crate::solver::derived_can_store_implementation_failure(self.db, evidence)
+            {
+                self.push_contract_field_constraint_diagnostic(
+                    field,
+                    implementation_pred,
+                    inherited_type_vars,
+                    implementation_report,
+                );
+                return;
+            }
+            self.push_contract_field_constraint_diagnostic(
+                field,
+                pred,
+                inherited_type_vars,
+                Some(report),
+            );
+            return;
+        }
+        self.push_contract_field_constraint_diagnostic(
+            field,
+            pred,
+            inherited_type_vars,
+            Some(report),
+        );
+    }
+
+    fn push_contract_field_constraint_diagnostic(
+        &mut self,
+        field: &FieldDef<'db>,
+        pred: Pred<'db>,
+        inherited_type_vars: &[hir_nameres::TypeVarBinding<'db>],
+        report: Option<crate::solver::SolverReport<'db>>,
+    ) {
+        if matches!(
+            report.as_ref(),
+            Some(crate::solver::SolverReport {
+                solution: Solution::Unique { .. },
+                exhausted: false,
+                ..
+            })
+        ) {
+            return;
+        }
+        let span = LabelSpan::from_span(self.db, field.ty().span(self.db));
+        let type_var_names = inherited_type_vars
+            .iter()
+            .map(|var| (*var.name.atom()).text(self.db).to_owned())
+            .collect::<Vec<_>>();
+        let pred = crate::display::display_pred_source(self.db, pred, &type_var_names);
+        let diagnostic = match report {
+            None => TypeckDiagnostic::UnsatisfiedConstraint { span, pred },
+            Some(report) if report.exhausted => {
+                TypeckDiagnostic::SolverFuelExhausted { span, pred }
+            }
+            Some(report) => match report.solution {
+                Solution::Unique { .. } => return,
+                Solution::Ambiguous { candidates } => TypeckDiagnostic::AmbiguousConstraint {
+                    span,
+                    pred,
+                    candidates: vec![format!("{} matching candidates", candidates.len())],
+                },
+                Solution::NoSolution => TypeckDiagnostic::UnsatisfiedConstraint { span, pred },
+            },
+        };
+        self.diagnostics
+            .push(AnyDiagnostic::Typeck(diagnostic.lower()));
     }
 
     fn field_initializer_body(
@@ -1455,5 +1550,19 @@ impl<'db> TypeckDiagnosticCollector<'db> {
             .lower(),
         ));
         false
+    }
+}
+
+fn ty_contains_error<'db>(ty: Ty<'db>, db: &'db dyn Db) -> bool {
+    match ty.kind(db) {
+        TyKind::Error => true,
+        TyKind::Named { args, .. } | TyKind::Tuple(args) => {
+            args.iter().any(|arg| ty_contains_error(*arg, db))
+        }
+        TyKind::Function { params, ret } => {
+            params.iter().any(|param| ty_contains_error(*param, db)) || ty_contains_error(*ret, db)
+        }
+        TyKind::Comptime(inner) => ty_contains_error(*inner, db),
+        TyKind::Unknown | TyKind::BoundVar(_) => false,
     }
 }

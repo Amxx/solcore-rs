@@ -25,22 +25,47 @@ impl<'db> InferCtx<'db> {
         let Some(lhs_ty) = self.infer_storage_ref_expr(body, lhs, false) else {
             return false;
         };
-        if matches!(body.exprs(self.db).get(rhs).kind, ExprKind::Array(_))
-            && matches!(
-                self.expr_resolutions.get(&(body, lhs)),
-                Some(hir_nameres::Resolution::Field(_))
-            )
-        {
+        let is_contract_field = self.is_contract_field_assign_target_expr(body, lhs);
+        if matches!(body.exprs(self.db).get(rhs).kind, ExprKind::Array(_)) && is_contract_field {
             return self.infer_storage_array_literal_assign(body, lhs, rhs, lhs_ty);
         }
-        let expected_rhs = self
-            .loaded_ty_for_storage_ty(lhs_ty.clone())
-            .unwrap_or_else(|| self.engine.fresh_var());
+        let expected_rhs = if is_contract_field {
+            self.engine.fresh_var()
+        } else {
+            self.loaded_ty_for_storage_ty(lhs_ty.clone())
+                .unwrap_or_else(|| self.engine.fresh_var())
+        };
         let rhs_ty = self.infer_expr_expected(body, rhs, Some(expected_rhs.clone()));
         self.unify_expr(body, rhs, expected_rhs, rhs_ty.clone());
-        self.push_can_store_obligation(lhs_ty, rhs_ty.clone(), ObligationSource::Scheme);
+        if is_contract_field {
+            // The reference lowers a field write through `Assign.assign`.
+            // A specific Assign instance may intentionally accept a value
+            // different from the field's ordinary CanStore load type.
+            self.push_assign_obligation(lhs_ty, rhs_ty.clone(), ObligationSource::Scheme);
+        } else {
+            self.push_can_store_obligation(lhs_ty, rhs_ty.clone(), ObligationSource::Scheme);
+        }
         self.expr_tys.push((body, lhs, rhs_ty));
         true
+    }
+
+    fn is_contract_field_assign_target_expr(
+        &self,
+        body: FuncBody<'db>,
+        expr: Id<Expr<'db>>,
+    ) -> bool {
+        if matches!(
+            self.expr_resolutions.get(&(body, expr)),
+            Some(hir_nameres::Resolution::Field(_))
+        ) {
+            return true;
+        }
+        match body.exprs(self.db).get(expr).kind {
+            ExprKind::TypeAnnot { expr, .. } => {
+                self.is_contract_field_assign_target_expr(body, expr)
+            }
+            _ => false,
+        }
     }
 
     fn is_storage_assign_target_expr(&self, body: FuncBody<'db>, expr: Id<Expr<'db>>) -> bool {
@@ -633,6 +658,23 @@ impl<'db> InferCtx<'db> {
             class,
             main: storage_ty,
             args: vec![loaded_ty],
+            source,
+        });
+    }
+
+    fn push_assign_obligation(
+        &mut self,
+        storage_ty: InferTy<'db>,
+        value_ty: InferTy<'db>,
+        source: ObligationSource<'db>,
+    ) {
+        let Some(class) = self.lookup_class_id("Assign") else {
+            return;
+        };
+        self.pending.push(PendingObligation {
+            class,
+            main: storage_ty,
+            args: vec![value_ty],
             source,
         });
     }

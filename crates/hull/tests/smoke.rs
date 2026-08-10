@@ -1424,6 +1424,132 @@ contract C {
     }
 }
 
+#[test]
+fn aliased_mapping_field_keeps_the_storage_hash_helper_reachable() {
+    let hull = pretty_src_hull_with_std(
+        "aliased_mapping_field",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+type Balances = mapping(uint256, uint256);
+
+contract C {
+  balances : Balances;
+
+  public function roundtrip(k:uint256, v:uint256) -> uint256 {
+    balances[k] = v;
+    return balances[k];
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("function __solcore_storage_hash2"), "{hull}");
+    assert!(hull.contains("__solcore_storage_hash2("), "{hull}");
+}
+
+#[test]
+fn contract_field_offsets_honor_custom_storage_size_instances() {
+    let hull = pretty_src_hull_with_std(
+        "custom_contract_field_offset",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+data Wide = Wide(word);
+
+instance Wide:StorageSize {
+  function size(x:Proxy(Wide)) -> word { return 7; }
+}
+
+instance storage(Wide):CanStore(Wide) {
+  function store(r:storage(Wide), v:Wide) -> () {
+    let slot:word;
+    let value:word;
+    match r { | storage(x) => slot = x; }
+    match v { | Wide(x) => value = x; }
+    assembly { sstore(slot, value) }
+  }
+  function load(r:storage(Wide)) -> Wide {
+    let slot:word;
+    let value:word;
+    match r { | storage(x) => slot = x; }
+    assembly { value := sload(slot) }
+    return Wide(value);
+  }
+}
+
+contract C {
+  first : Wide;
+  second : uint256;
+
+  public function setAndGet(v:uint256) -> uint256 {
+    second = v;
+    return second;
+  }
+}
+"#,
+    );
+    let function = hull_function(&hull, "function main_C_setAndGet_");
+    assert!(function.contains(":= 7"), "{function}\n{hull}");
+}
+
+#[test]
+fn compound_contract_field_access_replays_effectful_storage_size() {
+    let hull = pretty_src_hull_with_std(
+        "effectful_contract_field_offset",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+data Wide = Wide(word);
+
+instance Wide:StorageSize {
+  function size(x:Proxy(Wide)) -> word {
+    let result:word;
+    assembly { result := sload(99) }
+    return result;
+  }
+}
+
+instance storage(Wide):CanStore(Wide) {
+  function store(r:storage(Wide), v:Wide) -> () {
+    let slot:word;
+    let value:word;
+    match r { | storage(x) => slot = x; }
+    match v { | Wide(x) => value = x; }
+    assembly { sstore(slot, value) }
+  }
+  function load(r:storage(Wide)) -> Wide {
+    let slot:word;
+    let value:word;
+    match r { | storage(x) => slot = x; }
+    assembly { value := sload(slot) }
+    return Wide(value);
+  }
+}
+
+contract C {
+  prefix : string;
+  first : Wide;
+  second : uint256;
+
+  public function bump(v:uint256) -> uint256 {
+    second += v;
+    return v;
+  }
+}
+"#,
+    );
+    let function = hull_function(&hull, "function main_C_bump_");
+    assert_eq!(
+        function.matches("StorageSize_size_").count(),
+        2,
+        "compound LVA and RVA each recompute the offset:\n{function}\n{hull}"
+    );
+}
+
 fn specialize_src(name: &str, src: &str) -> (&'static TestDb, SpecializeOutput<'static>) {
     let db = Box::leak(Box::new(TestDb::default()));
     let module = parse_module(db, name, src);

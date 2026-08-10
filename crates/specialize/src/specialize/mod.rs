@@ -59,6 +59,7 @@ mod call_resolver;
 mod derived_abi;
 mod derived_class;
 mod derived_generic;
+mod derived_storage;
 mod diagnostics;
 mod driver;
 mod evidence;
@@ -70,8 +71,8 @@ mod ty_subst;
 use body::{BinOpExpr, BodyCtx, BodyIndex};
 pub use diagnostics::{SpecializeDiagnostic, SpecializeDiagnosticKind};
 use driver::{
-    AdtInfo, DerivedAbiFamily, DerivedAbiKey, DerivedClassKey, Driver, FunctionInfo, SpecKey,
-    SyntheticKey,
+    AdtInfo, DerivedAbiFamily, DerivedAbiKey, DerivedClassKey, DerivedStorageFamily,
+    DerivedStorageKey, Driver, FunctionInfo, SpecKey, SyntheticKey,
 };
 use evidence::replay_evidence_bindings;
 use intrinsics::{

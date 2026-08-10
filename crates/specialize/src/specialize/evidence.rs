@@ -147,6 +147,40 @@ impl<'db> Driver<'db> {
                 call_span,
                 depth,
             ),
+            Evidence::Derived {
+                kind: DerivedClauseKind::StorageSize { adt },
+                pred,
+                sub_evidence,
+            } => self.specialize_derived_storage(
+                DerivedStorageKey {
+                    adt,
+                    family: DerivedStorageFamily::Size,
+                    storage_size: None,
+                    method: method.to_owned(),
+                    pred,
+                    target_ty,
+                    sub_evidence,
+                },
+                call_span,
+                depth,
+            ),
+            Evidence::Derived {
+                kind: DerivedClauseKind::CanStore { adt, storage_size },
+                pred,
+                sub_evidence,
+            } => self.specialize_derived_storage(
+                DerivedStorageKey {
+                    adt,
+                    family: DerivedStorageFamily::CanStore,
+                    storage_size: Some(storage_size),
+                    method: method.to_owned(),
+                    pred,
+                    target_ty,
+                    sub_evidence,
+                },
+                call_span,
+                depth,
+            ),
             Evidence::Builtin { pred } => {
                 let method_evidence = match pred.kind(self.db) {
                     PredKind::InClass {
@@ -210,10 +244,19 @@ impl<'db> Driver<'db> {
         pred: Pred<'db>,
         span: Option<Span<'db>>,
     ) -> Option<Evidence<'db>> {
+        self.solve_pred_in_module(pred, self.module, span)
+    }
+
+    fn solve_pred_in_module(
+        &mut self,
+        pred: Pred<'db>,
+        module: Module<'db>,
+        span: Option<Span<'db>>,
+    ) -> Option<Evidence<'db>> {
         if !pred_is_closed(self.db, pred) {
             return None;
         }
-        let Some(trait_env) = self.try_module_trait_env(self.module) else {
+        let Some(trait_env) = self.try_module_trait_env(module) else {
             self.push_missing_module_trait_env(span);
             return None;
         };
@@ -257,6 +300,36 @@ impl<'db> Driver<'db> {
         callee_ty: Ty<'db>,
         span: Option<Span<'db>>,
     ) -> Option<Evidence<'db>> {
+        let pred = self.class_method_pred(class, method, callee_ty, span)?;
+        self.solve_closed_pred(pred, span)
+            .or_else(|| self.solve_reachable_pred(pred, span))
+            .or_else(|| self.derived_generic_evidence(pred))
+    }
+
+    /// Solves a synthesized class-method call in the lexical module that
+    /// generated it. Contract field access is definition-side source code in
+    /// upstream Solcore, so consumer-only or merely reachable instances must
+    /// not change the selected evidence.
+    pub(super) fn solve_class_method_pred_in_module(
+        &mut self,
+        class: DefId<'db>,
+        method: &str,
+        callee_ty: Ty<'db>,
+        module: Module<'db>,
+        span: Option<Span<'db>>,
+    ) -> Option<Evidence<'db>> {
+        let pred = self.class_method_pred(class, method, callee_ty, span)?;
+        self.solve_pred_in_module(pred, module, span)
+            .or_else(|| self.derived_generic_evidence(pred))
+    }
+
+    fn class_method_pred(
+        &mut self,
+        class: DefId<'db>,
+        method: &str,
+        callee_ty: Ty<'db>,
+        span: Option<Span<'db>>,
+    ) -> Option<Pred<'db>> {
         let info = self.classes.get(&class)?.clone();
         let method_sig = info
             .class
@@ -281,7 +354,7 @@ impl<'db> Driver<'db> {
         if !subst.match_ty(self.db, scheme.body(self.db).ty(self.db), callee_ty) {
             return None;
         }
-        let pred = scheme
+        scheme
             .body(self.db)
             .preds(self.db)
             .iter()
@@ -294,10 +367,7 @@ impl<'db> Driver<'db> {
                         ..
                     } if *def == class
                 )
-            })?;
-        self.solve_closed_pred(pred, span)
-            .or_else(|| self.solve_reachable_pred(pred, span))
-            .or_else(|| self.derived_generic_evidence(pred))
+            })
     }
 
     pub(super) fn close_class_method_callee_ty(

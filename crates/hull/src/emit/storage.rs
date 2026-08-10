@@ -56,6 +56,9 @@ impl<'db> Emitter<'db> {
         if !matches!(user.kind, UserTyCtorKind::Adt) {
             return None;
         }
+        if is_canonical_std_def_named(self.db, user.def, "mapping") {
+            return Some(StorageFieldKind::Mapping);
+        }
         if is_canonical_std_def_named(self.db, user.def, "array") {
             return Some(StorageFieldKind::ArrayRef);
         }

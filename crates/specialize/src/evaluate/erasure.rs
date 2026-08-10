@@ -112,6 +112,18 @@ fn ty_needs_erasure<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
         TyKind::Named {
             ctor: TyCtor::User(user),
             args,
+        } if matches!(user.kind, UserTyCtorKind::Adt)
+            && args.len() == 1
+            && is_canonical_std_def_named(db, user.def, "Proxy") =>
+        {
+            // Proxy is a zero-slot, type-only witness. Its payload is never a
+            // runtime value, so source-only types nested below it do not need
+            // integer/comptime-string erasure.
+            false
+        }
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
         } if is_runtime_string_location(db, user.def, args) => false,
         TyKind::Named { args, .. } => args.iter().any(|arg| ty_needs_erasure(db, *arg)),
         TyKind::Function { params, ret } => {
@@ -305,9 +317,7 @@ impl<'db> Visitor<'db> for Evaluator<'db> {
                 }
                 walk_expr(self, expr);
             }
-            MonoExprKind::Proxy(ty) => {
-                self.check_erasure_ty("proxy", ty.ty(), Some(expr.span));
-            }
+            MonoExprKind::Proxy(_) => {}
             MonoExprKind::TypeAnnot { expr: inner, ty } => {
                 self.visit_expr(inner);
                 self.check_erasure_ty("type annotation", ty.ty(), Some(expr.span));
