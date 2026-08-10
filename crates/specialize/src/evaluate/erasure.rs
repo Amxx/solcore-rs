@@ -290,7 +290,9 @@ impl<'db> Visitor<'db> for Evaluator<'db> {
             } => {
                 if matches!(
                     origin,
-                    MonoCallOrigin::Builtin(MonoIntrinsic::MemStringFromLit)
+                    MonoCallOrigin::Builtin(
+                        MonoIntrinsic::MemStringFromLit | MonoIntrinsic::RevertLit
+                    )
                 ) && matches!(args.as_slice(), [arg] if known_string(arg).is_some())
                 {
                     return;

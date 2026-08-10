@@ -951,6 +951,7 @@ impl<'db> Driver<'db> {
             "strlenLit" => Some(MonoIntrinsic::StrlenLit),
             "keccakLit" => Some(MonoIntrinsic::KeccakLit),
             "keccakWordLit" => Some(MonoIntrinsic::KeccakWordLit),
+            "revertLit" => Some(MonoIntrinsic::RevertLit),
             _ => None,
         }
     }

@@ -129,6 +129,10 @@ pub enum MonoIntrinsic {
     /// `memory(string)`. This marker is deliberately not foldable: Hull
     /// replaces it with a call to a generated allocator.
     MemStringFromLit,
+    /// Runtime revert carrying the bytes of a compile-time string literal.
+    /// The std body is an `unimplemented()` guard; Hull replaces this marker
+    /// with its backend-neutral revert statement.
+    RevertLit,
 }
 
 /// Resolved origin for a monomorphic call expression.

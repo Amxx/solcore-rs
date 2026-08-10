@@ -239,6 +239,79 @@ contract B { function main() -> memory(string) { return "shared"; } }
 }
 
 #[test]
+fn canonical_revert_literal_lowers_to_message_revert() {
+    let hull = pretty_src_hull_with_std(
+        "revert_literal",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract WithFallback {
+  public function answer() -> uint256 { return uint256(42); }
+
+  fallback() -> () {
+    revertLit("fallback-was-called");
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("revertLit \"fallback-was-called\""), "{hull}");
+    assert!(
+        !hull.contains("0x6e128399"),
+        "revertLit must not lower through std.unimplemented():\n{hull}"
+    );
+}
+
+#[test]
+fn let_initializer_revert_literal_lowers_to_message_revert() {
+    let hull = pretty_src_hull_with_std(
+        "let_revert_literal",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract C {
+  fallback() -> () {
+    let unreachable : () = revertLit("let-initializer");
+    return unreachable;
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("revertLit \"let-initializer\""), "{hull}");
+    assert!(!hull.contains("0x6e128399"), "{hull}");
+}
+
+#[test]
+fn nested_revert_literal_lowers_before_its_containing_expression() {
+    let hull = pretty_src_hull_with_std(
+        "nested_revert_literal",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract C {
+  fallback() -> () {
+    let raw : word;
+    assembly { raw := callvalue() }
+    let result : () = if (raw == 0) then revertLit("nested") else ();
+    return result;
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("revertLit \"nested\""), "{hull}");
+    assert!(
+        hull.contains("then (__revertlit_0()) else (())"),
+        "the reverting call must remain inside the selected branch:\n{hull}"
+    );
+    assert!(!hull.contains("0x6e128399"), "{hull}");
+}
+
+#[test]
 fn contract_without_runtime_main_defers_dispatch_to_specialization() {
     let (db, output) = specialize_src(
         "dispatch_word",

@@ -82,6 +82,10 @@ struct Emitter<'db> {
     /// UTF-8 bytes so equivalent literal spellings share one helper.
     string_literals: BTreeMap<Vec<u8>, StringLiteralHelper<'db>>,
     next_string_literal: usize,
+    /// Runtime helpers for literal revert messages. A helper call remains an
+    /// expression, preserving conditional and argument evaluation boundaries.
+    revert_literals: BTreeMap<String, RevertLiteralHelper<'db>>,
+    next_revert_literal: usize,
     memory_array_index_used: bool,
     storage_array_index_used: bool,
     fresh: usize,
@@ -96,6 +100,12 @@ struct PredeclaredLet<'db> {
 
 #[derive(Clone)]
 struct StringLiteralHelper<'db> {
+    span: Span<'db>,
+    name: String,
+}
+
+#[derive(Clone)]
+struct RevertLiteralHelper<'db> {
     span: Span<'db>,
     name: String,
 }

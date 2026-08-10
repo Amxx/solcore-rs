@@ -33,6 +33,8 @@ impl<'db> Emitter<'db> {
             predeclared_lets: Vec::new(),
             string_literals: BTreeMap::new(),
             next_string_literal: 0,
+            revert_literals: BTreeMap::new(),
+            next_revert_literal: 0,
             memory_array_index_used: false,
             storage_array_index_used: false,
             fresh: 0,
@@ -73,6 +75,15 @@ impl<'db> Emitter<'db> {
             .collect::<Vec<_>>();
         for (bytes, helper) in string_literals {
             let function = self.string_literal_function(helper.span, &helper.name, &bytes);
+            functions.insert(helper.name, function);
+        }
+        let revert_literals = self
+            .revert_literals
+            .iter()
+            .map(|(message, helper)| (message.clone(), helper.clone()))
+            .collect::<Vec<_>>();
+        for (message, helper) in revert_literals {
+            let function = self.revert_literal_function(helper.span, &helper.name, message);
             functions.insert(helper.name, function);
         }
         if self.memory_array_index_used {
@@ -483,6 +494,27 @@ impl<'db> Emitter<'db> {
     }
 
     pub(super) fn emit_expr(&mut self, expr: &MonoExpr<'db>) -> Expr<'db> {
+        if let Some(message) = revert_literal_call(expr) {
+            let helper = self.register_revert_literal(expr.span, message);
+            let ty = self.hull_ty(expr.ty.ty(), expr.span);
+            return Expr {
+                span: expr.span,
+                ty,
+                kind: ExprKind::Call {
+                    callee: helper.into(),
+                    args: Vec::new(),
+                },
+            };
+        }
+        if is_revert_literal_call(expr) {
+            self.push(
+                expr.span,
+                EmitDiagnosticKind::UnsupportedMonoConstruct {
+                    construct: "non-literal revertLit call".to_owned(),
+                },
+            );
+            return Expr::unit(expr.span);
+        }
         if let MonoExprKind::Var(id) = &expr.kind {
             if let Some(expr) = self.lookup_expr(&id.name) {
                 return expr;
@@ -773,6 +805,45 @@ impl<'db> Emitter<'db> {
             },
         );
         name
+    }
+
+    fn register_revert_literal(&mut self, span: Span<'db>, message: String) -> String {
+        if let Some(helper) = self.revert_literals.get(&message) {
+            return helper.name.clone();
+        }
+        let name = loop {
+            let name = format!("__revertlit_{}", self.next_revert_literal);
+            self.next_revert_literal += 1;
+            if self.function_names.insert(name.clone()) {
+                break name;
+            }
+        };
+        self.revert_literals.insert(
+            message,
+            RevertLiteralHelper {
+                span,
+                name: name.clone(),
+            },
+        );
+        name
+    }
+
+    fn revert_literal_function(
+        &self,
+        span: Span<'db>,
+        name: &str,
+        message: String,
+    ) -> Function<'db> {
+        Function {
+            span,
+            name: name.into(),
+            args: Vec::new(),
+            ret: Ty::unit(span),
+            body: vec![Stmt {
+                span,
+                kind: StmtKind::Revert(message),
+            }],
+        }
     }
 
     fn string_literal_function(&self, span: Span<'db>, name: &str, bytes: &[u8]) -> Function<'db> {
@@ -1372,11 +1443,38 @@ fn collect_leaking_let_stmts<'a, 'db>(
 }
 
 fn decoded_string_literal(expr: &MonoExpr<'_>) -> Option<Vec<u8>> {
+    decoded_string_literal_text(expr).map(String::into_bytes)
+}
+
+fn decoded_string_literal_text(expr: &MonoExpr<'_>) -> Option<String> {
     match &expr.kind {
-        MonoExprKind::Lit(LitKind::String(source)) => {
-            decode_string_literal(source).map(String::into_bytes)
+        MonoExprKind::Lit(LitKind::String(source)) => decode_string_literal(source),
+        MonoExprKind::TypeAnnot { expr, .. } => decoded_string_literal_text(expr),
+        _ => None,
+    }
+}
+
+fn is_revert_literal_call(expr: &MonoExpr<'_>) -> bool {
+    match &expr.kind {
+        MonoExprKind::Call { origin, .. } => {
+            matches!(origin, MonoCallOrigin::Builtin(MonoIntrinsic::RevertLit))
         }
-        MonoExprKind::TypeAnnot { expr, .. } => decoded_string_literal(expr),
+        MonoExprKind::TypeAnnot { expr, .. } => is_revert_literal_call(expr),
+        _ => false,
+    }
+}
+
+fn revert_literal_call(expr: &MonoExpr<'_>) -> Option<String> {
+    match &expr.kind {
+        MonoExprKind::Call { args, origin, .. }
+            if matches!(origin, MonoCallOrigin::Builtin(MonoIntrinsic::RevertLit)) =>
+        {
+            let [arg] = args.as_slice() else {
+                return None;
+            };
+            decoded_string_literal_text(arg)
+        }
+        MonoExprKind::TypeAnnot { expr, .. } => revert_literal_call(expr),
         _ => None,
     }
 }
@@ -1432,6 +1530,7 @@ fn intrinsic_name(intrinsic: MonoIntrinsic) -> &'static str {
         MonoIntrinsic::KeccakLit => "keccakLit",
         MonoIntrinsic::KeccakWordLit => "keccakWordLit",
         MonoIntrinsic::MemStringFromLit => "memStringFromLit",
+        MonoIntrinsic::RevertLit => "revertLit",
     }
 }
 

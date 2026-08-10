@@ -4921,6 +4921,39 @@ fn return_numbers_in_stmts(stmts: &[solcore_specialize::MonoStmt<'_>]) -> Vec<St
     out
 }
 
+fn count_returns_in_stmts(stmts: &[MonoStmt<'_>]) -> usize {
+    stmts
+        .iter()
+        .map(|stmt| match &stmt.kind {
+            MonoStmtKind::Return(_) => 1,
+            MonoStmtKind::Match { arms, .. } => arms
+                .iter()
+                .map(|arm| count_returns_in_stmts(&arm.body))
+                .sum(),
+            MonoStmtKind::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count_returns_in_stmts(then_body)
+                    + else_body
+                        .as_deref()
+                        .map(count_returns_in_stmts)
+                        .unwrap_or_default()
+            }
+            MonoStmtKind::For {
+                init, post, body, ..
+            } => {
+                count_returns_in_stmts(init)
+                    + count_returns_in_stmts(post)
+                    + count_returns_in_stmts(body)
+            }
+            MonoStmtKind::Block(body) => count_returns_in_stmts(body),
+            _ => 0,
+        })
+        .sum()
+}
+
 fn specialize_fixture(path: &Path) -> SpecializeOutput<'static> {
     let db = Box::leak(Box::new(TestDb::default()));
     let main_root = path.parent().expect("fixture parent").to_path_buf();
@@ -5215,6 +5248,39 @@ fn default_fuel_handles_the_e136_basic_dispatch_surface() {
             include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.solc");
         let output = specialize_src_with_std(source);
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+        let runtime_main = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| {
+                let MonoItem::Contract(contract) = item else {
+                    return None;
+                };
+                contract.entries.iter().find_map(|entry| match entry {
+                    MonoEntry::RuntimeMain {
+                        specialized,
+                        origin: MonoRuntimeMainOrigin::StdDispatch,
+                        ..
+                    } => Some(specialized),
+                    _ => None,
+                })
+            })
+            .expect("generated runtime main");
+        let runtime_main = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Function(function) if &function.name == runtime_main => Some(function),
+                _ => None,
+            })
+            .expect("specialized runtime main");
+        assert_eq!(
+            count_returns_in_stmts(&runtime_main.body),
+            1,
+            "inlined dispatch helpers must not return past the default fallback"
+        );
     });
 }
 

@@ -63,8 +63,8 @@ pub(super) fn intrinsic_is_pure(intrinsic: MonoIntrinsic) -> bool {
         | MonoIntrinsic::StrlenLit
         | MonoIntrinsic::KeccakLit
         | MonoIntrinsic::KeccakWordLit => true,
-        // Materialization allocates and writes EVM memory at runtime.
-        MonoIntrinsic::MemStringFromLit => false,
+        // Materialization mutates EVM memory; revertLit terminates execution.
+        MonoIntrinsic::MemStringFromLit | MonoIntrinsic::RevertLit => false,
     }
 }
 

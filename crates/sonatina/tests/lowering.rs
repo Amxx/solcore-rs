@@ -15,7 +15,7 @@ use parser::parse_file_to_hir;
 use solcore_sonatina::{render_hull_program, translate_hull_program};
 use solcore_test_utils::{
     FrontendTestDb, define_frontend_test_db, load_main_source, load_reachable_modules,
-    module_fs_snapshot_for_roots, repo_root_from_manifest,
+    load_reachable_modules_with_file_urls, module_fs_snapshot_for_roots, repo_root_from_manifest,
 };
 use sonatina_ir::{Module, ir_writer::ModuleWriter};
 use sonatina_verifier::{VerificationLevel, VerifierConfig, verify_module};
@@ -574,7 +574,74 @@ contract Terminators {
     }
 }
 
+#[test]
+fn literal_revert_preserves_its_payload() {
+    let (_, ir) = lower_source_with_file_url_imports(
+        r#"
+import std.{*};
+
+function main() -> () {
+  revertLit("regression");
+}
+"#,
+    );
+
+    assert!(
+        ir.contains(
+            "evm_mstore 0.i256 51742830256026659749340190198256018476660749296622628429459974050780444360704.i256"
+        ),
+        "{ir}"
+    );
+    assert!(ir.contains("evm_revert 0.i256 10.i256"), "{ir}");
+}
+
+#[test]
+fn literal_revert_enforces_one_word_message_boundary() {
+    let db = TestDb::default();
+    let span = test_span(&db);
+    let program = |message: &str| Program {
+        span,
+        entry_points: Vec::new(),
+        functions: vec![Function {
+            span,
+            name: "main".into(),
+            args: Vec::new(),
+            ret: Ty::unit(span),
+            body: vec![Stmt {
+                span,
+                kind: StmtKind::Revert(message.to_owned()),
+            }],
+        }],
+        objects: Vec::new(),
+    };
+
+    let empty = render_hull_program(&db, &program("")).expect("empty revert payload");
+    assert!(empty.contains("evm_mstore 0.i256 0.i256"), "{empty}");
+    assert!(empty.contains("evm_revert 0.i256 0.i256"), "{empty}");
+
+    let full = render_hull_program(&db, &program("12345678901234567890123456789012"))
+        .expect("32-byte revert payload");
+    assert!(full.contains("evm_revert 0.i256 32.i256"), "{full}");
+
+    let error = render_hull_program(&db, &program("123456789012345678901234567890123"))
+        .expect_err("33-byte revert payload must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("literal revert message exceeds one EVM word"),
+        "{error}"
+    );
+}
+
 fn lower_source(source: &str) -> (Module, String) {
+    lower_source_inner(source, false)
+}
+
+fn lower_source_with_file_url_imports(source: &str) -> (Module, String) {
+    lower_source_inner(source, true)
+}
+
+fn lower_source_inner(source: &str, file_url_imports: bool) -> (Module, String) {
     let db = Box::leak(Box::new(SourceTestDb::default()));
     let entry = load_main_source(db, source);
     let repo = repo_root_from_manifest(env!("CARGO_MANIFEST_DIR"));
@@ -584,7 +651,11 @@ fn lower_source(source: &str) -> (Module, String) {
     db.set_module_tree(tree);
     let snapshot = module_fs_snapshot_for_roots(&*db, [std_root.as_path()]);
     db.set_module_fs_snapshot(snapshot);
-    load_reachable_modules(db, entry.clone());
+    if file_url_imports {
+        load_reachable_modules_with_file_urls(db, entry.clone());
+    } else {
+        load_reachable_modules(db, entry.clone());
+    }
 
     let entry_id = module_id_from_key(&*db, &entry);
     let _ = nameres::resolve_reachable_full(&*db, entry_id);

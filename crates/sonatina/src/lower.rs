@@ -679,10 +679,25 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                 alts,
             } => self.lower_match(target, scrutinee, alts),
             StmtKind::Assembly(stmts) => self.lower_yul_stmts(stmts),
-            StmtKind::Revert(_) => {
+            StmtKind::Revert(message) => {
+                let bytes = message.as_bytes();
+                if bytes.len() > 32 {
+                    return Err(TranslationError::new(
+                        "literal revert message exceeds one EVM word",
+                    ));
+                }
                 let zero = self.fb.make_imm_value(I256::zero());
+                let mut word = [0u8; 32];
+                word[..bytes.len()].copy_from_slice(bytes);
+                let message = self.fb.make_imm_value(I256::from_be_bytes(&word));
+                let size = self.fb.make_imm_value(I256::from(bytes.len()));
+                self.fb.insert_inst_no_result(EvmMstore::new(
+                    self.module.inst_set(),
+                    zero,
+                    message,
+                ));
                 self.fb
-                    .insert_inst_no_result(EvmRevert::new(self.module.inst_set(), zero, zero));
+                    .insert_inst_no_result(EvmRevert::new(self.module.inst_set(), zero, size));
                 Ok(true)
             }
             StmtKind::Comment(_) => Ok(false),

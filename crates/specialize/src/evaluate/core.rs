@@ -1839,10 +1839,22 @@ impl<'db> Evaluator<'db> {
         span: Span<'db>,
     ) -> Option<Vec<MonoStmt<'db>>> {
         let function = self.functions.get(&callee.name)?.clone();
-        if !self.function_is_std_dispatch(&function) || function.params.len() != args.len() {
+        if !self.function_is_std_dispatch(&function)
+            || !self.ty_is_unit(function.ret.ty())
+            || function.params.len() != args.len()
+        {
             return None;
         }
         if !args.iter().all(|arg| self.expr_is_known_value(arg)) {
+            return None;
+        }
+        // A source `return ()` exits the dispatch helper, not the function that
+        // called it. Statement inlining erases that function boundary, so only
+        // inline bodies whose returns are all in tail position and remove those
+        // returns before splicing the body into the caller. Otherwise a failed
+        // selector match can `leave` the contract entry before its fallback.
+        let mut checked_body = function.body.clone();
+        if !self.normalize_inlined_unit_body(&mut checked_body) {
             return None;
         }
         let ret_comptime = ty_is_comptime(self.db, function.ret.ty());
@@ -1879,10 +1891,76 @@ impl<'db> Evaluator<'db> {
             comptime_env.insert(param.name.clone());
         }
         let type_reg = build_type_reg(&function.params, &function.body);
-        let (_, _, body) = self.eval_stmts(&type_reg, env, comptime_env, function.body, false);
+        let (_, _, mut body) = self.eval_stmts(&type_reg, env, comptime_env, function.body, false);
         let frame = self.inline_stack.pop();
         debug_assert!(frame.is_some_and(|frame| frame.name == callee.name));
+        let normalized = self.normalize_inlined_unit_body(&mut body);
+        debug_assert!(
+            normalized,
+            "evaluating an inline-safe body introduced an unsafe return"
+        );
+        if !normalized {
+            return None;
+        }
         Some(body)
+    }
+
+    fn normalize_inlined_unit_body(&self, body: &mut Vec<MonoStmt<'db>>) -> bool {
+        if body.iter().any(stmt_has_yul_leave) {
+            return false;
+        }
+        self.strip_tail_unit_returns(body)
+    }
+
+    fn strip_tail_unit_returns(&self, body: &mut Vec<MonoStmt<'db>>) -> bool {
+        let Some(last_index) = body.len().checked_sub(1) else {
+            return true;
+        };
+        if body[..last_index].iter().any(stmt_has_return) {
+            return false;
+        }
+
+        let mut remove_last = false;
+        let mut returned_effect = None;
+        let safe = match &mut body[last_index].kind {
+            MonoStmtKind::Return(expr) => {
+                let is_unit = expr
+                    .as_ref()
+                    .is_none_or(|expr| self.ty_is_unit(expr.ty.ty()));
+                if is_unit {
+                    match expr.take() {
+                        Some(expr) if !self.expr_is_known_value(&expr) => {
+                            returned_effect = Some(expr);
+                        }
+                        Some(_) | None => remove_last = true,
+                    }
+                }
+                is_unit
+            }
+            MonoStmtKind::Match { arms, .. } => arms
+                .iter_mut()
+                .all(|arm| self.strip_tail_unit_returns(&mut arm.body)),
+            MonoStmtKind::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                self.strip_tail_unit_returns(then_body)
+                    && else_body
+                        .as_mut()
+                        .is_none_or(|body| self.strip_tail_unit_returns(body))
+            }
+            MonoStmtKind::Block(body) => self.strip_tail_unit_returns(body),
+            _ => !stmt_has_return(&body[last_index]),
+        };
+        if safe {
+            if let Some(expr) = returned_effect {
+                body[last_index].kind = MonoStmtKind::Expr(expr);
+            } else if remove_last {
+                body.pop();
+            }
+        }
+        safe
     }
 
     fn function_can_inline(&self, name: &str, function: &MonoFunction<'db>) -> bool {
@@ -2370,6 +2448,84 @@ impl<'db> Evaluator<'db> {
             span,
         });
     }
+}
+
+fn stmt_has_return(stmt: &MonoStmt<'_>) -> bool {
+    match &stmt.kind {
+        MonoStmtKind::Return(_) => true,
+        MonoStmtKind::Match { arms, .. } => {
+            arms.iter().any(|arm| arm.body.iter().any(stmt_has_return))
+        }
+        MonoStmtKind::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().any(stmt_has_return)
+                || else_body
+                    .as_deref()
+                    .is_some_and(|body| body.iter().any(stmt_has_return))
+        }
+        MonoStmtKind::For {
+            init, post, body, ..
+        } => {
+            init.iter().any(stmt_has_return)
+                || post.iter().any(stmt_has_return)
+                || body.iter().any(stmt_has_return)
+        }
+        MonoStmtKind::Block(body) => body.iter().any(stmt_has_return),
+        _ => false,
+    }
+}
+
+fn stmt_has_yul_leave(stmt: &MonoStmt<'_>) -> bool {
+    match &stmt.kind {
+        MonoStmtKind::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| arm.body.iter().any(stmt_has_yul_leave)),
+        MonoStmtKind::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().any(stmt_has_yul_leave)
+                || else_body
+                    .as_deref()
+                    .is_some_and(|body| body.iter().any(stmt_has_yul_leave))
+        }
+        MonoStmtKind::For {
+            init, post, body, ..
+        } => {
+            init.iter().any(stmt_has_yul_leave)
+                || post.iter().any(stmt_has_yul_leave)
+                || body.iter().any(stmt_has_yul_leave)
+        }
+        MonoStmtKind::Block(body) => body.iter().any(stmt_has_yul_leave),
+        MonoStmtKind::Assembly(body) => yul_stmts_have_leave(body),
+        _ => false,
+    }
+}
+
+fn yul_stmts_have_leave(stmts: &[YulStmt<'_>]) -> bool {
+    stmts.iter().any(|stmt| match &stmt.kind {
+        YulStmtKind::Leave => true,
+        YulStmtKind::Block(body) | YulStmtKind::If { body, .. } => yul_stmts_have_leave(body),
+        YulStmtKind::For {
+            init, post, body, ..
+        } => yul_stmts_have_leave(init) || yul_stmts_have_leave(post) || yul_stmts_have_leave(body),
+        YulStmtKind::Switch { cases, default, .. } => {
+            cases.iter().any(|case| yul_stmts_have_leave(&case.body))
+                || default.as_deref().is_some_and(yul_stmts_have_leave)
+        }
+        // A nested Yul function retains its own `leave` boundary.
+        YulStmtKind::FunctionDef { .. }
+        | YulStmtKind::Let { .. }
+        | YulStmtKind::Assign { .. }
+        | YulStmtKind::Expr(_)
+        | YulStmtKind::Break
+        | YulStmtKind::Continue
+        | YulStmtKind::Error => false,
+    })
 }
 
 fn materialize_comptime_value<'db>(db: &'db dyn Db, expr: MonoExpr<'db>) -> MonoExpr<'db> {
