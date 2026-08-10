@@ -94,6 +94,15 @@ enum ComptimeBindingKey<'db> {
     },
 }
 
+struct ComptimeBodyContext<'db> {
+    entry_module: ModuleId<'db>,
+    hir_module: Module<'db>,
+    body_resolutions: hir_nameres::BodyResolutionMap<'db>,
+    item_resolutions: hir_nameres::ItemResolutionFacts<'db>,
+    type_vars: Vec<hir_nameres::TypeVarBinding<'db>>,
+    pre_typeck_desugar: Vec<BodyPreTypeckDesugarPlan<'db>>,
+}
+
 struct ComptimeChecker<'db> {
     db: &'db dyn Db,
     entry_module: ModuleId<'db>,
@@ -115,30 +124,26 @@ struct ComptimeChecker<'db> {
 impl<'db> ComptimeChecker<'db> {
     fn new(
         db: &'db dyn Db,
-        entry_module: ModuleId<'db>,
-        hir_module: Module<'db>,
-        body_map: &hir_nameres::BodyResolutionMap<'db>,
-        item_resolutions: hir_nameres::ItemResolutionFacts<'db>,
-        type_vars: Vec<hir_nameres::TypeVarBinding<'db>>,
-        pre_typeck_desugar: Vec<BodyPreTypeckDesugarPlan<'db>>,
+        context: ComptimeBodyContext<'db>,
         function: FunctionDef<'db>,
         root_sig: ComptimeCallableSig,
     ) -> Self {
         let sig = function.sig(db);
-        let expr_resolutions = body_map
+        let expr_resolutions = context
+            .body_resolutions
             .exprs
             .iter()
             .map(|entry| ((entry.body, entry.expr), entry.resolution.clone()))
             .collect();
         Self {
             db,
-            entry_module,
-            hir_module,
-            body_resolutions: body_map.clone(),
-            item_resolutions,
-            type_vars,
+            entry_module: context.entry_module,
+            hir_module: context.hir_module,
+            body_resolutions: context.body_resolutions,
+            item_resolutions: context.item_resolutions,
+            type_vars: context.type_vars,
             expr_resolutions,
-            pre_typeck_desugar,
+            pre_typeck_desugar: context.pre_typeck_desugar,
             scopes: vec![FxHashMap::default()],
             bindings: FxHashMap::default(),
             diagnostics: Vec::new(),
@@ -1133,12 +1138,14 @@ impl<'db> TypeckDiagnosticCollector<'db> {
                 obligations: _obligations,
             } = ComptimeChecker::new(
                 self.db,
-                self.module,
-                self.hir_module,
-                &body_map,
-                self.item_resolutions.facts(),
-                type_vars.clone(),
-                pre_typeck_desugar.clone(),
+                ComptimeBodyContext {
+                    entry_module: self.module,
+                    hir_module: self.hir_module,
+                    body_resolutions: body_map.clone(),
+                    item_resolutions: self.item_resolutions.facts(),
+                    type_vars: type_vars.clone(),
+                    pre_typeck_desugar: pre_typeck_desugar.clone(),
+                },
                 function,
                 root_sig,
             )
@@ -1267,12 +1274,14 @@ impl<'db> TypeckDiagnosticCollector<'db> {
             obligations,
         } = ComptimeChecker::new(
             self.db,
-            self.module,
-            module,
-            &body_map,
-            item_resolutions,
-            info.type_vars.clone(),
-            pre_typeck_desugar,
+            ComptimeBodyContext {
+                entry_module: self.module,
+                hir_module: module,
+                body_resolutions: body_map,
+                item_resolutions,
+                type_vars: info.type_vars.clone(),
+                pre_typeck_desugar,
+            },
             info.function,
             root_sig,
         )

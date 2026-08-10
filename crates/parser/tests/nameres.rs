@@ -178,7 +178,7 @@ impl<'db> ImportedNames<'db> for QualifiedClassImports<'db> {
         namespace: Namespace,
         name: &str,
     ) -> Option<Resolution<'db>> {
-        (namespace == Namespace::Type && name == "pkg.Eq").then(|| Resolution::Def {
+        (namespace == Namespace::Type && name == "pkg.Eq").then_some(Resolution::Def {
             def: self.class,
             kind: DefResolutionKind::Class,
         })

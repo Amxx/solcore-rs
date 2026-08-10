@@ -1466,9 +1466,11 @@ fn is_revert_literal_call(expr: &MonoExpr<'_>) -> bool {
 
 fn revert_literal_call(expr: &MonoExpr<'_>) -> Option<String> {
     match &expr.kind {
-        MonoExprKind::Call { args, origin, .. }
-            if matches!(origin, MonoCallOrigin::Builtin(MonoIntrinsic::RevertLit)) =>
-        {
+        MonoExprKind::Call {
+            args,
+            origin: MonoCallOrigin::Builtin(MonoIntrinsic::RevertLit),
+            ..
+        } => {
             let [arg] = args.as_slice() else {
                 return None;
             };
@@ -1551,48 +1553,6 @@ fn bin_op_name(op: BinOp) -> Option<&'static str> {
     }
 }
 
-#[cfg(test)]
-mod string_literal_tests {
-    use super::{decode_string_literal, string_literal_layout};
-
-    #[test]
-    fn layout_uses_utf8_bytes_and_word_boundaries() {
-        assert_eq!(string_literal_layout(b""), (Vec::new(), 32));
-
-        let (words, total) = string_literal_layout("é".as_bytes());
-        assert_eq!(total, 64);
-        assert_eq!(words.len(), 1);
-        assert_eq!(words[0].len(), 66);
-        assert!(words[0].starts_with("0xc3a9"), "{}", words[0]);
-        assert!(words[0].ends_with(&"0".repeat(60)), "{}", words[0]);
-
-        let (words, total) = string_literal_layout(&[b'a'; 32]);
-        assert_eq!(words, vec![format!("0x{}", "61".repeat(32))]);
-        assert_eq!(total, 64);
-
-        let mut bytes = vec![b'a'; 32];
-        bytes.push(b'b');
-        let (words, total) = string_literal_layout(&bytes);
-        assert_eq!(words.len(), 2);
-        assert_eq!(words[0], format!("0x{}", "61".repeat(32)));
-        assert_eq!(words[1], format!("0x62{}", "00".repeat(31)));
-        assert_eq!(total, 96);
-    }
-
-    #[test]
-    fn source_escapes_are_decoded_before_materialization() {
-        assert_eq!(
-            decode_string_literal(r#""a\n\t\"\\b""#),
-            Some("a\n\t\"\\b".to_owned())
-        );
-        assert_eq!(
-            decode_string_literal(r#""before\qafter""#),
-            Some("beforeqafter".to_owned())
-        );
-        assert_eq!(decode_string_literal("not quoted"), None);
-    }
-}
-
 fn mono_expr_name(kind: &MonoExprKind<'_>) -> &'static str {
     match kind {
         MonoExprKind::Field { .. } => "field access",
@@ -1647,5 +1607,47 @@ fn bool_constructor_pat_value<'db>(db: &'db dyn hir_ty::Db, pat: &MonoPat<'db>) 
             Some(false)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod string_literal_tests {
+    use super::{decode_string_literal, string_literal_layout};
+
+    #[test]
+    fn layout_uses_utf8_bytes_and_word_boundaries() {
+        assert_eq!(string_literal_layout(b""), (Vec::new(), 32));
+
+        let (words, total) = string_literal_layout("é".as_bytes());
+        assert_eq!(total, 64);
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].len(), 66);
+        assert!(words[0].starts_with("0xc3a9"), "{}", words[0]);
+        assert!(words[0].ends_with(&"0".repeat(60)), "{}", words[0]);
+
+        let (words, total) = string_literal_layout(&[b'a'; 32]);
+        assert_eq!(words, vec![format!("0x{}", "61".repeat(32))]);
+        assert_eq!(total, 64);
+
+        let mut bytes = vec![b'a'; 32];
+        bytes.push(b'b');
+        let (words, total) = string_literal_layout(&bytes);
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0], format!("0x{}", "61".repeat(32)));
+        assert_eq!(words[1], format!("0x62{}", "00".repeat(31)));
+        assert_eq!(total, 96);
+    }
+
+    #[test]
+    fn source_escapes_are_decoded_before_materialization() {
+        assert_eq!(
+            decode_string_literal(r#""a\n\t\"\\b""#),
+            Some("a\n\t\"\\b".to_owned())
+        );
+        assert_eq!(
+            decode_string_literal(r#""before\qafter""#),
+            Some("beforeqafter".to_owned())
+        );
+        assert_eq!(decode_string_literal("not quoted"), None);
     }
 }

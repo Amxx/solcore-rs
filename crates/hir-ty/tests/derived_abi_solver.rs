@@ -353,9 +353,11 @@ fn excludes_contract_local_adts_with_inherited_type_binders() {
     );
 
     for class in ["Generic", "ABIAttribs"] {
-        let args = (class == "Generic")
-            .then(|| vec![Ty::bound(&db, 0)])
-            .unwrap_or_default();
+        let args = if class == "Generic" {
+            vec![Ty::bound(&db, 0)]
+        } else {
+            Vec::new()
+        };
         let goal = Pred::in_class(
             &db,
             ClassId::User(class_def(&db, module, class)),
