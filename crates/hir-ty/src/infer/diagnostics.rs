@@ -1838,7 +1838,10 @@ fn dispatch_reserved_type_names<'db>(
                 continue;
             }
             reserved
-                .entry(dispatch_name_type_name(&contract_name, &method_name))
+                .entry(crate::contract_dispatch_name_type_name(
+                    &contract_name,
+                    &method_name,
+                ))
                 .or_insert_with(|| LabelSpan::from_span(db, sig.name.span(db)));
         }
     }
@@ -1917,10 +1920,6 @@ fn collect_dispatch_name_collisions<'db>(
         | Item::Pragma(_)
         | Item::Error { .. } => {}
     }
-}
-
-fn dispatch_name_type_name(contract: &str, method: &str) -> String {
-    format!("DispatchNameTy_{contract}_{method}")
 }
 
 fn local_data_cycle_nodes<'db>(db: &'db dyn HirDb, module: Module<'db>) -> Vec<DataCycleNode<'db>> {

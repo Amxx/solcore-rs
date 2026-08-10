@@ -623,7 +623,7 @@ Options:
   --emit-yul[=FILE]                  Emit Yul strict assembly to stdout or FILE
   --emit-sonatina[=FILE]             Emit Sonatina IR to stdout or FILE
   --emit-yul-object NAME             Select one top-level Yul object for --emit-yul
-  --pe-fuel N                        Set partial-evaluation total work fuel (default: 4096)
+  --pe-fuel N                        Set partial-evaluation total work fuel (default: 8192)
   --pe-depth N                       Set specialization/evaluator depth (default: 128)
   --pe-max-instantiations N          Set specialization instance limit (default: 2048)
   --pe-max-type-nodes N              Set specialized type-size limit (default: 4096)

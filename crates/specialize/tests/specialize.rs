@@ -1551,7 +1551,7 @@ contract TupleSelector {
 }
 
 #[test]
-fn dispatch_selector_patch_prefers_the_longest_method_name() {
+fn dispatch_selector_patch_uses_identity_safe_method_markers() {
     let output = specialize_src_with_std(
         r#"
 import std.{*};
@@ -1574,11 +1574,23 @@ contract C {
 contract D {
   public function veryLong(k: uint256) -> uint256 { return k; }
 }
+
+contract A {
+  public function B_C(k: uint256) -> uint256 { return k; }
+}
+
+contract A_B {
+  public function C(k: uint256) -> uint256 { return k; }
+}
 "#,
     );
 
     assert_eq!(output.diagnostics, Vec::new());
-    let selector_helper = |marker: &str| {
+    let selector_helper = |contract: &str, method: &str| {
+        let marker = format!(
+            "{}_d",
+            hir_ty::contract_dispatch_name_type_name(contract, method)
+        );
         output
             .module
             .items
@@ -1586,7 +1598,7 @@ contract D {
             .find_map(|item| match item {
                 MonoItem::Function(function)
                     if function.name.starts_with("dispatch_selector_matches")
-                        && function.name.contains(marker) =>
+                        && function.name.contains(&marker) =>
                 {
                     Some(function)
                 }
@@ -1595,19 +1607,19 @@ contract D {
             .unwrap_or_else(|| panic!("selector helper for {marker}"))
     };
 
-    let put_opt = selector_helper("DispatchNameTy_C_putOpt_d");
+    let put_opt = selector_helper("C", "putOpt");
     assert!(stmts_have_number_literal(&put_opt.body, "489078201"));
     assert!(!stmts_have_number_literal(&put_opt.body, "3768177169"));
 
-    let put_opt_pair = selector_helper("DispatchNameTy_C_putOptPair_d");
+    let put_opt_pair = selector_helper("C", "putOptPair");
     assert!(stmts_have_number_literal(&put_opt_pair.body, "3768177169"));
     assert!(!stmts_have_number_literal(&put_opt_pair.body, "489078201"));
 
-    let clear_opt = selector_helper("DispatchNameTy_C_clearOpt_d");
+    let clear_opt = selector_helper("C", "clearOpt");
     assert!(stmts_have_number_literal(&clear_opt.body, "986064138"));
     assert!(!stmts_have_number_literal(&clear_opt.body, "3508849225"));
 
-    let clear_opt_pair = selector_helper("DispatchNameTy_C_clearOptPair_d");
+    let clear_opt_pair = selector_helper("C", "clearOptPair");
     assert!(stmts_have_number_literal(
         &clear_opt_pair.body,
         "3508849225"
@@ -1617,26 +1629,39 @@ contract D {
         "986064138"
     ));
 
-    let foo = selector_helper("DispatchNameTy_C_foo_d");
+    let foo = selector_helper("C", "foo");
     assert!(stmts_have_number_literal(&foo.body, "801029432"));
     assert!(!stmts_have_number_literal(&foo.body, "3185083862"));
 
-    let foo_bar = selector_helper("DispatchNameTy_C_foo_bar_d");
+    let foo_bar = selector_helper("C", "foo_bar");
     assert!(stmts_have_number_literal(&foo_bar.body, "3185083862"));
     assert!(!stmts_have_number_literal(&foo_bar.body, "801029432"));
 
-    let f = selector_helper("DispatchNameTy_C_f_d");
+    let f = selector_helper("C", "f");
     assert!(
-        f.name.contains("DispatchNameTy_D_veryLong"),
+        f.name
+            .contains(&hir_ty::contract_dispatch_name_type_name("D", "veryLong")),
         "the direct ADT argument must exercise a later marker match: {}",
         f.name
     );
     assert!(stmts_have_number_literal(&f.body, "3017696395"));
     assert!(!stmts_have_number_literal(&f.body, "1127644546"));
 
-    let very_long = selector_helper("DispatchNameTy_D_veryLong_d");
+    let very_long = selector_helper("D", "veryLong");
     assert!(stmts_have_number_literal(&very_long.body, "1127644546"));
     assert!(!stmts_have_number_literal(&very_long.body, "3017696395"));
+
+    let a_method = hir_ty::contract_dispatch_name_type_name("A", "B_C");
+    let ab_method = hir_ty::contract_dispatch_name_type_name("A_B", "C");
+    assert_ne!(a_method, ab_method);
+
+    let b_c = selector_helper("A", "B_C");
+    assert!(stmts_have_number_literal(&b_c.body, "2749070498"));
+    assert!(!stmts_have_number_literal(&b_c.body, "1855903951"));
+
+    let c = selector_helper("A_B", "C");
+    assert!(stmts_have_number_literal(&c.body, "1855903951"));
+    assert!(!stmts_have_number_literal(&c.body, "2749070498"));
 }
 
 #[test]
@@ -5181,6 +5206,16 @@ contract C {
         "{:?}",
         output.diagnostics
     );
+}
+
+#[test]
+fn default_fuel_handles_the_e136_basic_dispatch_surface() {
+    solcore_test_utils::run_in_large_stack(|| {
+        let source =
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.solc");
+        let output = specialize_src_with_std(source);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    });
 }
 
 #[test]

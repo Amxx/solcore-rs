@@ -29,7 +29,12 @@ fn cli_prints_help_and_version() {
     assert!(stdout.contains("-o, --output-dir DIR"), "{stdout}");
     assert!(stdout.contains("--abi"), "{stdout}");
     assert!(stdout.contains("--emit-sonatina[=FILE]"), "{stdout}");
-    assert!(stdout.contains("--pe-fuel N"), "{stdout}");
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("--pe-fuel N") && line.contains("default: 8192")),
+        "{stdout}"
+    );
     assert!(stdout.contains("--pe-depth N"), "{stdout}");
     assert!(stdout.contains("--pe-max-instantiations N"), "{stdout}");
     assert!(stdout.contains("--pe-max-type-nodes N"), "{stdout}");

@@ -32,11 +32,12 @@ use hir_ty::{
     ComptimeObligationKind, Db, DispatchConstructor, DispatchFallback, Evidence,
     GeneratedOriginKind, InferenceResult, LoweredFunction, Pred, PredKind, PreparedModule,
     ProductShape, Solution, Ty, TyCtor, TyKind, TypeLowering, UserTyCtor, UserTyCtorKind,
-    canonical_goal, canonical_goal_with_allowed, contract_dispatch_surface_for_module,
-    contract_overlay_backend_name, derived_generic_instance_plan, derived_generic_plan,
-    frontend_desugar_plan, infer_body, is_canonical_std_def_named, is_contract_deployment_main_def,
-    is_contract_dispatch_main_def, lower_normalized_function_with_inferred_signature,
-    prepare_module, solve, solver::DerivedClauseKind, trait_env_from_module_resolution,
+    canonical_goal, canonical_goal_with_allowed, contract_dispatch_name_type_name,
+    contract_dispatch_surface_for_module, contract_overlay_backend_name,
+    derived_generic_instance_plan, derived_generic_plan, frontend_desugar_plan, infer_body,
+    is_canonical_std_def_named, is_contract_deployment_main_def, is_contract_dispatch_main_def,
+    lower_normalized_function_with_inferred_signature, prepare_module, solve,
+    solver::DerivedClauseKind, trait_env_from_module_resolution,
     trait_env_from_module_resolution_and_imports, trait_env_with_givens,
 };
 use nameres::{LibraryId, ModuleId, module_key_for_path, resolve_reachable_full};
@@ -112,9 +113,10 @@ impl Default for SpecializeOptions {
             max_depth: 128,
             max_type_nodes: 4096,
             // This is a per-emitted-function work budget. It must accommodate
-            // the canonical std dispatch pipeline while still bounding
-            // exponential pure-call fan-out.
-            eval_fuel: 4096,
+            // the canonical std dispatch pipeline, including e136's 31-method
+            // `basic` surface, while still bounding exponential pure-call
+            // fan-out.
+            eval_fuel: 8192,
         }
     }
 }

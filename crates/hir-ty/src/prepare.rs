@@ -158,6 +158,20 @@ pub fn contract_overlay_backend_name(db: &dyn Db, def: DefId<'_>) -> Option<&'st
     }
 }
 
+/// Compiler-owned phantom type name for one public contract method.
+///
+/// Names without underscores retain the established readable spelling. When
+/// either component contains an underscore, the byte lengths make the
+/// otherwise ambiguous contract/method boundary injective.
+pub fn contract_dispatch_name_type_name(contract: &str, method: &str) -> String {
+    let readable = format!("DispatchNameTy_{contract}_{method}");
+    if contract.contains('_') || method.contains('_') {
+        format!("{readable}__{}_{}", contract.len(), method.len())
+    } else {
+        readable
+    }
+}
+
 /// User-source provenance for one compiler-owned definition.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
 pub struct GeneratedOrigin<'db> {
@@ -1059,7 +1073,7 @@ fn dispatch_name_declarations<'db>(
     contract_name: &str,
     method: &RawMethod<'db>,
 ) -> (AdtDef<'db>, InstanceDef<'db>, Vec<GeneratedOrigin<'db>>) {
-    let ty_name = format!("DispatchNameTy_{contract_name}_{}", method.name);
+    let ty_name = contract_dispatch_name_type_name(contract_name, &method.name);
     let adt_def = generated_def(
         db,
         module_def,
@@ -1225,7 +1239,7 @@ fn generated_dispatch_main<'db>(
     let mut builder = BodyBuilder::new(db, span);
     let mut method_values = Vec::with_capacity(methods.len());
     for method in methods {
-        let name_ty = format!("DispatchNameTy_{contract_name}_{}", method.name);
+        let name_ty = contract_dispatch_name_type_name(contract_name, &method.name);
         let name = builder.proxy(named_ty(db, method.span, &name_ty, Vec::new()));
         let payability = builder.proxy(named_ty(
             db,
@@ -2079,13 +2093,58 @@ contract C {
         );
         let source = source_module(&db, file);
         let prepared = prepare_module(&db, source);
+        let expected_name = contract_dispatch_name_type_name("C", "get");
+        assert_eq!(expected_name, "DispatchNameTy_C_get");
         let generated_name_types = prepared
             .module(&db)
             .items(&db)
             .iter()
-            .filter(|item| matches!(item, Item::AdtDef(adt) if ident_text(&db, &adt.name_elem(&db)) == "DispatchNameTy_C_get"))
+            .filter(|item| matches!(item, Item::AdtDef(adt) if ident_text(&db, &adt.name_elem(&db)) == expected_name))
             .count();
         assert_eq!(generated_name_types, 1);
+    }
+
+    #[test]
+    fn dispatch_name_types_are_injective_across_contract_method_boundaries() {
+        let (db, file) = db_with_main(
+            r#"
+import std.dispatch.{*};
+contract A {
+  public function B_C(x:uint256) -> uint256 { return x; }
+}
+contract A_B {
+  public function C(x:uint256) -> uint256 { return x; }
+}
+"#,
+        );
+        let prepared = prepare_module(&db, source_module(&db, file));
+        let generated = prepared
+            .module(&db)
+            .items(&db)
+            .iter()
+            .filter_map(|item| {
+                let Item::AdtDef(adt) = item else {
+                    return None;
+                };
+                let def = adt.def_id_value(&db);
+                matches!(
+                    prepared.origin_for_def(&db, def).map(|origin| origin.kind),
+                    Some(GeneratedOriginKind::ContractDispatchNameType)
+                )
+                .then(|| (ident_text(&db, &adt.name_elem(&db)), def))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let a_method = contract_dispatch_name_type_name("A", "B_C");
+        let ab_method = contract_dispatch_name_type_name("A_B", "C");
+        assert_eq!(a_method, "DispatchNameTy_A_B_C__1_3");
+        assert_eq!(ab_method, "DispatchNameTy_A_B_C__3_1");
+        assert_ne!(a_method, ab_method);
+        assert_eq!(generated.len(), 2, "{generated:?}");
+        assert_ne!(generated[&a_method], generated[&ab_method]);
+
+        let scope = hir::nameres::item_scope(&db, prepared.module(&db));
+        assert!(scope.diagnostics.is_empty(), "{:?}", scope.diagnostics);
     }
 
     #[test]

@@ -512,10 +512,9 @@ impl<'db> Driver<'db> {
             {
                 for method in &surface.methods {
                     self.dispatch_selector_overrides.push((
-                        format!(
-                            "DispatchNameTy_{}_{}",
-                            ident_text(self.db, &contract.name_elem(self.db)),
-                            method.name
+                        contract_dispatch_name_type_name(
+                            &ident_text(self.db, &contract.name_elem(self.db)),
+                            &method.name,
                         ),
                         u32::from_be_bytes(method.selector.0).to_string(),
                     ));

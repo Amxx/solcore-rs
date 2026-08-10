@@ -20,8 +20,8 @@ use solcore_hir_ty::{
     BuiltinTyCtor, CallSiteCallee, DispatchConstructor, DispatchFallback,
     FieldInitPreTypeckTransform, FrontendTransform, IndirectArgShape, PreTypeckTransform,
     ProductShape, SourceOriginKind, Ty, TyCtor, TyKind, contract_abi_json,
-    contract_dispatch_surface, derived_generic_instance_plan, derived_generic_plan,
-    frontend_desugar_plan, function_scheme, infer::module_typeck_diagnostics,
+    contract_dispatch_name_type_name, contract_dispatch_surface, derived_generic_instance_plan,
+    derived_generic_plan, frontend_desugar_plan, function_scheme, infer::module_typeck_diagnostics,
     pre_typeck_desugar_plan, prepare_module,
 };
 
@@ -426,6 +426,41 @@ function fallback_default_implementation() -> () { return (); }
     assert!(
         diagnostics.is_empty(),
         "the local generated SigString instance must be in the prepared trait environment: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn dispatch_names_and_selectors_distinguish_contract_method_boundaries() {
+    let (mut db, key) = db_with_main(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract A {
+  public function B_C(x:uint256) -> uint256 { return x; }
+}
+
+contract A_B {
+  public function C(x:uint256) -> uint256 { return x; }
+}
+"#,
+    );
+    insert_real_std_modules(&mut db);
+
+    let diagnostics = diagnostics_for_module(&db, &key);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let file = db.module_files.get(&key).copied().expect("main module");
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let a_surface = contract_dispatch_surface(&db, module, contract_named(&db, module, "A"));
+    let ab_surface = contract_dispatch_surface(&db, module, contract_named(&db, module, "A_B"));
+    assert_eq!(a_surface.methods[0].signature, "B_C(uint256)");
+    assert_eq!(a_surface.methods[0].selector.to_hex(), "0xa3db7ca2");
+    assert_eq!(ab_surface.methods[0].signature, "C(uint256)");
+    assert_eq!(ab_surface.methods[0].selector.to_hex(), "0x6e9ed8cf");
+    assert_ne!(
+        contract_dispatch_name_type_name("A", "B_C"),
+        contract_dispatch_name_type_name("A_B", "C")
     );
 }
 
