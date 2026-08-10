@@ -112,13 +112,10 @@ fn collect_yul_written_names<'db>(
                     collect_yul_written_names(db, default, names);
                 }
             }
-            YulStmtKind::FunctionDef {
-                params, rets, body, ..
-            } => {
-                names.extend(params.iter().map(|name| ident_text(db, name)));
-                names.extend(rets.iter().map(|name| ident_text(db, name)));
-                collect_yul_written_names(db, body, names);
-            }
+            // A Yul function cannot capture or mutate values from its enclosing
+            // assembly block. Its parameters, returns, and locals are a separate
+            // value scope and therefore do not invalidate outer known values.
+            YulStmtKind::FunctionDef { .. } => {}
             YulStmtKind::Expr(_)
             | YulStmtKind::Leave
             | YulStmtKind::Break
@@ -211,7 +208,9 @@ fn subst_yul_stmt<'db>(
             name,
             params,
             rets,
-            body: subst_yul_block(db, subst, body),
+            // Function values are not closures over the enclosing assembly
+            // substitution environment.
+            body: subst_yul_block(db, &FxHashMap::default(), body),
         },
         YulStmtKind::Leave => YulStmtKind::Leave,
         YulStmtKind::Break => YulStmtKind::Break,

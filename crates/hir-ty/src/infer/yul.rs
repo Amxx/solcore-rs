@@ -10,6 +10,7 @@ struct YulFunctionSig<'db> {
 struct YulScope<'db> {
     values: FxHashSet<String>,
     functions: FxHashMap<String, YulFunctionSig<'db>>,
+    value_boundary: bool,
 }
 
 impl<'db> InferCtx<'db> {
@@ -23,6 +24,7 @@ impl<'db> InferCtx<'db> {
         body: &[YulStmt<'db>],
         scopes: &mut Vec<YulScope<'db>>,
     ) -> (Vec<String>, InferTy<'db>) {
+        self.predeclare_yul_functions(body, scopes);
         let mut binds = Vec::new();
         let mut ty = self.unit();
         for stmt in body {
@@ -75,7 +77,12 @@ impl<'db> InferCtx<'db> {
                 for name in names {
                     let text = (*name.atom()).text(self.db);
                     if !self.is_yul_local(scopes, text) {
-                        self.check_yul_sail_var_write(self.label_span(name.span(self.db)), text);
+                        let span = self.label_span(name.span(self.db));
+                        if self.yul_value_boundary_active(scopes) {
+                            let _ = self.unknown_yul_name(span, text);
+                        } else {
+                            self.check_yul_sail_var_write(span, text);
+                        }
                     }
                 }
                 (Vec::new(), self.unit())
@@ -97,8 +104,12 @@ impl<'db> InferCtx<'db> {
                 scopes.push(YulScope::default());
                 self.infer_yul_block_scoped(init, scopes);
                 self.infer_yul_expr(cond, scopes);
+                scopes.push(YulScope::default());
                 self.infer_yul_block_scoped(body, scopes);
+                scopes.pop();
+                scopes.push(YulScope::default());
                 self.infer_yul_block_scoped(post, scopes);
+                scopes.pop();
                 scopes.pop();
                 (Vec::new(), self.unit())
             }
@@ -119,18 +130,12 @@ impl<'db> InferCtx<'db> {
                 (Vec::new(), self.unit())
             }
             YulStmtKind::FunctionDef {
-                name,
-                params,
-                rets,
-                body,
+                params, rets, body, ..
             } => {
-                let fn_name = (*name.atom()).text(self.db).to_owned();
-                let sig = YulFunctionSig {
-                    params: self.yul_word_tys(params.len()),
-                    ret: self.yul_return_ty(rets.len()),
-                };
-                self.add_yul_function(scopes, fn_name, sig);
-                scopes.push(YulScope::default());
+                scopes.push(YulScope {
+                    value_boundary: true,
+                    ..YulScope::default()
+                });
                 for name in params.iter().chain(rets) {
                     self.add_yul_local(scopes, (*name.atom()).text(self.db));
                 }
@@ -163,6 +168,8 @@ impl<'db> InferCtx<'db> {
                 let text = (*name.atom()).text(self.db);
                 if self.is_yul_local(scopes, text) {
                     self.word()
+                } else if self.yul_value_boundary_active(scopes) {
+                    self.unknown_yul_name(self.yul_expr_label_span(expr), text)
                 } else {
                     self.check_yul_sail_var_read(self.yul_expr_label_span(expr), text)
                 }
@@ -215,6 +222,23 @@ impl<'db> InferCtx<'db> {
         }
     }
 
+    fn predeclare_yul_functions(&mut self, body: &[YulStmt<'db>], scopes: &mut [YulScope<'db>]) {
+        for stmt in body {
+            let YulStmtKind::FunctionDef {
+                name, params, rets, ..
+            } = &stmt.kind
+            else {
+                continue;
+            };
+            let fn_name = (*name.atom()).text(self.db).to_owned();
+            let sig = YulFunctionSig {
+                params: self.yul_word_tys(params.len()),
+                ret: self.yul_return_ty(rets.len()),
+            };
+            self.add_yul_function(scopes, fn_name, sig);
+        }
+    }
+
     fn add_yul_function(
         &self,
         scopes: &mut [YulScope<'db>],
@@ -227,7 +251,19 @@ impl<'db> InferCtx<'db> {
     }
 
     fn is_yul_local(&self, scopes: &[YulScope<'db>], name: &str) -> bool {
-        scopes.iter().rev().any(|scope| scope.values.contains(name))
+        for scope in scopes.iter().rev() {
+            if scope.values.contains(name) {
+                return true;
+            }
+            if scope.value_boundary {
+                break;
+            }
+        }
+        false
+    }
+
+    fn yul_value_boundary_active(&self, scopes: &[YulScope<'db>]) -> bool {
+        scopes.iter().rev().any(|scope| scope.value_boundary)
     }
 
     fn lookup_yul_function(
@@ -243,11 +279,7 @@ impl<'db> InferCtx<'db> {
 
     fn check_yul_sail_var_read(&mut self, span: LabelSpan, name: &str) -> InferTy<'db> {
         let Some(ty) = self.lookup_sail_local(name) else {
-            self.diagnostics.push(TypeckDiagnostic::UnknownYulName {
-                span,
-                name: name.to_owned(),
-            });
-            return InferTy::Error;
+            return self.unknown_yul_name(span, name);
         };
         let word = self.word();
         if self.can_unify(ty.clone(), word.clone()) {
@@ -261,6 +293,14 @@ impl<'db> InferCtx<'db> {
             });
         }
         word
+    }
+
+    fn unknown_yul_name(&mut self, span: LabelSpan, name: &str) -> InferTy<'db> {
+        self.diagnostics.push(TypeckDiagnostic::UnknownYulName {
+            span,
+            name: name.to_owned(),
+        });
+        InferTy::Error
     }
 
     fn check_yul_sail_var_write(&mut self, span: LabelSpan, name: &str) {

@@ -279,6 +279,116 @@ fn diagnostics_for_module(db: &TestDb, key: &ModuleKey) -> Vec<Diagnostic> {
 }
 
 #[test]
+fn yul_function_values_are_local_and_cannot_capture_sail_values() {
+    for (case, source) in [
+        (
+            "dynamic read",
+            r#"
+contract C {
+  function main() -> word {
+    let outer : word;
+    assembly {
+      outer := callvalue()
+      function readOuter() -> value { value := outer }
+      outer := readOuter()
+    }
+    return outer;
+  }
+}
+"#,
+        ),
+        (
+            "known write",
+            r#"
+contract C {
+  function main() -> word {
+    let outer : word = 7;
+    assembly {
+      function writeOuter() { outer := 9 }
+      writeOuter()
+    }
+    return outer;
+  }
+}
+"#,
+        ),
+        (
+            "outer Yul read",
+            r#"
+contract C {
+  function main() -> word {
+    let result : word;
+    assembly {
+      let outerYul := callvalue()
+      function readOuter() -> value { value := outerYul }
+      result := readOuter()
+    }
+    return result;
+  }
+}
+"#,
+        ),
+    ] {
+        let diagnostics = diagnostics(source);
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(DiagnosticCode::TYPECK_UNKNOWN_YUL_NAME)
+                    && diagnostic.message.contains("outer")
+            }),
+            "{case}: {diagnostics:?}"
+        );
+    }
+
+    let local = diagnostics(
+        r#"
+contract C {
+  function main() -> word {
+    let result : word;
+    assembly {
+      function localValue(input) -> output {
+        let temporary := input
+        output := temporary
+      }
+      result := localValue(7)
+    }
+    return result;
+  }
+}
+"#,
+    );
+    assert!(local.is_empty(), "{local:?}");
+}
+
+#[test]
+fn yul_for_body_values_do_not_leak_into_the_post_block() {
+    let diagnostics = diagnostics(
+        r#"
+contract C {
+  function main() -> word {
+    let result : word;
+    assembly {
+      let i := 0
+      for {} lt(i, 1) { i := leaked } {
+        let leaked := 1
+        i := add(i, 1)
+      }
+      result := i
+    }
+    return result;
+  }
+}
+"#,
+    );
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(DiagnosticCode::TYPECK_UNKNOWN_YUL_NAME)
+                && diagnostic.message.contains("leaked")
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn generated_dispatch_is_synthesized_before_import_resolution() {
     let db = TestDb::default();
     let source = parse_module(

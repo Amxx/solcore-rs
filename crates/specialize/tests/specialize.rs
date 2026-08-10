@@ -7,7 +7,7 @@ use std::{
 use hir::{
     anchor::DefLocationTable,
     ast::{
-        function::{YulExprKind, YulStmtKind},
+        function::{YulExprKind, YulLitKind, YulStmtKind},
         item::Module,
     },
     input::SourceFile,
@@ -3172,6 +3172,74 @@ contract C {
     assert!(args.iter().all(|arg| {
         matches!(&arg.kind, YulExprKind::Ident(name) if ident_text(db, name) == "a")
     }));
+}
+
+#[test]
+fn assembly_substitution_does_not_capture_same_named_function_parameters() {
+    let (db, output) = specialize_src(
+        r#"
+contract C {
+  public function main() -> word {
+    let x : word = 1;
+    let observed : word = 0;
+    assembly {
+      function f(x) -> y { y := x }
+      observed := add(f(7), x)
+    }
+    return x;
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let function = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function) if function.name.contains("_main_") => Some(function),
+            _ => None,
+        })
+        .expect("specialized main");
+    let assembly = function
+        .body
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            MonoStmtKind::Assembly(body) => Some(body),
+            _ => None,
+        })
+        .expect("residual assembly");
+    let (params, body) = assembly
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            YulStmtKind::FunctionDef { params, body, .. } => Some((params, body)),
+            _ => None,
+        })
+        .expect("inline Yul function");
+    assert_eq!(params.len(), 1);
+    assert_eq!(ident_text(db, &params[0]), "x");
+    let YulStmtKind::Assign { value, .. } = &body[0].kind else {
+        panic!("expected return assignment: {:?}", body[0].kind);
+    };
+    assert!(
+        matches!(&value.kind, YulExprKind::Ident(name) if ident_text(db, name) == "x"),
+        "{value:?}"
+    );
+    let outer_value = assembly
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            YulStmtKind::Assign { value, .. } => Some(value),
+            _ => None,
+        })
+        .expect("outer assignment");
+    let YulExprKind::Call { args, .. } = &outer_value.kind else {
+        panic!("expected outer add: {outer_value:?}");
+    };
+    assert!(
+        matches!(&args[1].kind, YulExprKind::Lit(YulLitKind::Number(value)) if value == "1"),
+        "{outer_value:?}"
+    );
 }
 
 #[test]

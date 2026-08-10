@@ -15,6 +15,7 @@ use crate::ast::{Case, Expr, FunctionName, Stmt, VarName};
 pub(super) struct AsmScopes {
     values: Vec<BTreeMap<String, VarName>>,
     functions: Vec<BTreeMap<String, FunctionName>>,
+    outer_values_visible: bool,
 }
 
 impl<'db> Translator<'db> {
@@ -23,10 +24,32 @@ impl<'db> Translator<'db> {
         stmts: &[HirYulStmt<'db>],
         asm: &mut AsmScopes,
     ) -> Result<Vec<Stmt>, TranslationError> {
+        self.predeclare_yul_functions(stmts, asm)?;
         stmts
             .iter()
             .map(|stmt| self.convert_yul_stmt(stmt, asm))
             .collect()
+    }
+
+    fn predeclare_yul_functions(
+        &mut self,
+        stmts: &[HirYulStmt<'db>],
+        asm: &mut AsmScopes,
+    ) -> Result<(), TranslationError> {
+        for stmt in stmts {
+            let YulStmtKind::FunctionDef { name, .. } = &stmt.kind else {
+                continue;
+            };
+            let raw = yul_name(self.db, name);
+            if asm.current_function(&raw).is_some() {
+                return Err(TranslationError::new(format!(
+                    "duplicate inline Yul function `{raw}` in the same block"
+                )));
+            }
+            let emitted = self.fresh_asm_name(&raw);
+            asm.insert_function(raw, FunctionName::new(emitted.as_str()));
+        }
+        Ok(())
     }
 
     fn convert_yul_stmt(
@@ -62,8 +85,11 @@ impl<'db> Translator<'db> {
                     .iter()
                     .map(|name| {
                         let raw = yul_name(self.db, name);
-                        asm.lookup_value(&raw)
-                            .unwrap_or_else(|| self.subst_asm_lhs_name(&raw))
+                        match asm.lookup_value(&raw) {
+                            Some(name) => name,
+                            None if asm.outer_values_visible => self.subst_asm_lhs_name(&raw),
+                            None => raw.into(),
+                        }
                     })
                     .collect();
                 Ok(Stmt::Assign {
@@ -134,17 +160,19 @@ impl<'db> Translator<'db> {
                 body,
             } => {
                 let raw_name = yul_name(self.db, name);
-                let emitted = self.fresh_asm_name(&raw_name);
-                let name = FunctionName::new(emitted.as_str());
-                asm.insert_function(raw_name, name.clone());
+                let name = asm.lookup_function(&raw_name).ok_or_else(|| {
+                    TranslationError::new(format!(
+                        "missing predeclared inline Yul function `{raw_name}`"
+                    ))
+                })?;
 
-                asm.push_scope();
+                let mut function_asm = asm.function_body_scope();
                 let params = params
                     .iter()
                     .map(|param| {
                         let raw = yul_name(self.db, param);
                         let emitted = self.fresh_asm_name(&raw);
-                        asm.insert_value(raw, emitted.clone());
+                        function_asm.insert_value(raw, emitted.clone());
                         emitted
                     })
                     .collect();
@@ -153,12 +181,11 @@ impl<'db> Translator<'db> {
                     .map(|ret| {
                         let raw = yul_name(self.db, ret);
                         let emitted = self.fresh_asm_name(&raw);
-                        asm.insert_value(raw, emitted.clone());
+                        function_asm.insert_value(raw, emitted.clone());
                         emitted
                     })
                     .collect();
-                let body = self.convert_yul_stmts(body, asm);
-                asm.pop_scope();
+                let body = self.convert_yul_stmts(body, &mut function_asm);
 
                 Ok(Stmt::Function {
                     name,
@@ -199,7 +226,8 @@ impl<'db> Translator<'db> {
                 let name = yul_name(self.db, name);
                 match asm.lookup_value(&name) {
                     Some(name) => Expr::ident(name),
-                    None => self.subst_asm_expr_name(&name),
+                    None if asm.outer_values_visible => self.subst_asm_expr_name(&name),
+                    None => Expr::ident(name),
                 }
             }
             YulExprKind::Call { name, args } => {
@@ -250,6 +278,7 @@ impl AsmScopes {
         Self {
             values: vec![BTreeMap::new()],
             functions: vec![BTreeMap::new()],
+            outer_values_visible: true,
         }
     }
 
@@ -277,6 +306,12 @@ impl AsmScopes {
             .insert(source, emitted);
     }
 
+    fn current_function(&self, name: &str) -> Option<FunctionName> {
+        self.functions
+            .last()
+            .and_then(|scope| scope.get(name).cloned())
+    }
+
     fn lookup_value(&self, name: &str) -> Option<VarName> {
         self.values
             .iter()
@@ -289,5 +324,15 @@ impl AsmScopes {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).cloned())
+    }
+
+    fn function_body_scope(&self) -> Self {
+        let mut functions = self.functions.clone();
+        functions.push(BTreeMap::new());
+        Self {
+            values: vec![BTreeMap::new()],
+            functions,
+            outer_values_visible: false,
+        }
     }
 }
