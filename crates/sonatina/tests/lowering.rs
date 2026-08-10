@@ -2,9 +2,13 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use hir::{
     anchor::DefLocationTable,
+    ast::{
+        Ident,
+        function::{YulExpr, YulExprKind, YulLitKind, YulStmt, YulStmtKind},
+    },
     diag::Offset,
     input::SourceFile,
-    span::{AnchorId, Span},
+    span::{AnchorId, Span, SpannedElem},
 };
 use hull::{
     Alt, Arg, CodeBlock, Con, Expr, ExprKind, Function, Object, Pat, PatKind, Program, Stmt,
@@ -468,6 +472,78 @@ contract MemoryContract {
 }
 
 #[test]
+fn memoryguard_reserves_aligned_literal_space_through_the_unified_allocator() {
+    let (_, ir) = lower_source(
+        r#"
+contract MemoryGuardContract {
+  function main() -> word {
+    let guarded : word;
+    assembly {
+      mstore(0x40, memoryguard(128))
+      mstore(0x40, memoryguard(129))
+      guarded := mload(0x40)
+    }
+    return guarded;
+  }
+}
+"#,
+    );
+
+    fn has_reservation(ir: &str, requested: usize, expected_aligned: usize) -> bool {
+        if (requested + 31) & !31 != expected_aligned {
+            return false;
+        }
+        let Some(round_up) = ir
+            .lines()
+            .find(|line| line.contains(&format!(" = add {requested}.i256 31.i256;")))
+        else {
+            return false;
+        };
+        let rounded_size = round_up
+            .trim()
+            .split_once('.')
+            .map_or(round_up.trim(), |(value, _)| value);
+        let Some(alignment) = ir
+            .lines()
+            .find(|line| line.contains(&format!(" = and {rounded_size} -32.i256;")))
+        else {
+            return false;
+        };
+        let aligned_size = alignment
+            .trim()
+            .split_once('.')
+            .map_or(alignment.trim(), |(value, _)| value);
+        let Some(malloc) = ir
+            .lines()
+            .find(|line| line.contains(&format!(" = evm_malloc {aligned_size};")))
+        else {
+            return false;
+        };
+        let malloc_result = malloc
+            .trim()
+            .split_once('.')
+            .map_or(malloc.trim(), |(value, _)| value);
+        let Some(ptr_to_int) = ir
+            .lines()
+            .find(|line| line.contains(&format!(" = ptr_to_int {malloc_result} i256;")))
+        else {
+            return false;
+        };
+        let ptr_to_int_result = ptr_to_int
+            .trim()
+            .split_once('.')
+            .map_or(ptr_to_int.trim(), |(value, _)| value);
+        ir.lines()
+            .any(|line| line.contains(&format!(" = add {ptr_to_int_result} {aligned_size};")))
+    }
+
+    assert!(has_reservation(&ir, 128, 128), "{ir}");
+    assert!(has_reservation(&ir, 129, 160), "{ir}");
+    assert!(ir.matches("evm_mstore 64.i256").count() >= 2, "{ir}");
+    assert!(ir.contains("evm_mload 64.i256"), "{ir}");
+}
+
+#[test]
 fn contract_storage_load_and_store_lower_to_snapshotted_verified_ir() {
     let (_, ir) = lower_source(
         r#"
@@ -531,6 +607,442 @@ contract LoopContract {
 
     assert!(ir.contains("phi"), "{ir}");
     assert!(ir.contains("jump"), "{ir}");
+}
+
+#[test]
+fn inline_yul_functions_lower_arguments_multi_returns_leave_and_recursion() {
+    let (_, ir) = lower_source(
+        r#"
+contract InlineYulFunctions {
+  function main() -> word {
+    let left : word;
+    let right : word;
+    let result : word;
+    assembly {
+      function clamp(x) -> y {
+        y := x
+        if gt(x, 3) {
+          y := 3
+          leave
+        }
+        y := add(y, 100)
+      }
+      function pair(x) -> a, b {
+        a := x
+        b := add(x, 1)
+      }
+      function recursiveSum(n) -> total {
+        switch n
+        case 0 { total := 0 }
+        default { total := add(n, recursiveSum(sub(n, 1))) }
+      }
+      left, right := pair(clamp(9))
+      result := add(add(left, right), recursiveSum(3))
+    }
+    return result;
+  }
+}
+"#,
+    );
+
+    let yul_functions = ir
+        .lines()
+        .filter(|line| line.starts_with("func private %solcore_yul_fn_"))
+        .count();
+    assert_eq!(yul_functions, 3, "{ir}");
+    assert!(ir.contains("-> (i256, i256)"), "{ir}");
+    assert!(
+        ir.lines().any(|line| {
+            line.contains("call %solcore_yul_fn_") && line.contains("12_recursiveSum")
+        }),
+        "{ir}"
+    );
+}
+
+#[test]
+fn inline_yul_named_returns_preserve_zero_defaults_and_position() {
+    let (_, ir) = lower_source(
+        r#"
+contract InlineYulNamedReturns {
+  function main() -> word {
+    let x : word;
+    let y : word;
+    let z : word;
+    let result : word;
+    assembly {
+      function partialTriple(useLeave) -> first, second, third {
+        if useLeave {
+          first := 11
+          leave
+        }
+        second := 22
+        third := 33
+      }
+
+      let a, b, c := partialTriple(1)
+      x, y, z := partialTriple(0)
+
+      mstore(0, a)
+      mstore(32, b)
+      mstore(64, c)
+      mstore(96, x)
+      mstore(128, y)
+      mstore(160, z)
+      result := add(a, add(b, add(c, add(x, add(y, z)))))
+    }
+    return result;
+  }
+}
+"#,
+    );
+
+    assert_eq!(
+        ir.lines()
+            .filter(|line| line.trim() == "return (11.i256, 0.i256, 0.i256);")
+            .count(),
+        1,
+        "leave must return (first, second-default, third-default):\n{ir}"
+    );
+    assert_eq!(
+        ir.lines()
+            .filter(|line| line.trim() == "return (0.i256, 22.i256, 33.i256);")
+            .count(),
+        1,
+        "fallthrough must return (first-default, second, third):\n{ir}"
+    );
+
+    fn call_results(line: &str) -> Vec<&str> {
+        let (results, _) = line
+            .trim()
+            .split_once(" = call ")
+            .expect("multi-return call");
+        results
+            .strip_prefix('(')
+            .and_then(|results| results.strip_suffix(')'))
+            .expect("parenthesized call results")
+            .split(", ")
+            .map(|result| result.split_once('.').expect("typed call result").0)
+            .collect()
+    }
+
+    let calls = ir
+        .lines()
+        .filter(|line| {
+            line.contains(" = call %solcore_yul_fn_") && line.contains("13_partialTriple")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 2, "{ir}");
+    assert!(calls[0].trim_end().ends_with(" 1.i256;"), "{ir}");
+    assert!(calls[1].trim_end().ends_with(" 0.i256;"), "{ir}");
+    let let_results = call_results(calls[0]);
+    let assignment_results = call_results(calls[1]);
+    assert_eq!(let_results.len(), 3, "{ir}");
+    assert_eq!(assignment_results.len(), 3, "{ir}");
+
+    for (offset, value) in [0, 32, 64].into_iter().zip(let_results) {
+        assert!(
+            ir.lines()
+                .any(|line| line.trim() == format!("evm_mstore {offset}.i256 {value};")),
+            "multi-return let position at offset {offset}:\n{ir}"
+        );
+    }
+    for (offset, value) in [96, 128, 160].into_iter().zip(assignment_results) {
+        assert!(
+            ir.lines()
+                .any(|line| line.trim() == format!("evm_mstore {offset}.i256 {value};")),
+            "multi-return assignment position at offset {offset}:\n{ir}"
+        );
+    }
+}
+
+#[test]
+fn inline_yul_functions_support_forward_calls_and_mutual_recursion() {
+    let (_, ir) = lower_source(
+        r#"
+contract InlineYulMutualRecursion {
+  function main() -> word {
+    let result : word;
+    assembly {
+      result := even(6)
+      function even(n) -> value {
+        switch n
+        case 0 { value := 1 }
+        default { value := odd(sub(n, 1)) }
+      }
+      function odd(n) -> value {
+        switch n
+        case 0 { value := 0 }
+        default { value := even(sub(n, 1)) }
+      }
+    }
+    return result;
+  }
+}
+"#,
+    );
+
+    let function_name = |marker: &str| {
+        ir.lines()
+            .find_map(|line| {
+                line.strip_prefix("func private %")
+                    .and_then(|line| line.split_once('('))
+                    .map(|(name, _)| name)
+                    .filter(|name| name.contains(marker))
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| panic!("missing `{marker}` definition:\n{ir}"))
+    };
+    let even = function_name("4_even");
+    let odd = function_name("3_odd");
+    assert!(ir.matches(&format!("call %{even}")).count() >= 2, "{ir}");
+    assert!(ir.contains(&format!("call %{odd}")), "{ir}");
+}
+
+#[test]
+fn inline_yul_call_arguments_evaluate_right_to_left_without_reordering_parameters() {
+    let (_, ir) = lower_source(
+        r#"
+contract InlineYulArgumentOrder {
+  function main() -> word {
+    let result : word;
+    assembly {
+      function left() -> value {
+        sstore(0, 1)
+        value := 11
+      }
+      function right() -> value {
+        sstore(1, 2)
+        value := 7
+      }
+      function subtract(leftValue, rightValue) -> value {
+        value := sub(leftValue, rightValue)
+      }
+      result := subtract(left(), right())
+    }
+    return result;
+  }
+}
+"#,
+    );
+
+    fn find_call<'a>(lines: &[&'a str], name: &str) -> Option<(usize, &'a str)> {
+        lines
+            .iter()
+            .enumerate()
+            .find(|(_, line)| line.contains(" = call %solcore_yul_fn_") && line.contains(name))
+            .map(|(index, line)| (index, line.trim()))
+    }
+
+    fn call_result(line: &str) -> Option<&str> {
+        line.split_once(" = call ")
+            .and_then(|(result, _)| result.split_once('.').map(|(value, _)| value))
+    }
+
+    let lines = ir.lines().collect::<Vec<_>>();
+    let (right_index, right_call) =
+        find_call(&lines, "5_right").unwrap_or_else(|| panic!("missing right call:\n{ir}"));
+    let (left_index, left_call) =
+        find_call(&lines, "4_left").unwrap_or_else(|| panic!("missing left call:\n{ir}"));
+    let (subtract_index, subtract_call) =
+        find_call(&lines, "8_subtract").unwrap_or_else(|| panic!("missing subtract call:\n{ir}"));
+    assert!(right_index < left_index, "{ir}");
+    assert!(left_index < subtract_index, "{ir}");
+
+    let left = call_result(left_call).unwrap_or_else(|| panic!("call has no result: {left_call}"));
+    let right =
+        call_result(right_call).unwrap_or_else(|| panic!("call has no result: {right_call}"));
+    assert!(
+        subtract_call.ends_with(&format!(" {left} {right};")),
+        "{ir}"
+    );
+}
+
+#[test]
+fn inline_yul_function_names_are_isolated_between_assembly_blocks() {
+    let (_, ir) = lower_source(
+        r#"
+contract InlineYulFunctionScopes {
+  function main() -> word {
+    let result : word;
+    assembly {
+      function value() -> result { result := 1 }
+      result := value()
+    }
+    assembly {
+      function value() -> result { result := 2 }
+      result := add(result, value())
+    }
+    return result;
+  }
+}
+"#,
+    );
+
+    let definitions = ir
+        .lines()
+        .filter(|line| {
+            line.starts_with("func private %solcore_yul_fn_") && line.contains("5_value")
+        })
+        .count();
+    assert_eq!(definitions, 2, "{ir}");
+    assert!(ir.contains("return 1.i256"), "{ir}");
+    assert!(ir.contains("return 2.i256"), "{ir}");
+}
+
+#[test]
+fn zero_return_inline_yul_function_calls_are_valid_expression_statements() {
+    let db = TestDb::default();
+    let span = test_span(&db);
+    let program = Program {
+        span,
+        entry_points: Vec::new(),
+        functions: vec![Function {
+            span,
+            name: "main".into(),
+            args: Vec::new(),
+            ret: Ty::unit(span),
+            body: vec![
+                Stmt {
+                    span,
+                    kind: StmtKind::Assembly(vec![
+                        yul_function(
+                            &db,
+                            span,
+                            "touch",
+                            &[],
+                            &[],
+                            vec![YulStmt {
+                                span,
+                                kind: YulStmtKind::Expr(yul_call(
+                                    &db,
+                                    span,
+                                    "sstore",
+                                    vec![yul_number(span, "0"), yul_number(span, "1")],
+                                )),
+                            }],
+                        ),
+                        YulStmt {
+                            span,
+                            kind: YulStmtKind::Expr(yul_call(&db, span, "touch", Vec::new())),
+                        },
+                    ]),
+                },
+                Stmt {
+                    span,
+                    kind: StmtKind::Return(Expr::unit(span)),
+                },
+            ],
+        }],
+        objects: Vec::new(),
+    };
+
+    let ir = render_hull_program(&db, &program).expect("zero-return Yul call statement");
+    assert!(
+        ir.lines()
+            .any(|line| { line.contains("call %solcore_yul_fn_") && line.contains("5_touch") }),
+        "{ir}"
+    );
+    assert!(ir.contains("evm_sstore 0.i256 1.i256"), "{ir}");
+}
+
+#[test]
+fn inline_yul_functions_do_not_capture_outer_values() {
+    let db = TestDb::default();
+    let span = test_span(&db);
+    let word = Ty::word(span);
+    let program = Program {
+        span,
+        entry_points: Vec::new(),
+        functions: vec![Function {
+            span,
+            name: "main".into(),
+            args: Vec::new(),
+            ret: word.clone(),
+            body: vec![
+                Stmt {
+                    span,
+                    kind: StmtKind::Let {
+                        name: "outer".into(),
+                        ty: word.clone(),
+                    },
+                },
+                Stmt {
+                    span,
+                    kind: StmtKind::Assembly(vec![yul_function(
+                        &db,
+                        span,
+                        "capture",
+                        &[],
+                        &["result"],
+                        vec![yul_assign(
+                            &db,
+                            span,
+                            &["result"],
+                            yul_ident_expr(&db, span, "outer"),
+                        )],
+                    )]),
+                },
+                Stmt {
+                    span,
+                    kind: StmtKind::Return(Expr::var(span, "outer", word)),
+                },
+            ],
+        }],
+        objects: Vec::new(),
+    };
+
+    let error = render_hull_program(&db, &program).expect_err("capture must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("undefined Hull variable `outer`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn inline_yul_functions_do_not_inherit_outer_loop_targets() {
+    let db = TestDb::default();
+    let span = test_span(&db);
+    let program = Program {
+        span,
+        entry_points: Vec::new(),
+        functions: vec![Function {
+            span,
+            name: "main".into(),
+            args: Vec::new(),
+            ret: Ty::unit(span),
+            body: vec![Stmt {
+                span,
+                kind: StmtKind::Assembly(vec![YulStmt {
+                    span,
+                    kind: YulStmtKind::For {
+                        init: Vec::new(),
+                        cond: yul_number(span, "1"),
+                        post: Vec::new(),
+                        body: vec![yul_function(
+                            &db,
+                            span,
+                            "badBreak",
+                            &[],
+                            &[],
+                            vec![YulStmt {
+                                span,
+                                kind: YulStmtKind::Break,
+                            }],
+                        )],
+                    },
+                }]),
+            }],
+        }],
+        objects: Vec::new(),
+    };
+
+    let error = render_hull_program(&db, &program).expect_err("break target must not be captured");
+    assert!(
+        error.to_string().contains("inline Yul break outside loop"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -631,6 +1143,76 @@ fn literal_revert_enforces_one_word_message_boundary() {
             .contains("literal revert message exceeds one EVM word"),
         "{error}"
     );
+}
+
+fn yul_ident<'db>(db: &'db TestDb, span: Span<'db>, name: &str) -> SpannedElem<'db, Ident<'db>> {
+    SpannedElem::new(Ident::new(db, name.to_owned()), span)
+}
+
+fn yul_number<'db>(span: Span<'db>, value: &str) -> YulExpr<'db> {
+    YulExpr {
+        span,
+        kind: YulExprKind::Lit(YulLitKind::Number(value.to_owned())),
+    }
+}
+
+fn yul_ident_expr<'db>(db: &'db TestDb, span: Span<'db>, name: &str) -> YulExpr<'db> {
+    YulExpr {
+        span,
+        kind: YulExprKind::Ident(yul_ident(db, span, name)),
+    }
+}
+
+fn yul_call<'db>(
+    db: &'db TestDb,
+    span: Span<'db>,
+    name: &str,
+    args: Vec<YulExpr<'db>>,
+) -> YulExpr<'db> {
+    YulExpr {
+        span,
+        kind: YulExprKind::Call {
+            name: yul_ident(db, span, name),
+            args,
+        },
+    }
+}
+
+fn yul_assign<'db>(
+    db: &'db TestDb,
+    span: Span<'db>,
+    names: &[&str],
+    value: YulExpr<'db>,
+) -> YulStmt<'db> {
+    YulStmt {
+        span,
+        kind: YulStmtKind::Assign {
+            names: names.iter().map(|name| yul_ident(db, span, name)).collect(),
+            value,
+        },
+    }
+}
+
+fn yul_function<'db>(
+    db: &'db TestDb,
+    span: Span<'db>,
+    name: &str,
+    params: &[&str],
+    rets: &[&str],
+    body: Vec<YulStmt<'db>>,
+) -> YulStmt<'db> {
+    YulStmt {
+        span,
+        kind: YulStmtKind::FunctionDef {
+            name: yul_ident(db, span, name),
+            params: params
+                .iter()
+                .map(|param| yul_ident(db, span, param))
+                .collect(),
+            rets: rets.iter().map(|ret| yul_ident(db, span, ret)).collect(),
+            body,
+        },
+    }
 }
 
 fn lower_source(source: &str) -> (Module, String) {

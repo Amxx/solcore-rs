@@ -15,7 +15,7 @@ use sonatina_ir::{
     func_cursor::InstInserter,
     inst::{
         arith::{Add, Mul, Sar, Shl, Shr, Sub},
-        cast::{Trunc, Zext},
+        cast::{PtrToInt, Trunc, Zext},
         cmp::{Eq, Gt, IsZero, Lt, Sgt, Slt},
         control_flow::{Br, Call, Jump, Return, Unreachable},
         data::{
@@ -28,8 +28,8 @@ use sonatina_ir::{
             EvmCalldataLoad, EvmCalldataSize, EvmCaller, EvmChainId, EvmClz, EvmCodeCopy,
             EvmCodeSize, EvmCoinBase, EvmCreate, EvmCreate2, EvmDelegateCall, EvmExp,
             EvmExtCodeCopy, EvmExtCodeHash, EvmExtCodeSize, EvmGas, EvmGasLimit, EvmGasPrice,
-            EvmInvalid, EvmKeccak256, EvmLog0, EvmLog1, EvmLog2, EvmLog3, EvmLog4, EvmMcopy,
-            EvmMload, EvmMsize, EvmMstore, EvmMstore8, EvmMulMod, EvmNumber, EvmOrigin,
+            EvmInvalid, EvmKeccak256, EvmLog0, EvmLog1, EvmLog2, EvmLog3, EvmLog4, EvmMalloc,
+            EvmMcopy, EvmMload, EvmMsize, EvmMstore, EvmMstore8, EvmMulMod, EvmNumber, EvmOrigin,
             EvmPrevRandao, EvmReturn, EvmReturnDataCopy, EvmReturnDataSize, EvmRevert, EvmSdiv,
             EvmSelfBalance, EvmSelfDestruct, EvmSignExtend, EvmSload, EvmSmod, EvmSstore,
             EvmStaticCall, EvmStop, EvmTimestamp, EvmTload, EvmTstore, EvmUdiv, EvmUmod,
@@ -107,6 +107,7 @@ struct Translator<'db> {
     entries: HashMap<String, FuncRef>,
     section_objects: HashMap<String, String>,
     next_type: usize,
+    next_yul_function: usize,
 }
 
 impl<'db> Translator<'db> {
@@ -124,6 +125,7 @@ impl<'db> Translator<'db> {
             entries: HashMap::new(),
             section_objects: HashMap::new(),
             next_type: 0,
+            next_yul_function: 0,
         }
     }
 
@@ -467,6 +469,18 @@ enum BuiltinOutcome {
     Terminated,
 }
 
+enum YulExprOutcome {
+    Values(SmallVec<[ValueId; 2]>),
+    Terminated,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct YulFunctionDecl {
+    func: FuncRef,
+    params: usize,
+    returns: usize,
+}
+
 struct FunctionLowerer<'a, 'db> {
     module: &'a mut Translator<'db>,
     scope: String,
@@ -475,6 +489,8 @@ struct FunctionLowerer<'a, 'db> {
     ret: HullTy<'db>,
     break_targets: Vec<BlockId>,
     continue_targets: Vec<BlockId>,
+    yul_functions: Vec<HashMap<String, YulFunctionDecl>>,
+    yul_returns: Option<Vec<Variable>>,
 }
 
 impl<'a, 'db> FunctionLowerer<'a, 'db> {
@@ -495,7 +511,22 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
             ret,
             break_targets: Vec::new(),
             continue_targets: Vec::new(),
+            yul_functions: Vec::new(),
+            yul_returns: None,
         }
+    }
+
+    fn new_yul(
+        module: &'a mut Translator<'db>,
+        scope: &str,
+        func_ref: FuncRef,
+        span: hir::span::Span<'db>,
+        yul_functions: Vec<HashMap<String, YulFunctionDecl>>,
+    ) -> Self {
+        let mut lowerer = Self::new(module, scope, func_ref, HullTy::unit(span));
+        lowerer.yul_functions = yul_functions;
+        lowerer.yul_returns = Some(Vec::new());
+        lowerer
     }
 
     fn finish(mut self, terminated: bool) -> Result<(), TranslationError> {
@@ -512,6 +543,28 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
         }
         self.fb.seal_all();
         self.fb.finish();
+        Ok(())
+    }
+
+    fn finish_yul(mut self, terminated: bool) -> Result<(), TranslationError> {
+        if !terminated {
+            self.emit_yul_return()?;
+        }
+        self.fb.seal_all();
+        self.fb.finish();
+        Ok(())
+    }
+
+    fn emit_yul_return(&mut self) -> Result<(), TranslationError> {
+        let returns = self
+            .yul_returns
+            .as_ref()
+            .ok_or_else(|| TranslationError::new("inline Yul `leave` outside a Yul function"))?;
+        let values = returns
+            .iter()
+            .map(|var| self.fb.use_var(*var))
+            .collect::<SmallVec<[ValueId; 2]>>();
+        self.fb.insert_return_values(&values);
         Ok(())
     }
 
@@ -1308,9 +1361,123 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
 
     fn lower_yul_stmts(&mut self, stmts: &[YulStmt<'db>]) -> Result<bool, TranslationError> {
         self.push_scope();
+        self.declare_yul_functions(stmts)?;
+        self.lower_yul_function_bodies(stmts)?;
         let terminated = self.lower_yul_stmt_seq(stmts)?;
+        self.yul_functions.pop();
         self.pop_scope();
         Ok(terminated)
+    }
+
+    fn declare_yul_functions(&mut self, stmts: &[YulStmt<'db>]) -> Result<(), TranslationError> {
+        let mut declarations = HashMap::new();
+        for stmt in stmts {
+            let YulStmtKind::FunctionDef {
+                name, params, rets, ..
+            } = &stmt.kind
+            else {
+                continue;
+            };
+            let source_name = self.yul_name(name);
+            let declaration = match declarations.entry(source_name.clone()) {
+                std::collections::hash_map::Entry::Vacant(declaration) => declaration,
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(TranslationError::new(format!(
+                        "duplicate inline Yul function `{source_name}` in the same block"
+                    )));
+                }
+            };
+            let index = self.module.next_yul_function;
+            self.module.next_yul_function += 1;
+            let symbol = yul_function_symbol(&self.scope, &source_name, index);
+            let args = vec![Type::I256; params.len()];
+            let returns = vec![Type::I256; rets.len()];
+            let func = self
+                .module
+                .builder
+                .declare_function(Signature::new(&symbol, Linkage::Private, &args, &returns))
+                .map_err(|err| {
+                    TranslationError::new(format!(
+                        "failed to declare inline Yul function `{source_name}`: {err}"
+                    ))
+                })?;
+            declaration.insert(YulFunctionDecl {
+                func,
+                params: params.len(),
+                returns: rets.len(),
+            });
+        }
+        self.yul_functions.push(declarations);
+        Ok(())
+    }
+
+    fn lower_yul_function_bodies(
+        &mut self,
+        stmts: &[YulStmt<'db>],
+    ) -> Result<(), TranslationError> {
+        for stmt in stmts {
+            let YulStmtKind::FunctionDef {
+                name,
+                params,
+                rets,
+                body,
+            } = &stmt.kind
+            else {
+                continue;
+            };
+            let source_name = self.yul_name(name);
+            let declaration = self
+                .yul_functions
+                .last()
+                .and_then(|scope| scope.get(&source_name))
+                .copied()
+                .ok_or_else(|| {
+                    TranslationError::new(format!(
+                        "missing inline Yul declaration for `{source_name}`"
+                    ))
+                })?;
+            self.lower_yul_function(stmt.span, declaration, params, rets, body)?;
+        }
+        Ok(())
+    }
+
+    fn lower_yul_function(
+        &mut self,
+        span: hir::span::Span<'db>,
+        declaration: YulFunctionDecl,
+        params: &[hir::span::SpannedElem<'db, hir::ast::Ident<'db>>],
+        rets: &[hir::span::SpannedElem<'db, hir::ast::Ident<'db>>],
+        body: &[YulStmt<'db>],
+    ) -> Result<(), TranslationError> {
+        let visible_functions = self.yul_functions.clone();
+        let mut lowerer = FunctionLowerer::new_yul(
+            self.module,
+            &self.scope,
+            declaration.func,
+            span,
+            visible_functions,
+        );
+        let word = HullTy::word(span);
+        for (index, param) in params.iter().enumerate() {
+            let name = lowerer.yul_name(param);
+            let value = lowerer.fb.func.arg_values[index];
+            lowerer.bind_parameter(&name, &word, value)?;
+        }
+        let mut return_vars = Vec::with_capacity(rets.len());
+        for ret in rets {
+            let name = lowerer.yul_name(ret);
+            return_vars.push(lowerer.declare_binding(&name, &word)?.var);
+        }
+        lowerer.yul_returns = Some(return_vars);
+        let terminated = lowerer.lower_yul_stmts(body)?;
+        lowerer.finish_yul(terminated)
+    }
+
+    fn lookup_yul_function(&self, name: &str) -> Option<YulFunctionDecl> {
+        self.yul_functions
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
     }
 
     fn lower_yul_stmt_seq(&mut self, stmts: &[YulStmt<'db>]) -> Result<bool, TranslationError> {
@@ -1326,22 +1493,29 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
         match &stmt.kind {
             YulStmtKind::Block(stmts) => self.lower_yul_stmts(stmts),
             YulStmtKind::Let { names, init } => {
-                let value = init
-                    .as_ref()
-                    .map(|expr| self.lower_yul_expr(expr))
-                    .transpose()?;
-                if names.len() > 1 && value.is_some() {
-                    return Err(TranslationError::new(
-                        "multi-result inline Yul let is not supported",
-                    ));
+                let values = match init {
+                    Some(expr) => match self.lower_yul_expr_outcome(expr)? {
+                        YulExprOutcome::Values(values) => values,
+                        YulExprOutcome::Terminated => {
+                            return Err(TranslationError::new(
+                                "terminating inline Yul expression cannot initialize a binding",
+                            ));
+                        }
+                    },
+                    None => SmallVec::new(),
+                };
+                if init.is_some() && values.len() != names.len() {
+                    return Err(TranslationError::new(format!(
+                        "inline Yul let expects {} values, got {}",
+                        names.len(),
+                        values.len()
+                    )));
                 }
                 for (index, name) in names.iter().enumerate() {
                     let name = self.yul_name(name);
                     let ty = HullTy::word(stmt.span);
                     let binding = self.declare_binding(&name, &ty)?;
-                    if index == 0
-                        && let Some(value) = value
-                    {
+                    if let Some(value) = values.get(index).copied() {
                         let value = self.coerce(value, Type::I256)?;
                         self.fb.def_var(binding.var, value);
                     }
@@ -1349,33 +1523,37 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                 Ok(false)
             }
             YulStmtKind::Assign { names, value } => {
-                if names.len() != 1 {
-                    return Err(TranslationError::new(
-                        "multi-result inline Yul assignment is not supported",
-                    ));
+                let values = match self.lower_yul_expr_outcome(value)? {
+                    YulExprOutcome::Values(values) => values,
+                    YulExprOutcome::Terminated => {
+                        return Err(TranslationError::new(
+                            "terminating inline Yul expression cannot be assigned",
+                        ));
+                    }
+                };
+                if values.len() != names.len() {
+                    return Err(TranslationError::new(format!(
+                        "inline Yul assignment expects {} values, got {}",
+                        names.len(),
+                        values.len()
+                    )));
                 }
-                let value = self.lower_yul_expr(value)?;
-                let name = self.yul_name(&names[0]);
-                let binding = self.lookup(&name)?;
-                let value = self.coerce(value, binding.ty)?;
-                self.fb.def_var(binding.var, value);
-                Ok(false)
-            }
-            YulStmtKind::Expr(expr) => {
-                if let YulExprKind::Call { name, args } = &expr.kind {
+                for (name, value) in names.iter().zip(values) {
                     let name = self.yul_name(name);
-                    let args = args
-                        .iter()
-                        .map(|arg| self.lower_yul_expr(arg))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    return match self.lower_evm_builtin(&name, &args)? {
-                        BuiltinOutcome::Terminated => Ok(true),
-                        BuiltinOutcome::Unit | BuiltinOutcome::Value(_) => Ok(false),
-                    };
+                    let binding = self.lookup(&name)?;
+                    let value = self.coerce(value, binding.ty)?;
+                    self.fb.def_var(binding.var, value);
                 }
-                let _ = self.lower_yul_expr(expr)?;
                 Ok(false)
             }
+            YulStmtKind::Expr(expr) => match self.lower_yul_expr_outcome(expr)? {
+                YulExprOutcome::Terminated => Ok(true),
+                YulExprOutcome::Values(values) if values.is_empty() => Ok(false),
+                YulExprOutcome::Values(values) => Err(TranslationError::new(format!(
+                    "inline Yul expression statement expects zero values, got {}",
+                    values.len()
+                ))),
+            },
             YulStmtKind::If { cond, body } => {
                 let body_block = self.fb.append_block();
                 let done = self.fb.append_block();
@@ -1405,7 +1583,10 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                 self.push_scope();
                 // Yul loop-init bindings are visible to the condition, post, and
                 // body for the entire loop scope.
+                self.declare_yul_functions(init)?;
+                self.lower_yul_function_bodies(init)?;
                 if self.lower_yul_stmt_seq(init)? {
+                    self.yul_functions.pop();
                     self.pop_scope();
                     return Ok(true);
                 }
@@ -1441,6 +1622,7 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                         .insert_inst_no_result(Jump::new(self.module.inst_set(), header));
                 }
                 self.fb.switch_to_block(done);
+                self.yul_functions.pop();
                 self.pop_scope();
                 Ok(false)
             }
@@ -1482,19 +1664,10 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                 self.fb.switch_to_block(done);
                 Ok(false)
             }
-            YulStmtKind::FunctionDef { .. } => Err(TranslationError::new(
-                "nested inline Yul function definitions are not supported",
-            )),
+            // Definitions are declared and lowered on entry to their lexical block.
+            YulStmtKind::FunctionDef { .. } => Ok(false),
             YulStmtKind::Leave => {
-                let ret_ty = self.module.lower_ty(&self.ret)?;
-                if ret_ty == Type::Unit {
-                    self.fb
-                        .insert_inst_no_result(Return::new_unit(self.module.inst_set()));
-                } else {
-                    let value = zero_for_type(&mut self.fb, self.module.inst_set(), ret_ty);
-                    self.fb
-                        .insert_inst_no_result(Return::new_single(self.module.inst_set(), value));
-                }
+                self.emit_yul_return()?;
                 Ok(true)
             }
             YulStmtKind::Break => {
@@ -1522,12 +1695,32 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
     }
 
     fn lower_yul_expr(&mut self, expr: &YulExpr<'db>) -> Result<ValueId, TranslationError> {
+        match self.lower_yul_expr_outcome(expr)? {
+            YulExprOutcome::Values(values) if values.len() == 1 => Ok(values[0]),
+            YulExprOutcome::Values(values) => Err(TranslationError::new(format!(
+                "inline Yul expression requires one value, got {}",
+                values.len()
+            ))),
+            YulExprOutcome::Terminated => Err(TranslationError::new(
+                "terminating inline Yul expression cannot be used as a value",
+            )),
+        }
+    }
+
+    fn lower_yul_expr_outcome(
+        &mut self,
+        expr: &YulExpr<'db>,
+    ) -> Result<YulExprOutcome, TranslationError> {
         match &expr.kind {
-            YulExprKind::Lit(lit) => self.lower_yul_lit(lit),
+            YulExprKind::Lit(lit) => {
+                Ok(YulExprOutcome::Values(smallvec![self.lower_yul_lit(lit)?]))
+            }
             YulExprKind::Ident(name) => {
                 let binding = self.lookup(&self.yul_name(name))?;
                 let value = self.fb.use_var(binding.var);
-                self.coerce(value, Type::I256)
+                Ok(YulExprOutcome::Values(smallvec![
+                    self.coerce(value, Type::I256)?
+                ]))
             }
             YulExprKind::Call { name, args } => {
                 let name = self.yul_name(name);
@@ -1546,18 +1739,42 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                     } else {
                         SymbolRef::Embed(EmbedSymbol::from(symbol))
                     };
-                    return Ok(if name == "dataoffset" {
+                    let value = if name == "dataoffset" {
                         self.fb
                             .insert_inst(SymAddr::new(self.module.inst_set(), sym), Type::I256)
                     } else {
                         self.fb
                             .insert_inst(SymSize::new(self.module.inst_set(), sym), Type::I256)
-                    });
+                    };
+                    return Ok(YulExprOutcome::Values(smallvec![value]));
                 }
-                let values = args
+                // Yul evaluates call arguments from right to left. Restore source
+                // position after lowering so the callee still receives arg N in
+                // parameter N.
+                let mut values = args
                     .iter()
+                    .rev()
                     .map(|arg| self.lower_yul_expr(arg))
                     .collect::<Result<SmallVec<[ValueId; 8]>, _>>()?;
+                values.reverse();
+                if let Some(declaration) = self.lookup_yul_function(&name) {
+                    if declaration.params != values.len() {
+                        return Err(TranslationError::new(format!(
+                            "inline Yul call to `{name}` expects {} arguments, got {}",
+                            declaration.params,
+                            values.len()
+                        )));
+                    }
+                    let results = self.fb.insert_call_results(declaration.func, values);
+                    if results.len() != declaration.returns {
+                        return Err(TranslationError::new(format!(
+                            "inline Yul call to `{name}` expected {} return values, got {}",
+                            declaration.returns,
+                            results.len()
+                        )));
+                    }
+                    return Ok(YulExprOutcome::Values(results));
+                }
                 let source_name = name.strip_prefix("usr$").unwrap_or(&name);
                 if let Some(func) = self
                     .module
@@ -1595,13 +1812,19 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                         .cloned()
                         .ok_or_else(|| TranslationError::new("missing function return type"))?;
                     let ret = self.module.lower_ty(&ret_hull)?;
-                    let call = Call::new(self.module.inst_set(), func, values);
                     return if ret == Type::Unit {
-                        self.fb.insert_inst_no_result(call);
-                        Ok(self.fb.make_undef_value(Type::Unit))
+                        let results = self.fb.insert_call_results(func, values);
+                        Ok(YulExprOutcome::Values(results))
                     } else if ret.is_integral() {
-                        let value = self.fb.insert_inst(call, ret);
-                        self.coerce(value, Type::I256)
+                        let results = self.fb.insert_call_results(func, values);
+                        let value = results.first().copied().ok_or_else(|| {
+                            TranslationError::new(format!(
+                                "inline Yul call to `{source_name}` produced no value"
+                            ))
+                        })?;
+                        Ok(YulExprOutcome::Values(smallvec![
+                            self.coerce(value, Type::I256)?
+                        ]))
                     } else {
                         Err(TranslationError::new(format!(
                             "inline Yul cannot use aggregate return type `{ret:?}` from `{source_name}`"
@@ -1609,14 +1832,16 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
                     };
                 }
                 match self.lower_evm_builtin(&name, &values)? {
-                    BuiltinOutcome::Value(value) => self.coerce(value, Type::I256),
-                    BuiltinOutcome::Unit => Ok(self.fb.make_undef_value(Type::Unit)),
-                    BuiltinOutcome::Terminated => Err(TranslationError::new(format!(
-                        "terminating EVM builtin `{name}` cannot be used as a value"
-                    ))),
+                    BuiltinOutcome::Value(value) => Ok(YulExprOutcome::Values(smallvec![
+                        self.coerce(value, Type::I256)?
+                    ])),
+                    BuiltinOutcome::Unit => Ok(YulExprOutcome::Values(SmallVec::new())),
+                    BuiltinOutcome::Terminated => Ok(YulExprOutcome::Terminated),
                 }
             }
-            YulExprKind::Error => Ok(self.fb.make_imm_value(I256::zero())),
+            YulExprKind::Error => Ok(YulExprOutcome::Values(smallvec![
+                self.fb.make_imm_value(I256::zero())
+            ])),
         }
     }
 
@@ -1658,7 +1883,34 @@ impl<'a, 'db> FunctionLowerer<'a, 'db> {
         };
         let word = |value| BuiltinOutcome::Value(value);
         let outcome = match name {
-            "memoryguard" => word(arg(0)?),
+            "memoryguard" => {
+                let size = arg(0)?;
+                let align = self.fb.make_imm_value(I256::from(31u8));
+                let size = self
+                    .fb
+                    .insert_inst(Add::new(self.module.inst_set(), size, align), Type::I256);
+                let align_mask = self.fb.make_imm_value(!I256::from(31u8));
+                let size = self.fb.insert_inst(
+                    And::new(self.module.inst_set(), size, align_mask),
+                    Type::I256,
+                );
+                let ptr_ty = Type::I8.to_ptr(self.fb.ctx());
+                // Solcore's generated dispatcher stores `memoryguard(literal)` in
+                // the free-pointer slot. Reserve that region through Sonatina's
+                // unified allocator and return its aligned end, rather than
+                // rewinding the free pointer into the backend's frame arena.
+                let base = self
+                    .fb
+                    .insert_inst(EvmMalloc::new(self.module.inst_set(), size), ptr_ty);
+                let base = self.fb.insert_inst(
+                    PtrToInt::new(self.module.inst_set(), base, Type::I256),
+                    Type::I256,
+                );
+                word(
+                    self.fb
+                        .insert_inst(Add::new(self.module.inst_set(), base, size), Type::I256),
+                )
+            }
             "add" => word(self.fb.insert_inst(
                 Add::new(self.module.inst_set(), arg(0)?, arg(1)?),
                 Type::I256,
@@ -2443,6 +2695,15 @@ fn function_symbol(scope: &str, name: &str) -> String {
     format!(
         "solcore_fn_{}_{}",
         encode_symbol_component(scope),
+        encode_symbol_component(name)
+    )
+}
+
+fn yul_function_symbol(scope: &str, name: &str, index: usize) -> String {
+    format!(
+        "solcore_yul_fn_{}_{}_{}",
+        encode_symbol_component(scope),
+        index,
         encode_symbol_component(name)
     )
 }
