@@ -15,4 +15,5 @@ specialize = { path = "../specialize", package = "solcore-specialize" }
 [dev-dependencies]
 rustc-hash = { workspace = true }
 salsa = { workspace = true }
+solcore-test-utils = { path = "../test-utils" }
 url = { workspace = true }

@@ -18,7 +18,7 @@ use solcore_test_utils::{
         resolve_e2e_comments, with_shared_evm_harness,
     },
     load_fixture_case_with_file_urls, load_reachable_modules_with_file_urls,
-    repo_root_from_manifest,
+    repo_root_from_manifest, run_in_large_stack,
 };
 use sonatina_codegen::{EvmCompile, OptLevel};
 use specialize::{
@@ -43,39 +43,41 @@ fn sonatina_evm_e2e(fixture: Fixture<&str>) {
     }
 
     let path = PathBuf::from(fixture.path());
-    let result = lower_and_compile(&path).and_then(|(creations, execution)| {
-        if e2e_pipeline_only() {
-            return Ok(());
-        }
-        with_shared_evm_harness(|harness| {
-            let Some(harness) = harness else {
+    run_in_large_stack(move || {
+        let result = lower_and_compile(&path).and_then(|(creations, execution)| {
+            if e2e_pipeline_only() {
                 return Ok(());
-            };
-            for (opt_level, creation) in creations {
-                let result = match &execution {
-                    E2eExecution::Directives(calls) => {
-                        harness.execute_deployed_calls(&encode_hex(&creation), calls)
-                    }
-                    E2eExecution::Raw(vector) => {
-                        harness.execute_raw_vector(&encode_hex(&creation), vector)
-                    }
-                };
-                result.map_err(|failure| {
-                    E2eFailure::new(
-                        failure.kind,
-                        format!("{opt_level:?} execution failed: {}", failure.message),
-                    )
-                })?;
             }
-            Ok(())
-        })
-    });
+            with_shared_evm_harness(|harness| {
+                let Some(harness) = harness else {
+                    return Ok(());
+                };
+                for (opt_level, creation) in creations {
+                    let result = match &execution {
+                        E2eExecution::Directives(calls) => {
+                            harness.execute_deployed_calls(&encode_hex(&creation), calls)
+                        }
+                        E2eExecution::Raw(vector) => {
+                            harness.execute_raw_vector(&encode_hex(&creation), vector)
+                        }
+                    };
+                    result.map_err(|failure| {
+                        E2eFailure::new(
+                            failure.kind,
+                            format!("{opt_level:?} execution failed: {}", failure.message),
+                        )
+                    })?;
+                }
+                Ok(())
+            })
+        });
 
-    result.unwrap_or_else(|failure| {
-        panic!(
-            "Sonatina E2E fixture `{}` failed: {failure}",
-            path.display()
-        )
+        result.unwrap_or_else(|failure| {
+            panic!(
+                "Sonatina E2E fixture `{}` failed: {failure}",
+                path.display()
+            )
+        });
     });
 }
 

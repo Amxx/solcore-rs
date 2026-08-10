@@ -22,7 +22,7 @@ use solcore_test_utils::{
         parse_e2e_directive, resolve_e2e_comments, run_command, with_shared_evm_harness,
     },
     load_fixture_case_with_file_urls, load_reachable_modules_with_file_urls,
-    repo_root_from_manifest,
+    repo_root_from_manifest, run_in_large_stack,
 };
 use specialize::{
     MonoEntry, MonoItem, MonoModule, MonoRuntimeMainOrigin, SpecializeOptions, specialize_module,
@@ -46,10 +46,12 @@ fn yul_evm_e2e_fixture(fixture: Fixture<&str>) {
         return;
     }
 
-    let path = Path::new(fixture.path());
-    if let Err(failure) = run_fixture(path) {
-        panic!("Yul E2E fixture `{}` failed: {failure}", path.display());
-    }
+    let path = PathBuf::from(fixture.path());
+    run_in_large_stack(move || {
+        if let Err(failure) = run_fixture(&path) {
+            panic!("Yul E2E fixture `{}` failed: {failure}", path.display());
+        }
+    });
 }
 
 fn run_fixture(path: &Path) -> Result<(), E2eFailure> {
