@@ -451,6 +451,26 @@ mod tests {
     };
     use crate::{lexer::Token, types::*};
 
+    fn parse_yul_stmt(source: &str) -> ParsedYulStmt<'_> {
+        let (tokens, token_errors) = tokenize(source);
+        assert!(
+            token_errors.is_empty(),
+            "token errors for `{source}`: {token_errors:#?}"
+        );
+        let stream = chumsky::input::Stream::from_iter(tokens)
+            .map((0..source.len()).into(), |(tok, span): (_, _)| (tok, span));
+        let (output, parse_errors) = parsed_yul_stmt_parser().parse(stream).into_output_errors();
+        let parse_errors = parse_errors
+            .into_iter()
+            .map(parse_error_from_rich)
+            .collect::<Vec<_>>();
+        assert!(
+            parse_errors.is_empty(),
+            "parse errors for `{source}`: {parse_errors:#?}"
+        );
+        output.unwrap_or_else(|| panic!("expected parsed Yul statement for `{source}`"))
+    }
+
     #[test]
     fn yul_call_in_assignment_parses() {
         let source = "function f() { assembly { res := add(x, y) } }";
@@ -493,6 +513,109 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(output.is_some(), "expected parsed output");
+    }
+
+    #[test]
+    fn yul_statement_keyword_prefixes_parse_as_identifiers() {
+        for source in [
+            "letish",
+            "ifish",
+            "format",
+            "switchish",
+            "caseish",
+            "defaultish",
+            "breakish",
+            "continueish",
+            "leaveish",
+        ] {
+            let stmt = parse_yul_stmt(source);
+            let ParsedYulStmtKind::Expr(expr) = &stmt.kind else {
+                panic!(
+                    "keyword-prefixed identifier did not parse as an expression statement: {source}: {stmt:#?}"
+                );
+            };
+            let ParsedYulExprKind::Ident((name, _)) = &expr.kind else {
+                panic!(
+                    "keyword-prefixed identifier did not remain an identifier: {source}: {stmt:#?}"
+                );
+            };
+            assert_eq!(*name, source, "unexpected Yul identifier: {stmt:#?}");
+        }
+    }
+
+    #[test]
+    fn yul_statement_keywords_remain_valid() {
+        let stmt = parse_yul_stmt("let x");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::Let { names, init: None }
+                    if matches!(names.as_slice(), [("x", _)])
+            ),
+            "unexpected let statement: {stmt:#?}"
+        );
+
+        let stmt = parse_yul_stmt("if cond {}");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::If {
+                    cond: ParsedYulExpr {
+                        kind: ParsedYulExprKind::Ident(("cond", _)),
+                        ..
+                    },
+                    body,
+                } if body.is_empty()
+            ),
+            "unexpected if statement: {stmt:#?}"
+        );
+
+        let stmt = parse_yul_stmt("for {} cond {} {}");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::For {
+                    init,
+                    cond: ParsedYulExpr {
+                        kind: ParsedYulExprKind::Ident(("cond", _)),
+                        ..
+                    },
+                    post,
+                    body,
+                } if init.is_empty() && post.is_empty() && body.is_empty()
+            ),
+            "unexpected for statement: {stmt:#?}"
+        );
+
+        let stmt = parse_yul_stmt("switch x case 0 {} default {}");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::Switch {
+                    expr: ParsedYulExpr {
+                        kind: ParsedYulExprKind::Ident(("x", _)),
+                        ..
+                    },
+                    cases,
+                    default: Some(default),
+                } if cases.len() == 1 && default.is_empty()
+            ),
+            "unexpected switch statement: {stmt:#?}"
+        );
+
+        for source in ["break", "continue", "leave"] {
+            let stmt = parse_yul_stmt(source);
+            let expected_kind = match source {
+                "break" => matches!(&stmt.kind, ParsedYulStmtKind::Break),
+                "continue" => matches!(&stmt.kind, ParsedYulStmtKind::Continue),
+                "leave" => matches!(&stmt.kind, ParsedYulStmtKind::Leave),
+                _ => unreachable!(),
+            };
+            assert!(
+                expected_kind,
+                "unexpected bare control statement for `{source}`: {stmt:#?}"
+            );
+        }
     }
 
     #[test]

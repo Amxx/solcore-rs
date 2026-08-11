@@ -532,6 +532,23 @@ mod tests {
         assert_eq!(tokenize("xif"), vec![Token::Ident("xif")]);
         assert_eq!(tokenize("letx"), vec![Token::Ident("letx")]);
         assert_eq!(tokenize("returnValue"), vec![Token::Ident("returnValue")]);
+
+        // A statement keyword is recognized only when it is the complete
+        // token. In particular, the lexer must not split a keyword prefix off
+        // an otherwise valid Yul identifier.
+        for identifier in [
+            "letish",
+            "ifish",
+            "format",
+            "switchish",
+            "caseish",
+            "defaultish",
+            "breakish",
+            "continueish",
+            "leaveish",
+        ] {
+            assert_eq!(tokenize(identifier), vec![Token::Ident(identifier)]);
+        }
     }
 
     #[test]
