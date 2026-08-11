@@ -148,7 +148,7 @@ fn derived_can_store_implementation_goal<'db>(
     let info = local_adt_infos(db, scope.module)
         .into_iter()
         .find(|info| info.adt.def_id_value(db) == *adt)?;
-    let plan = derived_generic_plan_with_resolutions(db, scope.module, &item_resolutions, &info);
+    let plan = derived_generic_plan_with_resolutions(db, scope.module, item_resolutions, &info);
     let rep = substitute_bound_tys(db, plan.rep, main_args);
     let rep_storage = Ty::named(db, *storage_ctor, vec![rep]);
     let goal = Pred::in_class(db, ClassId::User(*can_store), rep_storage, vec![rep]);

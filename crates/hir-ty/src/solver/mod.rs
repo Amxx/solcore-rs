@@ -29,8 +29,6 @@
 //! `instance_soundness_diagnostics` query and does not affect the answers the
 //! engine returns.
 
-use std::collections::VecDeque;
-
 use hir::{
     Db as HirDb,
     anchor::DefId,

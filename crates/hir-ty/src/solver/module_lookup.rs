@@ -19,6 +19,7 @@ pub(super) fn visible_class_modules<'db>(
         .collect()
 }
 
+#[salsa::tracked(returns(as_ref))]
 pub(super) fn scope_resolution_for_module_id<'db>(
     db: &'db dyn Db,
     module: ModuleId<'db>,

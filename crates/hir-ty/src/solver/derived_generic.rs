@@ -73,28 +73,15 @@ fn generic_class_from_resolution<'db>(
 }
 
 pub(super) fn local_generic_class<'db>(db: &'db dyn Db, module: Module<'db>) -> Option<DefId<'db>> {
-    module.items(db).iter().find_map(|item| {
-        let Item::ClassDef(class) = item else {
-            return None;
-        };
-        let PredKind::InClass {
-            class: ClassId::User(def),
-            ..
-        } = TypeLowering::from_item_resolutions(
-            db,
-            &hir_nameres::resolve_item_type_facts(db, module),
-            BinderEnv::from_type_vars(&type_var_bindings(
-                class.def_id_value(db),
-                class.type_var_elems(db),
-            )),
-        )
-        .lower_pred(class.head(db))
-        .kind(db)
-        else {
-            return None;
-        };
-        (def.name(db).as_deref() == Some("Generic")).then_some(*def)
-    })
+    // `Generic` is a declaration-level lookup. Resolving every type and
+    // predicate in the module just to recover its class id makes this helper
+    // scale with the whole standard library each time a derived environment is
+    // built. The item scope already contains the same selected definition and
+    // preserves the normal duplicate-name behavior.
+    hir_nameres::item_scope_facts(db, module)
+        .types
+        .get("Generic")
+        .and_then(|entry| generic_class_from_resolution(db, &entry.resolution))
 }
 
 pub(super) fn no_generic_instance_for<'db>(
