@@ -1,10 +1,10 @@
 # Solcore standard library snapshot
 
 The `.solc` files in this directory are vendored from the Haskell reference
-implementation at revision `e13615992388cd7bfd59eef5a2b6f61ddc37da1f`:
+implementation at revision `2f372bde2801612814015a22319d0bc51486cbf0`:
 
 ```text
-https://github.com/argotorg/solcore/tree/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/std
+https://github.com/argotorg/solcore/tree/2f372bde2801612814015a22319d0bc51486cbf0/std
 ```
 
 They are kept byte-for-byte identical to that reference snapshot. The copies
@@ -52,7 +52,7 @@ E2E=1 E2E_REQUIRED=1 cargo test --profile e2e \
   --nocapture --test-threads=1
 ```
 
-The byte-exact e136 raw-vector metadata is preserved, while both Yul and
+The byte-exact upstream raw-vector metadata is preserved, while both Yul and
 Sonatina compile and execute the complete set against Osaka. See
 [`tests/e2e/README.md`](../tests/e2e/README.md) for the full validation
 commands.

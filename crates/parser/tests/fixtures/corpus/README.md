@@ -1,13 +1,13 @@
-# Solcore e136 frontend corpus
+# Solcore 2f372bde frontend corpus
 
 This corpus vendors every `.solc` source under `test/examples/` from
-[`argotorg/solcore@e1361599`](https://github.com/argotorg/solcore/tree/e13615992388cd7bfd59eef5a2b6f61ddc37da1f/test/examples).
-The 497 example paths and their contents are byte-identical to that snapshot.
+[`argotorg/solcore@2f372bde`](https://github.com/argotorg/solcore/tree/2f372bde2801612814015a22319d0bc51486cbf0/test/examples).
+The 499 example paths and their contents are byte-identical to that snapshot.
 Sources accepted by the reference frontend live under `ok/test/examples/`;
 reference failures and timeouts live under `fail/test/examples/`.
 
-The standard-library sources in `ok/std/` are the matching e136 snapshot. They
-are also byte-identical to [`std/`](../../../../../std/); see
+The standard-library sources in `ok/std/` are the matching 2f372bde snapshot.
+They are also byte-identical to [`std/`](../../../../../std/); see
 [`std/README.md`](../../../../../std/README.md) for the synchronization
 policy. The `test/imports/` and `known-diagnostic-gaps/` trees are Rust-specific
 regressions and are not part of the reference example snapshot.
@@ -15,18 +15,18 @@ regressions and are not part of the reference example snapshot.
 ## Reference verdicts
 
 [`reference-frontend.tsv`](reference-frontend.tsv) records a fresh run of the
-e136 compiler built from the same checkout. Every source was run independently
-with a 60-second limit and these options:
+2f372bde compiler built from the same checkout. Every source was run
+independently with a 60-second limit and these options:
 
 ```text
-sol-core --file <e136>/test/examples/<path> \
-  --root <e136> --include <e136>/std \
+sol-core --file <2f372bde>/test/examples/<path> \
+  --root <2f372bde> --include <2f372bde>/std \
   --no-specialise --no-gen-dispatch \
   --type-class-resolution legacy \
   --color never --unicode never --diagnostic-format short
 ```
 
-The snapshot contains 335 passes, 160 failures, and two timeouts. `code` is the
+The snapshot contains 337 passes, 160 failures, and two timeouts. `code` is the
 first structured `SCnnnn` diagnostic emitted for a failure; `-` means that no
 structured code applies. The two timeout rows are
 `cases/tabled-cycle-fail.solc` and `cases/tabled-left-recursive-fail.solc`.

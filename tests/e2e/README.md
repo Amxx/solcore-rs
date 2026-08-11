@@ -69,19 +69,22 @@ Osaka, regardless of the optional `evmVersion` metadata, and each vector runs
 on a fresh, dedicated Osaka Anvil instance. This keeps the byte-exact upstream
 JSON intact while using the one runtime supported consistently by both backend
 pipelines.
-The e136 snapshot contains 49 executable source/vector pairs, all vendored
+
+The 2f372bde snapshot contains 51 executable source/vector pairs, all vendored
 byte-for-byte here. Its remaining `template.json` is a source-less placeholder
 used by the upstream generator, not an executable fixture. Every original
 `evmVersion` field, or its omission, remains preserved byte-for-byte.
+
 This is also the migration format for Solcore's dispatch fixtures with dynamic
 arrays or ADTs. For a non-recursive, compiler-derived nullary ADT `T`, the ABI
-surface follows the `e1361599` reference convention: ABI JSON uses the source
+surface follows the `2f372bde` reference convention: ABI JSON uses the source
 spelling (`T` directly or `T[]` in a lazy array), while the selector preimage
 uses the final Generic `SigString` (for example, `rt(sum(uint256,bytes))` or
-`count(sum(uint256,uint256)[])`). Upstream e136 can derive runtime evidence for
-a concrete parameterized ADT, but its `ContractDispatch.abiTypeOf` only handles
-`TyCon n []` and fails ABI JSON emission for that case. Rust intentionally
-extends the metadata surface with source spellings such as `Point(uint256)`.
+`count(sum(uint256,uint256)[])`). Upstream 2f372bde can derive runtime evidence
+for a concrete parameterized ADT, but its `ContractDispatch.abiTypeOf` only
+handles `TyCon n []` and fails ABI JSON emission for that case. Rust
+intentionally extends the metadata surface with source spellings such as
+`Point(uint256)`.
 This extension is supported only when every type argument, including an unused
 phantom argument, has the required ABI evidence. Finite nested instantiations
 are distinguished from definition-recursive representations. Recursive,
@@ -99,7 +102,7 @@ for an alternate Yul runtime. Raw vectors always compile and run against Osaka.
 For local optimized runs, use the workspace's E2E profile. It uses moderate
 optimization (`opt-level = 2`) without LTO, keeping execution representative
 while avoiding the native release profile's link-time optimization cost. Run
-the complete E2E fixture set, including every e136 raw vector, through Yul:
+the complete E2E fixture set, including every 2f372bde raw vector, through Yul:
 
 ```sh
 E2E=1 E2E_REQUIRED=1 cargo test --profile e2e \

@@ -370,6 +370,8 @@ dispatch/abi_batch_adt.solc	pass	-
 dispatch/abi_bytes_array.solc	pass	-
 dispatch/abi_dyn_sum.solc	pass	-
 dispatch/abi_dyn_sum_return.solc	pass	-
+dispatch/abi_encode_adt.solc	pass	-
+dispatch/abi_encode_types.solc	pass	-
 dispatch/abi_sum_roundtrip.solc	pass	-
 dispatch/array_copy.solc	pass	-
 dispatch/array_nested.solc	pass	-
