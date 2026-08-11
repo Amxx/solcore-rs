@@ -9,7 +9,7 @@ pub fn derived_class_plans<'db>(
     let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) else {
         return Vec::new();
     };
-    derived_class_plans_with_resolutions(db, scope.module, &item_resolutions)
+    derived_class_plans_with_resolutions(db, scope.module, item_resolutions)
 }
 
 pub(super) fn derived_class_plans_with_resolutions<'db>(

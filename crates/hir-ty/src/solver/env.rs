@@ -320,7 +320,7 @@ fn module_superclass_clause_set<'db>(
 ) -> TraitClauseSetId<'db> {
     let mut builder = TraitClauseBuilder::new(db);
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
-        builder.add_module_superclasses(scope.module, &item_resolutions);
+        builder.add_module_superclasses(scope.module, item_resolutions);
     }
     builder.finish()
 }
@@ -349,7 +349,7 @@ fn derived_generic_clause_set<'db>(
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
         builder.add_local_derived_generic_instances(
             scope.module,
-            &item_resolutions,
+            item_resolutions,
             generic,
             abi,
             storage,
@@ -374,7 +374,7 @@ fn imported_derived_generic_clause_set<'db>(
 fn derived_class_clause_set<'db>(db: &'db dyn Db, module: ModuleId<'db>) -> TraitClauseSetId<'db> {
     let mut builder = TraitClauseBuilder::new(db);
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
-        builder.add_derived_class_instances(scope.module, &item_resolutions);
+        builder.add_derived_class_instances(scope.module, item_resolutions);
     }
     builder.finish()
 }
