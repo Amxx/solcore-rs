@@ -5,6 +5,9 @@ use crate::{
     types::*,
 };
 
+pub(super) const YUL_META_SOURCE_ERROR: &str =
+    "Yul meta expressions are internal template syntax and not valid Solcore source";
+
 pub(super) fn lex_error(
     source: &str,
     start: usize,
@@ -147,6 +150,9 @@ fn token_spelling(token: &Token<'_>) -> &'static str {
         Token::LBracket => "[",
         Token::RBracket => "]",
         Token::Underscore => "_",
+        Token::YulIdent(_) => "Yul identifier",
+        Token::YulMetaBacktick(_) => "backtick Yul meta expression",
+        Token::YulMetaInterpolation(_) => "`${...}` Yul meta expression",
         Token::LineComment => "//",
         Token::BlockComment => "/* */",
         Token::Ident(_) => "identifier",
@@ -158,7 +164,10 @@ fn token_spelling(token: &Token<'_>) -> &'static str {
 
 pub(super) fn token_found_description(token: &Token<'_>) -> String {
     match token {
-        Token::Ident(name) => format!("identifier `{name}`"),
+        Token::Ident(name) | Token::YulIdent(name) => format!("identifier `{name}`"),
+        Token::YulMetaBacktick(value) | Token::YulMetaInterpolation(value) => {
+            format!("Yul meta expression `{value}`")
+        }
         Token::Number(value) => format!("number literal `{value}`"),
         Token::HexLit(value) => format!("hex literal `{value}`"),
         Token::String(value) => format!("string literal {value}"),
@@ -168,7 +177,10 @@ pub(super) fn token_found_description(token: &Token<'_>) -> String {
 
 fn token_expected_description(token: &Token<'_>) -> String {
     match token {
-        Token::Ident(_) => "identifier".to_owned(),
+        Token::Ident(_) | Token::YulIdent(_) => "identifier".to_owned(),
+        Token::YulMetaBacktick(_) | Token::YulMetaInterpolation(_) => {
+            "Yul meta expression".to_owned()
+        }
         Token::Number(_) => "number literal".to_owned(),
         Token::HexLit(_) => "hex literal".to_owned(),
         Token::String(_) => "string literal".to_owned(),

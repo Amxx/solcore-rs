@@ -1,7 +1,22 @@
 use chumsky::{input::ValueInput, prelude::*};
 
-use super::{common::*, recovery::trace_recovery};
+use super::{common::*, errors::YUL_META_SOURCE_ERROR, recovery::trace_recovery};
 use crate::{lexer::Token, types::*};
+
+fn parsed_yul_ident_parser<'src, I>() -> impl Parser<'src, I, SpannedStr<'src>, ParserErr<'src>>
+where
+    I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
+{
+    choice((
+        ident_parser(),
+        select! {
+            Token::YulIdent(name) => name,
+            Token::Underscore => "_",
+        }
+        .map_with(|name, e| (name, e.span())),
+    ))
+    .boxed()
+}
 
 fn parsed_yul_lit_parser<'src, I>() -> impl Parser<'src, I, ParsedYulLitKind<'src>, ParserErr<'src>>
 where
@@ -30,7 +45,7 @@ where
             })
             .boxed();
 
-        let ident_or_call = ident_parser()
+        let ident_or_call = parsed_yul_ident_parser()
             .then(
                 expr.clone()
                     .separated_by(just(Token::Comma))
@@ -47,6 +62,19 @@ where
                 },
             })
             .boxed();
+
+        let rejected_meta = select! {
+            Token::YulMetaBacktick(_) | Token::YulMetaInterpolation(_) => (),
+        }
+        .validate(|_, e, emitter| {
+            let span = e.span();
+            emitter.emit(Rich::custom(span, YUL_META_SOURCE_ERROR));
+            ParsedYulExpr {
+                span,
+                kind: ParsedYulExprKind::Error,
+            }
+        })
+        .boxed();
 
         let recovery = any()
             .and_is(
@@ -66,7 +94,7 @@ where
                 }
             });
 
-        choice((lit, ident_or_call)).recover_with(via_parser(recovery))
+        choice((lit, ident_or_call, rejected_meta)).recover_with(via_parser(recovery))
     })
     .labelled("assembly expression")
 }
@@ -90,7 +118,7 @@ where
 
         let let_stmt = just(Token::Let)
             .ignore_then(
-                ident_parser()
+                parsed_yul_ident_parser()
                     .separated_by(just(Token::Comma))
                     .at_least(1)
                     .collect::<Vec<_>>(),
@@ -106,7 +134,7 @@ where
             })
             .boxed();
 
-        let assign = ident_parser()
+        let assign = parsed_yul_ident_parser()
             .separated_by(just(Token::Comma))
             .at_least(1)
             .collect::<Vec<_>>()
@@ -217,14 +245,14 @@ where
             })
             .boxed();
 
-        let ident_list = ident_parser()
+        let ident_list = parsed_yul_ident_parser()
             .separated_by(just(Token::Comma))
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LParen), just(Token::RParen));
         let rets = just(Token::Arrow)
             .ignore_then(
-                ident_parser()
+                parsed_yul_ident_parser()
                     .separated_by(just(Token::Comma))
                     .at_least(1)
                     .collect::<Vec<_>>(),
@@ -232,7 +260,7 @@ where
             .or_not()
             .map(|r| r.unwrap_or_default());
         let function_def = just(Token::Function)
-            .ignore_then(ident_parser())
+            .ignore_then(parsed_yul_ident_parser())
             .then(ident_list)
             .then(rets)
             .then(stmt_block)

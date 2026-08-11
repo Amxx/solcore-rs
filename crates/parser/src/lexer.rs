@@ -284,6 +284,31 @@ pub enum Token<'a> {
     #[token("_")]
     Underscore,
 
+    /// A Yul-only identifier whose spelling is not an ordinary Solcore
+    /// identifier.
+    ///
+    /// Yul permits `_` and `$` at the start of a name and `$` after the first
+    /// character. A lone `_` remains [`Token::Underscore`]. The ordinary
+    /// Solcore grammar deliberately does not consume this token.
+    #[regex(r"_[$\p{L}\p{N}_]+", |lex| lex.slice())]
+    #[regex(r"\$[$\p{L}\p{N}_]*", |lex| lex.slice())]
+    #[regex(r"\p{L}[\p{L}\p{N}_]*\$[$\p{L}\p{N}_]*", |lex| lex.slice())]
+    YulIdent(&'a str),
+
+    /// A complete backtick-delimited Yul quasiquote antiquotation.
+    ///
+    /// This is tokenized so the source parser can reject Haskell's internal
+    /// template syntax with a specific diagnostic.
+    #[regex(r"`[^`]*`", |lex| lex.slice())]
+    YulMetaBacktick(&'a str),
+
+    /// A complete `${...}` Yul quasiquote antiquotation.
+    ///
+    /// This is tokenized so the source parser can reject Haskell's internal
+    /// template syntax with a specific diagnostic.
+    #[regex(r"\$\{[^}]*\}", |lex| lex.slice())]
+    YulMetaInterpolation(&'a str),
+
     /// Hexadecimal literal text.
     #[regex(r"0x[0-9a-fA-F]+", |lex| lex.slice())]
     HexLit(&'a str),
@@ -522,6 +547,49 @@ mod tests {
         assert_eq!(tokenize("x1_y2_z3"), vec![Token::Ident("x1_y2_z3")]);
         assert_eq!(tokenize("fλ"), vec![Token::Ident("fλ")]);
         assert_eq!(tokenize("λ2"), vec![Token::Ident("λ2")]);
+    }
+
+    #[test]
+    fn test_yul_only_identifiers() {
+        for identifier in [
+            "_value",
+            "__value",
+            "_2",
+            "_$value",
+            "$",
+            "$value",
+            "$2",
+            "$$value",
+            "value$",
+            "value$tail",
+            "let$x",
+            "true$x",
+            "function$x",
+            "λ$δ",
+        ] {
+            assert_eq!(
+                tokenize(identifier),
+                vec![Token::YulIdent(identifier)],
+                "unexpected tokenization for {identifier:?}"
+            );
+        }
+
+        assert_eq!(tokenize("_"), vec![Token::Underscore]);
+        assert_eq!(tokenize("value_name"), vec![Token::Ident("value_name")]);
+    }
+
+    #[test]
+    fn test_yul_meta_syntax_tokens() {
+        assert_eq!(
+            tokenize("`templateValue`"),
+            vec![Token::YulMetaBacktick("`templateValue`")]
+        );
+        assert_eq!(
+            tokenize("${templateValue}"),
+            vec![Token::YulMetaInterpolation("${templateValue}")]
+        );
+        assert_eq!(tokenize("``"), vec![Token::YulMetaBacktick("``")]);
+        assert_eq!(tokenize("${}"), vec![Token::YulMetaInterpolation("${}")]);
     }
 
     #[test]

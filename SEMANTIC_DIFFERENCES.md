@@ -58,7 +58,7 @@ the compiler behaviors already agree once the same options are used.
 | Signature/selector collisions | Rust rejects duplicate signatures and distinct signatures with the same four-byte selector. Haskell has no equivalent preflight. | Reject both before code generation. **Fix Haskell dispatch generation.** |
 | Nested tuple boundary | Both flatten the language's right-nested pair representation at the top ABI boundary. | This is shared. **Fix both compilers and the language ABI design together** if nested boundaries must be preserved. |
 | Top-level `abi_encode` result | `2f372bde` returns a valid length-prefixed `memory(bytes)` and dispatch returns only its payload. Rust vendors the same paired `std.solc`/`dispatch.solc` change. | This is parity. Keep the two std changes atomic and pin direct static/dynamic/ADT encodings in both backends. |
-| Textual Yul names and meta expressions | Haskell's shared Yul parser accepts `_`/`$` in names and backtick/`${...}` meta expressions; Rust source lexing accepts neither surface. | **Specify the source-language Yul surface before changing Rust.** Meta expressions also serve Haskell quasiquotation and may be compiler-internal syntax; track this separately from the `2f372bde` keyword-boundary parity fix. |
+| Textual Yul identifiers and template meta expressions | Both implementations accept standard Yul names beginning with `_`/`$` and containing `$`. Haskell's shared parser also exposes its backtick/`${...}` Template Haskell antiquotes to `.solc` and `.hull` source, then prints their payload as raw Yul; Rust recognizes those forms only to issue a targeted source diagnostic. | **Keep identifier parity, but keep unresolved antiquotes out of source Yul.** Split Haskell's ordinary and quasiquote parsers; retain Rust's negative regressions so internal template syntax cannot bypass validation or reach a backend. |
 
 ## Evidence and rationale
 
@@ -81,9 +81,27 @@ The target Yul parser now backtracks keyword matches, so names such as
 `format`, `letish`, and `continueish` remain identifiers. Rust already has that
 behavior because its lexer chooses the complete identifier token before the
 Yul parser matches token variants; dedicated lexer and statement regressions
-pin the parity. Haskell additionally accepts `_`/`$` names and meta expressions.
-Those forms predate this target and require a separate surface-language
-decision because the same meta parser powers Haskell's internal quasiquoters.
+pin the parity. Rust also accepts standard Yul-only identifiers beginning with
+`_`/`$` or containing `$` in every Yul name position without widening ordinary
+Solcore identifiers. The executable
+[`yul-special-identifiers`](tests/e2e/yul-special-identifiers/main.solc)
+regression carries those names through both backends.
+
+The two superficially similar Haskell meta forms have a different status.
+Commit
+[`8223e09d`](https://github.com/argotorg/solcore/commit/8223e09d007644ee55b5e63c8d6eaea271e6ad46)
+introduced `YMeta` as a "Yul antiquoter" for
+[`Language.Yul.QuasiQuote`](https://github.com/argotorg/solcore/blob/2f372bde2801612814015a22319d0bc51486cbf0/src/Language/Yul/QuasiQuote.hs#L55-L60).
+The ordinary source frontend and the quasiquoter both call the same `yulBlock`
+parser, so backtick and `${...}` expressions currently leak into `.solc` and
+`.hull`; the pretty-printer removes their delimiters and emits the contents as
+raw Yul. Neither the target's
+[`YulExpr` grammar](https://github.com/argotorg/solcore/blob/2f372bde2801612814015a22319d0bc51486cbf0/doc/railroad/sail.bnf#L308-L311)
+nor standard Yul defines that source syntax. Rust therefore tokenizes a
+complete antiquote only to report that it is internal template syntax and
+produces an error expression; no unresolved meta payload enters HIR or either
+backend. The upstream correction is to reserve `YMeta` for the quasiquote
+parser rather than preserving the shared-parser leak as a language feature.
 
 ### Resolver and comptime modes
 

@@ -443,7 +443,7 @@ mod tests {
 
     use super::{
         MAX_SYNTAX_NESTING,
-        errors::parse_error_from_rich,
+        errors::{YUL_META_SOURCE_ERROR, parse_error_from_rich},
         parse_body_statements, parse_supported_items,
         recovery::suppress_body_cascades,
         tokenize::{tokenize, tokenize_with_base},
@@ -469,6 +469,24 @@ mod tests {
             "parse errors for `{source}`: {parse_errors:#?}"
         );
         output.unwrap_or_else(|| panic!("expected parsed Yul statement for `{source}`"))
+    }
+
+    fn parse_yul_expr_with_errors(source: &str) -> (Option<ParsedYulExpr<'_>>, Vec<ParsedError>) {
+        let (tokens, token_errors) = tokenize(source);
+        assert!(
+            token_errors.is_empty(),
+            "token errors for `{source}`: {token_errors:#?}"
+        );
+        let stream = chumsky::input::Stream::from_iter(tokens)
+            .map((0..source.len()).into(), |(tok, span): (_, _)| (tok, span));
+        let (output, parse_errors) = parsed_yul_expr_parser().parse(stream).into_output_errors();
+        (
+            output,
+            parse_errors
+                .into_iter()
+                .map(parse_error_from_rich)
+                .collect(),
+        )
     }
 
     #[test]
@@ -616,6 +634,246 @@ mod tests {
                 "unexpected bare control statement for `{source}`: {stmt:#?}"
             );
         }
+    }
+
+    #[test]
+    fn yul_only_identifiers_parse_in_every_name_position() {
+        let stmt = parse_yul_stmt("let _, _slot, $slot := $load(value$offset)");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::Let {
+                    names,
+                    init: Some(ParsedYulExpr {
+                        kind: ParsedYulExprKind::Call { name, args },
+                        ..
+                    }),
+                } if matches!(names.as_slice(), [("_", _), ("_slot", _), ("$slot", _)])
+                    && name.0 == "$load"
+                    && matches!(
+                        args.as_slice(),
+                        [ParsedYulExpr {
+                            kind: ParsedYulExprKind::Ident(("value$offset", _)),
+                            ..
+                        }]
+                    )
+            ),
+            "unexpected let statement: {stmt:#?}"
+        );
+
+        let stmt = parse_yul_stmt("_, $left, _right := value$result");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::Assign { names, value }
+                    if matches!(names.as_slice(), [("_", _), ("$left", _), ("_right", _)])
+                        && matches!(
+                            &value.kind,
+                            ParsedYulExprKind::Ident(("value$result", _))
+                        )
+            ),
+            "unexpected assignment: {stmt:#?}"
+        );
+
+        let stmt = parse_yul_stmt("_(_, _arg, $arg, value$tail)");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::Expr(ParsedYulExpr {
+                    kind: ParsedYulExprKind::Call { name, args },
+                    ..
+                }) if name.0 == "_"
+                    && matches!(
+                        args.as_slice(),
+                        [
+                            ParsedYulExpr {
+                                kind: ParsedYulExprKind::Ident(("_", _)),
+                                ..
+                            },
+                            ParsedYulExpr {
+                                kind: ParsedYulExprKind::Ident(("_arg", _)),
+                                ..
+                            },
+                            ParsedYulExpr {
+                                kind: ParsedYulExprKind::Ident(("$arg", _)),
+                                ..
+                            },
+                            ParsedYulExpr {
+                                kind: ParsedYulExprKind::Ident(("value$tail", _)),
+                                ..
+                            }
+                        ]
+                    )
+            ),
+            "unexpected call expression: {stmt:#?}"
+        );
+
+        let stmt = parse_yul_stmt("_");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::Expr(ParsedYulExpr {
+                    kind: ParsedYulExprKind::Ident(("_", _)),
+                    ..
+                })
+            ),
+            "unexpected lone-underscore expression: {stmt:#?}"
+        );
+
+        let stmt = parse_yul_stmt(
+            "function $copy(_src, $dst, value$len) -> $result, _end { $result := _src }",
+        );
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::FunctionDef {
+                    name,
+                    params,
+                    rets,
+                    body,
+                } if name.0 == "$copy"
+                    && matches!(
+                        params.as_slice(),
+                        [("_src", _), ("$dst", _), ("value$len", _)]
+                    )
+                    && matches!(rets.as_slice(), [("$result", _), ("_end", _)])
+                    && body.len() == 1
+            ),
+            "unexpected function definition: {stmt:#?}"
+        );
+
+        let stmt = parse_yul_stmt("function _(_) -> _ { _ := _ }");
+        assert!(
+            matches!(
+                &stmt.kind,
+                ParsedYulStmtKind::FunctionDef {
+                    name,
+                    params,
+                    rets,
+                    body,
+                } if name.0 == "_"
+                    && matches!(params.as_slice(), [("_", _)])
+                    && matches!(rets.as_slice(), [("_", _)])
+                    && matches!(
+                        body.as_slice(),
+                        [ParsedYulStmt {
+                            kind: ParsedYulStmtKind::Assign { names, value },
+                            ..
+                        }] if matches!(names.as_slice(), [("_", _)])
+                            && matches!(
+                                &value.kind,
+                                ParsedYulExprKind::Ident(("_", _))
+                            )
+                    )
+            ),
+            "unexpected lone-underscore function definition: {stmt:#?}"
+        );
+    }
+
+    #[test]
+    fn yul_only_identifiers_parse_in_full_assembly() {
+        let source = r#"function f() {
+            assembly {
+                let _slot := $load(value$offset)
+                $slot := _slot
+                function $copy(_src, value$len) -> $result {
+                    $result := _src
+                }
+            }
+        }"#;
+        let parsed = parse_supported_items(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "top-level errors: {:#?}",
+            parsed.errors
+        );
+        let body_span = match parsed.output.as_slice() {
+            [ParsedTopItem::Function { body_span, .. }] => *body_span,
+            other => panic!("unexpected parse output: {other:#?}"),
+        };
+        let body = parse_body_statements(source, body_span);
+        assert!(body.errors.is_empty(), "body errors: {:#?}", body.errors);
+        assert!(
+            matches!(
+                body.output.as_slice(),
+                [ParsedStmt {
+                    kind: ParsedStmtKind::Assembly { body },
+                    ..
+                }] if body.len() == 3
+            ),
+            "unexpected body: {:#?}",
+            body.output
+        );
+    }
+
+    #[test]
+    fn yul_meta_expressions_are_rejected_with_a_specific_diagnostic() {
+        for source in ["`templateValue`", "${templateValue}"] {
+            let (output, errors) = parse_yul_expr_with_errors(source);
+            assert!(
+                matches!(
+                    &output,
+                    Some(ParsedYulExpr {
+                        kind: ParsedYulExprKind::Error,
+                        ..
+                    })
+                ),
+                "meta expression did not produce an error node: {source}: {output:#?}"
+            );
+            assert_eq!(
+                errors.len(),
+                1,
+                "unexpected diagnostics for {source}: {errors:#?}"
+            );
+            assert_eq!(errors[0].message, YUL_META_SOURCE_ERROR);
+            assert_eq!(errors[0].span, (0..source.len()).into());
+        }
+    }
+
+    #[test]
+    fn yul_meta_diagnostic_survives_full_assembly_parsing() {
+        let source = "function f() { assembly { let value := ${templateValue} } }";
+        let parsed = parse_supported_items(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "top-level errors: {:#?}",
+            parsed.errors
+        );
+        let body_span = match parsed.output.as_slice() {
+            [ParsedTopItem::Function { body_span, .. }] => *body_span,
+            other => panic!("unexpected parse output: {other:#?}"),
+        };
+        let body = parse_body_statements(source, body_span);
+        assert!(
+            body.errors
+                .iter()
+                .any(|error| error.message == YUL_META_SOURCE_ERROR),
+            "missing Yul meta diagnostic: {:#?}",
+            body.errors
+        );
+        assert!(
+            matches!(
+                body.output.as_slice(),
+                [ParsedStmt {
+                    kind: ParsedStmtKind::Assembly { body },
+                    ..
+                }] if matches!(
+                    body.as_slice(),
+                    [ParsedYulStmt {
+                        kind: ParsedYulStmtKind::Let {
+                            init: Some(ParsedYulExpr {
+                                kind: ParsedYulExprKind::Error,
+                                ..
+                            }),
+                            ..
+                        },
+                        ..
+                    }]
+                )
+            ),
+            "unexpected recovered assembly body: {:#?}",
+            body.output
+        );
     }
 
     #[test]
