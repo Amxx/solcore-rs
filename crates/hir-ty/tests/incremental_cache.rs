@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -15,7 +16,10 @@ use nameres::{
 use parser::parse_file_to_hir;
 use rustc_hash::FxHashMap;
 use salsa::Setter;
-use solcore_hir_ty::{contract_dispatch_surface, infer::module_typeck_diagnostics};
+use solcore_hir_ty::{
+    contract_dispatch_surface, infer::module_typeck_diagnostics, instance_soundness_diagnostics,
+    trait_env_from_module_resolution,
+};
 
 #[salsa::db]
 #[derive(Clone)]
@@ -258,6 +262,53 @@ forall a . instance Box(a):C(word) {}
 }
 
 #[test]
+fn instance_soundness_reuses_scope_resolution_for_many_instances() {
+    const INSTANCE_COUNT: usize = 128;
+
+    let mut source = String::new();
+    for index in 0..INSTANCE_COUNT {
+        writeln!(source, "forall a . class a:AuditClass{index} {{}}").unwrap();
+        writeln!(source, "instance word:AuditClass{index} {{}}").unwrap();
+    }
+    source.push_str("function main() -> word { return 0; }\n");
+
+    let (db, _file, key) = db_with_file_backed_main(&source);
+    let module = module_id_from_key(&db, &key);
+    let _ = db.take_executed();
+    let diagnostics = instance_soundness_diagnostics(&db, module);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let executed = db.take_executed();
+    assert_eq!(
+        query_executions(&executed, "scope_resolution_for_module_id"),
+        1,
+        "module scope resolution must not scale with the instance count: {executed:#?}"
+    );
+}
+
+#[test]
+fn generic_lookup_does_not_reresolve_all_item_types() {
+    let source = r#"
+forall a rep . class a:Generic(rep) {}
+data Box(a) = Box(a);
+"#;
+
+    let (db, file, _key) = db_with_main(source);
+    let module = parse_file_to_hir(&db, file).module(&db);
+    let resolution = hir::nameres::resolve_module(&db, module);
+    assert!(resolution.diagnostics.is_empty(), "{resolution:#?}");
+
+    let _ = db.take_executed();
+    let _env = trait_env_from_module_resolution(&db, module, &resolution);
+    let executed = db.take_executed();
+    assert_eq!(
+        query_executions(&executed, "resolve_item_type_facts"),
+        0,
+        "Generic declaration lookup must not resolve every item type again: {executed:#?}"
+    );
+}
+
+#[test]
 fn contract_body_edit_does_not_rerun_dispatch_surface_query() {
     let before = r#"
 contract C {
@@ -410,6 +461,14 @@ function main() -> word { return stable(choose(false, 1, 2)); }
 }
 
 fn db_with_main(content: &str) -> (TestDb, SourceFile, ModuleKey) {
+    db_with_main_url(content, "memory:///main.solc")
+}
+
+fn db_with_file_backed_main(content: &str) -> (TestDb, SourceFile, ModuleKey) {
+    db_with_main_url(content, "file:///memory/main.solc")
+}
+
+fn db_with_main_url(content: &str, url: &str) -> (TestDb, SourceFile, ModuleKey) {
     let mut db = TestDb::default();
     db.module_tree = Some(ModuleTree::new(
         &db,
@@ -420,7 +479,7 @@ fn db_with_main(content: &str) -> (TestDb, SourceFile, ModuleKey) {
     db.module_fs_snapshot = Some(ModuleFsSnapshot::new(&db, BTreeSet::new(), BTreeMap::new()));
     let file = SourceFile::new(
         &db,
-        "memory:///main.solc".parse().expect("valid URL"),
+        url.parse().expect("valid URL"),
         Some(content.to_owned()),
     );
     let key = ModuleKey {

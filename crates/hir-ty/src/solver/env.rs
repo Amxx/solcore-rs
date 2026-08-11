@@ -320,7 +320,7 @@ fn module_superclass_clause_set<'db>(
 ) -> TraitClauseSetId<'db> {
     let mut builder = TraitClauseBuilder::new(db);
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
-        builder.add_module_superclasses(scope.module, &item_resolutions);
+        builder.add_module_superclasses(scope.module, item_resolutions);
     }
     builder.finish()
 }
@@ -349,7 +349,7 @@ fn derived_generic_clause_set<'db>(
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
         builder.add_local_derived_generic_instances(
             scope.module,
-            &item_resolutions,
+            item_resolutions,
             generic,
             abi,
             storage,
@@ -374,7 +374,7 @@ fn imported_derived_generic_clause_set<'db>(
 fn derived_class_clause_set<'db>(db: &'db dyn Db, module: ModuleId<'db>) -> TraitClauseSetId<'db> {
     let mut builder = TraitClauseBuilder::new(db);
     if let Some((scope, item_resolutions)) = scope_resolution_for_module_id(db, module) {
-        builder.add_derived_class_instances(scope.module, &item_resolutions);
+        builder.add_derived_class_instances(scope.module, item_resolutions);
     }
     builder.finish()
 }
@@ -590,7 +590,6 @@ impl<'db> TraitClauseBuilder<'db> {
         // evidence, irrespective of whether the first use is in a signature or
         // a function body. Re-export/reference edges intentionally do not enter
         // this module set, matching explicit instance imports.
-        let mut pending = VecDeque::new();
         let Some(owner) =
             nameres::module_id_for_source_file(self.db, module.def_id_value(self.db).file(self.db))
         else {
@@ -605,23 +604,14 @@ impl<'db> TraitClauseBuilder<'db> {
             let Some(file) = self.db.module_file(visible_module) else {
                 continue;
             };
-            let visible_hir = parse_file_to_hir(self.db, file).module(self.db);
-            for info in local_adt_infos(self.db, visible_hir) {
-                pending.push_back(info.adt.def_id_value(self.db));
-            }
-        }
-
-        while let Some(def) = pending.pop_front() {
-            if !seen.insert(def) {
-                continue;
-            }
-            let definition_module = parse_file_to_hir(self.db, def.file(self.db)).module(self.db);
-            let Some(info) = local_adt_infos(self.db, definition_module)
+            let definition_module = parse_file_to_hir(self.db, file).module(self.db);
+            let infos = local_adt_infos(self.db, definition_module)
                 .into_iter()
-                .find(|info| info.adt.def_id_value(self.db) == def)
-            else {
+                .filter(|info| seen.insert(info.adt.def_id_value(self.db)))
+                .collect::<Vec<_>>();
+            if infos.is_empty() {
                 continue;
-            };
+            }
             // Imported synthesized instances model the declarations that the
             // defining compilation unit would have emitted. In particular,
             // importing ABIGeneric or StorageGeneric only at the use site must
@@ -632,20 +622,23 @@ impl<'db> TraitClauseBuilder<'db> {
             else {
                 continue;
             };
-            let Some(plan) = derived_generic_instance_plan(
-                self.db,
-                definition_module,
-                info.adt,
-                definition_generic,
-            ) else {
-                continue;
-            };
-            self.push_derived_generic_clause(&info, &plan, definition_generic);
-            if let Some(abi) = definition_abi {
-                push_derived_abi_clauses(self.db, &mut self.clauses, &info, &plan, abi);
-            }
-            if let Some(storage) = definition_storage {
-                push_derived_storage_clauses(self.db, &mut self.clauses, &info, &plan, storage);
+
+            for info in infos {
+                let Some(plan) = derived_generic_instance_plan(
+                    self.db,
+                    definition_module,
+                    info.adt,
+                    definition_generic,
+                ) else {
+                    continue;
+                };
+                self.push_derived_generic_clause(&info, &plan, definition_generic);
+                if let Some(abi) = definition_abi {
+                    push_derived_abi_clauses(self.db, &mut self.clauses, &info, &plan, abi);
+                }
+                if let Some(storage) = definition_storage {
+                    push_derived_storage_clauses(self.db, &mut self.clauses, &info, &plan, storage);
+                }
             }
         }
     }
