@@ -1,7 +1,7 @@
 import std.opcodes.{add, sub, mul, div, mod, addmod as addmod_, mulmod as mulmod_, and as and_, or as or_, xor as xor_, shl, shr, eq, not as not_, gt as gt_, iszero, keccak256, mstore, mload, mcopy, sstore, sload, gas, calldataload, calldatacopy, returndatasize, returndatacopy, log1 as log1_, call, staticcall, revert as revert_, invalid};
 
-pragma no-patterson-condition ABIEncode, Num;
-pragma no-coverage-condition ABIDecode, MemoryType;
+pragma no-patterson-condition ABIEncode, Num, Array, ArrayPush, Eq, Ord;
+pragma no-coverage-condition ABIDecode, MemoryType, Array, ArrayPush, RValueIdxAccess;
 
 export {
   ABIAttribs,
@@ -10,8 +10,11 @@ export {
   ABIEncode,
   ABITuple(*),
   Add,
+  Array,
+  ArrayPush,
   Assign,
   BitAnd,
+  BitNot,
   BitOr,
   BitXor,
   Bounded,
@@ -26,6 +29,7 @@ export {
   IndexAccess,
   LVA,
   LValueIdxAccess,
+  Length,
   MemberAccessProxy(*),
   MemoryEncode,
   MemoryPointer,
@@ -39,6 +43,7 @@ export {
   Proxy(*),
   RVA,
   RValueIdxAccess,
+  StorageCopy,
   StorageSize,
   StorageType,
   StructField(*),
@@ -47,6 +52,7 @@ export {
   WordReader,
   abi_decode,
   abi_encode,
+  absurd,
   addWord,
   addmod,
   allocateDynamicArray,
@@ -54,6 +60,9 @@ export {
   allocate_memory,
   allocate_zeroed_memory,
   and,
+  array(*),
+  arrayLitInit,
+  arrayLitNew,
   assert,
   byte(*),
   bytes,
@@ -82,6 +91,7 @@ export {
   hash2,
   keccak256_,
   keccakLit,
+  keccakWordLit,
   le,
   lidx,
   loadBytesFromStorage,
@@ -89,9 +99,11 @@ export {
   lt,
   mapping(*),
   maxVal,
+  maxWord,
   memberAccessBase,
   memory(*),
   memory_ref,
+  minWord,
   mulmod,
   ne,
   not,
@@ -113,6 +125,7 @@ export {
   slice(*),
   slice_,
   storage(*),
+  storeArrayLit,
   storeBytesFromMemory,
   string,
   strlen,
@@ -184,7 +197,7 @@ function out_of_bounds() -> () {
 // ------------------------------------------------------------------
 // EmitHull has special handling for `revertLit("...")` after MastEval has
 // constant-folded the argument to a string literal.
-function revertLit(s:string) -> () {
+function revertLit(comptime s: string) -> () {
     unimplemented(); // Sanity check if folding ignores it.
     return ();
 }
@@ -194,9 +207,32 @@ function revertEmpty() -> () {
     revert_(0, 0);
 }
 
+// Bottom: a value of any type. absurd never returns, it reverts, so it can
+// stand in for a result of any type. Used to derive class instances for empty
+// data types (which have no values, so the method bodies are unreachable). The
+// recursive tail satisfies the forall a . a return type; execution never
+// reaches it because revertEmpty() aborts first.
+forall a . function absurd() -> a {
+    // Despite looking like an infinite loop, this reverts: revertEmpty()
+    // aborts execution on the first line, so the recursive return absurd()
+    // is never actually run. The recursion exists only to give the body a
+    // value of type a, satisfying the forall a . a return type.
+    revertEmpty();
+    return absurd();
+}
+
 // TODO: use bytes4
-// TODO: add literal version Msg(string)
 data Error = Error(word) | Empty | Msg(memory(string));
+
+// A string literal can be used as an Error: `require(cond, "message")` reverts
+// with the message.  The literal is materialized into memory(string) here; MastEval
+// erases the comptime-only parameter by cloning this method per literal, so
+// the materializer sees a literal rather than a parameter.
+instance Error : Str {
+    function fromString(s: string) -> Error {
+        return Error.Msg(Str.fromString(s));
+    }
+}
 
 // Revert with Error selector.
 function revertWithError(e:Error) -> () {
@@ -337,6 +373,94 @@ function lt(x:a, y:a) -> bool {
     return Ord.gt(y,x);
 }
 
+// --- Generic deriving: structural instances over the representation universe ---
+// These let `#[derive(Eq)]` / `#[derive(Ord)]` work for any data type through
+// its Generic(rep) instance, where rep is built from (), sum(f, g) and (f, g).
+
+instance () : Eq {
+  function eq(x : (), y : ()) -> bool {
+    return true;
+  }
+}
+
+forall f g . f:Eq, g:Eq =>
+instance sum(f, g) : Eq {
+  function eq(x : sum(f, g), y : sum(f, g)) -> bool {
+    match x {
+    | inl(a) =>
+        match y {
+        | inl(b) => return Eq.eq(a, b);
+        | inr(b) => return false;
+        }
+    | inr(a) =>
+        match y {
+        | inl(b) => return false;
+        | inr(b) => return Eq.eq(a, b);
+        }
+    }
+  }
+}
+
+forall f g . f:Eq, g:Eq =>
+instance (f, g) : Eq {
+  function eq(x : (f, g), y : (f, g)) -> bool {
+    match x {
+    | (a1, b1) =>
+        match y {
+        | (a2, b2) =>
+            match Eq.eq(a1, a2) {
+            | true  => return Eq.eq(b1, b2);
+            | false => return false;
+            }
+        }
+    }
+  }
+}
+
+instance () : Ord {
+  function gt(x : (), y : ()) -> bool {
+    return false;
+  }
+}
+
+forall f g . f:Ord, g:Ord =>
+instance sum(f, g) : Ord {
+  function gt(x : sum(f, g), y : sum(f, g)) -> bool {
+    match x {
+    | inl(a) =>
+        match y {
+        | inl(b) => return Ord.gt(a, b);
+        | inr(b) => return false;
+        }
+    | inr(a) =>
+        match y {
+        | inl(b) => return true;
+        | inr(b) => return Ord.gt(a, b);
+        }
+    }
+  }
+}
+
+forall f g . f:Ord, g:Ord =>
+instance (f, g) : Ord {
+  function gt(x : (f, g), y : (f, g)) -> bool {
+    match x {
+    | (a1, b1) =>
+        match y {
+        | (a2, b2) =>
+            match Ord.gt(a1, a2) {
+            | true  => return true;
+            | false =>
+                match Eq.eq(a1, a2) {
+                | true  => return Ord.gt(b1, b2);
+                | false => return false;
+                }
+            }
+        }
+    }
+  }
+}
+
 // --- Arithmetic ---
 // Note: All these are used by the compiler by name.
 
@@ -370,6 +494,10 @@ forall t . class t:BitOr {
 
 forall t . class t:BitXor {
     function bxor(l: t, r: t) -> t;
+}
+
+forall t . class t:BitNot {
+    function bnot(x: t) -> t;
 }
 
 forall t . class t:Bounded {
@@ -414,6 +542,20 @@ function eqWord(x:word, y:word) -> bool {
 
 function gtWord(x:word, y:word) -> bool {
     return tobool(gt_(x, y));
+}
+
+function maxWord(a : word, b : word) -> word {
+    match gtWord(a, b) {
+    | true  => return a;
+    | false => return b;
+    }
+}
+
+function minWord(a : word, b : word) -> word {
+    match gtWord(a, b) {
+    | true  => return b;
+    | false => return a;
+    }
 }
 
 function addWord(l: word, r: word) -> word {
@@ -515,6 +657,12 @@ instance word:BitOr {
 instance word:BitXor {
     function bxor(l: word, r: word) -> word {
         return bxorWord(l, r);
+    }
+}
+
+instance word:BitNot {
+    function bnot(x: word) -> word {
+        return bnotWord(x);
     }
 }
 
@@ -630,6 +778,12 @@ instance uint256:BitOr {
 instance uint256:BitXor {
   function bxor(x : uint256, y : uint256) -> uint256 {
     return Typedef.abs(BitXor.bxor(Typedef.rep(x), Typedef.rep(y)));
+  }
+}
+
+instance uint256:BitNot {
+  function bnot(x : uint256) -> uint256 {
+    return Typedef.abs(BitNot.bnot(Typedef.rep(x)));
   }
 }
 
@@ -801,6 +955,8 @@ forall t . instance returndata(t) : Typedef(word) {
 
 data mapping(member, index) = mapping(word) ;
 
+data array(member) = array(word) ;
+
 // --- Low-level memory ops
 
 function strlen(s:memory(string)) -> word {
@@ -840,9 +996,8 @@ function zeroize_memory(ptr: word, len: word) -> () {
     let end_ptr = ptr + len;
 
     // Zero out 32-byte words.
-    for (let i = 0; i < len / 32; i += 1) {
+    for (let i = 0; i < len / 32; i += 1, ptr += 32) {
         mstore(ptr, 0)
-        ptr += 32;
     }
 
     // Zero out trailing bytes. We rely on the zero-slot (0x60-0x7f).
@@ -865,25 +1020,39 @@ forall t val . class t:IndexAccess(val) {
 // TODO: storage representation
 data DynArray(t);
 
+// Layout: the length lives at `loc`, so element i lives at `loc + 32 + i*32`.
+// An index is in bounds when i < length.
 forall t . t:Typedef(word) => instance memory(DynArray(t)):IndexAccess(t) {
     function get(ptr : memory(DynArray(t)), i : uint256) -> t {
         let i_: word = Typedef.rep(i);
-        let loc = Typedef.rep(ptr);
-        let res: word;
-        match (i_ > mload(loc)) {
-        | false => res = mload((i_ * 32) + loc);
-        | true => out_of_bounds();
-        }
-        return Typedef.abs(res);
+        let loc : word = Typedef.rep(ptr);
+        if (i_ >= mload(loc)) { out_of_bounds(); }
+        return Typedef.abs(mload(loc + 32 + (i_ * 32)));
     }
     function set(arr : memory(DynArray(t)), i : uint256, val : t) -> () {
         let i_ : word = Typedef.rep(i);
         let loc : word = Typedef.rep(arr);
-        match i_ > mload(loc) {
-        | false => mstore((i_ * 32) + loc, Typedef.rep(val));
-        | true => out_of_bounds();
-        }
+        if (i_ >= mload(loc)) { out_of_bounds(); }
+        mstore(loc + 32 + (i_ * 32), Typedef.rep(val));
     }
+}
+
+// --- Array literals ---
+//
+// `[e1, ..., en]` is desugared, after type checking, into
+//   arrayLitInit(... arrayLitInit(arrayLitNew(n), 0, e1) ..., n-1, en)
+// The chain is a plain expression: each step returns the array it wrote to.
+
+forall t . t:Typedef(word) =>
+function arrayLitNew(n : uint256) -> memory(DynArray(t)) {
+    let prx : Proxy(t);
+    return allocateDynamicArray(prx, Typedef.rep(n));
+}
+
+forall t . t:Typedef(word) =>
+function arrayLitInit(arr : memory(DynArray(t)), i : uint256, v : t) -> memory(DynArray(t)) {
+    IndexAccess.set(arr, i, v);
+    return arr;
 }
 
 forall t . function allocateDynamicArray(prx : Proxy(t), length : word) -> memory(DynArray(t)) {
@@ -927,17 +1096,25 @@ instance string:Add {
 // These are intended to be folded by MastEval when their arguments are
 // statically known string literals.
 
-function concatLit(a:string, b:string) -> string {
+function concatLit(comptime a: string, comptime b: string) -> string {
   unimplemented(); // Sanity check if folding ignores it.
   return "";
 }
 
-function strlenLit(a:string) -> word {
+function strlenLit(comptime a: string) -> word {
   unimplemented(); // Sanity check if folding ignores it.
   return 0;
 }
 
-function keccakLit(a:string) -> word {
+// Keccak-256 hash of the string-literal as UTF-8 bytes.
+function keccakLit(comptime a: string) -> word {
+  unimplemented(); // Sanity check if folding ignores it.
+  return 0;
+}
+
+// Keccak-256 hash of a word's 32-byte big-endian representation.
+// NOTE: this could be deprecated if we have comptime `to_bytes`.
+function keccakWordLit(comptime a: word) -> word {
   unimplemented(); // Sanity check if folding ignores it.
   return 0;
 }
@@ -1125,9 +1302,25 @@ forall t . instance DynArray(t):ABIAttribs {
     function headSize(ty : Proxy(DynArray(t))) -> word { return 32; }
     function isStatic(ty : Proxy(DynArray(t))) -> bool { return false; }
 }
+// A dynamic array is encoded head-first as a 32-byte offset into the tail, so
+// its head is one word and it is never static (matching DynArray above). This
+// covers `array(t)` under any location qualifier via the `calldata(ty)` /
+// `memory(ty)` ABIAttribs bridges.
+forall t . instance array(t):ABIAttribs {
+    function headSize(ty : Proxy(array(t))) -> word { return 32; }
+    function isStatic(ty : Proxy(array(t))) -> bool { return false; }
+}
 instance string:ABIAttribs {
     function headSize(ty: Proxy(string)) -> word { return 32; }
     function isStatic(ty : Proxy(string)) -> bool { return false; }
+}
+// bytes is dynamic, exactly like string — without this instance it falls to the
+// default (isStatic = true), which wrongly marks memory(bytes) (and any ADT
+// carrying it) static, so calldata arrays/sums take the inline decode path over
+// what is really an offset-referenced value.
+instance bytes:ABIAttribs {
+    function headSize(ty: Proxy(bytes)) -> word { return 32; }
+    function isStatic(ty : Proxy(bytes)) -> bool { return false; }
 }
 
 // computes the attribs for a pair of two types that implement attribs
@@ -1231,6 +1424,16 @@ instance bytes32:ABIEncode {
     }
 }
 
+instance bytes4:ABIEncode {
+    // bytes4's word rep is right-aligned (e.g. `bytes4(shr(224, h))`),
+    // so it is written directly into the head like bytes32
+    function encodeInto(x:bytes4, basePtr:word, offset:word, tail:word) -> word {
+        let repx : word = Typedef.rep(x);
+        mstore(basePtr + offset, repx);
+        return tail;
+    }
+}
+
 instance bool:ABIEncode {
     function encodeInto(x:bool, basePtr:word, offset:word, tail:word) -> word {
         let repx : word = frombool(x);
@@ -1240,7 +1443,7 @@ instance bool:ABIEncode {
 }
 
 function round_up_to_mul_of_32(value:word) -> word {
-    return and_(value + 31, not_(31));
+    return (value + 31) & ~31;
 }
 
 function encodeIntoFromBytesLike(srcPtr:word, basePtr:word, offset:word, tail:word) -> word {
@@ -1262,6 +1465,30 @@ instance memory(string):ABIEncode {
 instance memory(bytes):ABIEncode {
     function encodeInto(x:memory(bytes), basePtr:word, offset:word, tail:word) -> word {
       return encodeIntoFromBytesLike(Typedef.rep(x), basePtr, offset, tail);
+    }
+}
+
+// ABI encoding for a memory dynamic array whose elements fit in a single word.
+// Assumes memory layout `[ length | elem_0 | elem_1 | ... ]`, which matches the
+// on-the-wire tail of `t[]` so the body can be `mcopy`d verbatim.
+// `memory(DynArray(t)):ABIAttribs` is already derivable from the generic
+// `memory(ty):ABIAttribs` + `DynArray(t):ABIAttribs` instances above.
+forall t . t:Typedef(word) =>
+instance memory(DynArray(t)):ABIEncode {
+    function encodeInto(x:memory(DynArray(t)), basePtr:word, offset:word, tail:word) -> word {
+        let srcPtr : word = Typedef.rep(x);
+        let len : word = mload(srcPtr);
+        let totalBytes : word = (len + 1) * 32;
+
+        // head slot: relative pointer from basePtr to tail
+        mstore(basePtr + offset, tail - basePtr);
+
+        // copy length + elements verbatim into the tail
+        let s : word = srcPtr;
+        let t_ : word = tail;
+        let n : word = totalBytes;
+        mcopy(t_, s, n);
+        return tail + totalBytes;
     }
 }
 
@@ -1303,7 +1530,7 @@ forall tuple . tuple:ABIEncode, tuple:ABIAttribs => instance ABITuple(tuple):ABI
             // encode the underlying tuple into the tail
             let headSize = ABIAttribs.headSize(Proxy : Proxy(tuple));
             basePtr = tail;
-            tail = tail + headSize;
+            tail += headSize;
             return ABIEncode.encodeInto(Typedef.rep(x), basePtr, 0, tail);
         }
     }
@@ -1358,6 +1585,24 @@ forall reader . reader:WordReader => instance ABIDecoder(uint256, reader):ABIDec
 forall reader . reader:WordReader => instance ABIDecoder(bytes32, reader):ABIDecode(bytes32) {
     function decode(ptr:ABIDecoder(bytes32, reader), currentHeadOffset:word) -> bytes32 {
         return Typedef.abs(WordReader.read(WordReader.advance(ptr, currentHeadOffset))) : bytes32;
+    }
+}
+
+// ABI Decoding for bytes4
+forall reader . reader:WordReader => instance ABIDecoder(bytes4, reader):ABIDecode(bytes4) {
+    function decode(ptr:ABIDecoder(bytes4, reader), currentHeadOffset:word) -> bytes4 {
+        return Typedef.abs(WordReader.read(WordReader.advance(ptr, currentHeadOffset))) : bytes4;
+    }
+}
+
+// ABI Decoding for bool
+// bool is a builtin (not a Typedef(word)), so it round-trips through word via
+// tobool, mirroring the bool:ABIEncode instance which uses frombool.
+forall reader . reader:WordReader => instance ABIDecoder(bool, reader):ABIDecode(bool) {
+    function decode(ptr:ABIDecoder(bool, reader), currentHeadOffset:word) -> bool {
+        let v = WordReader.read(WordReader.advance(ptr, currentHeadOffset));
+        require(v <= 1, Error(0x0557dbbf)); // DirtyHigherBitsForBool()
+        return tobool(v);
     }
 }
 
@@ -1496,11 +1741,81 @@ forall baseType baseType_decoded . ABIDecoder(baseType, CalldataWordReader):ABID
  {
      function decode(ptr:ABIDecoder(calldata(DynArray(baseType)), CalldataWordReader), currentHeadOffset:word) -> calldata(DynArray(baseType_decoded)) {
           let newptr = WordReader.advance(ptr, currentHeadOffset);
-	      let reader: CalldataWordReader = getReader(newptr);
+          let reader: CalldataWordReader = getReader(newptr);
           let addr: word = Typedef.rep(reader);
           return Typedef.abs(addr);
      }
  }
+
+// ─── Lazy ABI decode of a calldata dynamic array ─────────────────────────────
+// The head slot holds the (args-relative) byte offset to the array data;
+// following it lands on the length word. The decoded value is a calldata handle
+// to that length word, so the elements are left in calldata and decoded on
+// demand (abiArrayLength / abiArrayGet). Because nothing is materialised here,
+// this works for any decodable element type — including multi-word ADTs such as
+// a sum(...) — which the word-per-slot memory(DynArray(...)) path cannot hold.
+forall baseType baseType_decoded .
+     ABIDecoder(baseType, CalldataWordReader):ABIDecode(baseType_decoded) =>
+     instance ABIDecoder(calldata(array(baseType)), CalldataWordReader):ABIDecode(calldata(array(baseType_decoded)))
+ {
+     function decode(ptr:ABIDecoder(calldata(array(baseType)), CalldataWordReader), currentHeadOffset:word) -> calldata(array(baseType_decoded)) {
+          let headRdr = WordReader.advance(ptr, currentHeadOffset);
+          let dataOffset : word = WordReader.read(headRdr);
+          let dataRdr = WordReader.advance(ptr, dataOffset);
+          let rdr : CalldataWordReader = getReader(dataRdr);
+          let addr : word = Typedef.rep(rdr);
+          return Typedef.abs(addr);
+     }
+ }
+
+// Length of a decoded calldata array: the handle points at the length word.
+forall t . function abiArrayLength(a : calldata(array(t))) -> uint256 {
+    let rdr : CalldataWordReader = CalldataWordReader(Typedef.rep(a));
+    return uint256(WordReader.read(rdr));
+}
+
+// Decode element `i` of a calldata array on demand. The element region starts
+// one word after the handle (past the length word). Two layouts, per the ABI:
+//
+//   * static element type  -> elements sit inline, each headSize(t) bytes, so
+//     element i starts at (handle + 32) + i * headSize(t). The element decoder
+//     is aimed at the region base and the per-element offset is threaded as the
+//     head offset.
+//
+//   * dynamic element type -> the region holds a table of 32-byte offsets (one
+//     per element, relative to the region base), each pointing at that
+//     element's own encoding (standard-ABI T[] for dynamic T). The element
+//     decoder is aimed at the region base and given element i's slot as its
+//     head offset; the element's own dynamic decoder follows that offset. This
+//     is uniform across element kinds: a dynamic sum follows it and rebases to
+//     the element start, a bare bytes/string leaf follows it to its length word.
+forall t t_decoded .
+    t : ABIAttribs,
+    ABIDecoder(t, CalldataWordReader):ABIDecode(t_decoded) =>
+function abiArrayGet(a : calldata(array(t)), i : uint256) -> t_decoded {
+    // Bounds check: valid indices are [0, length); i == length is already past
+    // the last element, so reject i >= length (mirrors the storage-array guard).
+    require(i < abiArrayLength(a), Error(0x7f52b2bf)); // ArrayOutOfBounds()
+    let base : word = Typedef.rep(a);
+    let elemRegion : word = base + 32;
+    let prx : Proxy(t);
+    let idx : word = Typedef.rep(i);
+    match ABIAttribs.isStatic(prx) {
+    | true =>
+        let elemRdr : CalldataWordReader = CalldataWordReader(elemRegion);
+        let dec : ABIDecoder(t, CalldataWordReader) = ABIDecoder(elemRdr);
+        return ABIDecode.decode(dec, idx * ABIAttribs.headSize(prx));
+    | false =>
+        // Dynamic elements: the region is a table of 32-byte offsets (relative
+        // to the region base), one per element. Hand the element decoder the
+        // region base and element i's slot as its head offset; the element's own
+        // (dynamic) decoder follows that offset — uniformly for a dynamic sum
+        // element or a bare bytes/string element (calldata(array(bytes))).
+        let elemRdr : CalldataWordReader = CalldataWordReader(elemRegion);
+        let dec : ABIDecoder(t, CalldataWordReader) = ABIDecoder(elemRdr);
+        return ABIDecode.decode(dec, idx * 32);
+    }
+}
 
 
 // --- Assignment ---
@@ -1516,7 +1831,17 @@ forall baseType baseType_decoded . ABIDecoder(baseType, CalldataWordReader):ABID
 pragma no-patterson-condition RVA, Assign;
 pragma no-coverage-condition MemberAccessProxy, LVA, RVA, CStructField, Assign;
 pragma no-bounded-variable-condition LVA, RVA;
-// -- storage
+
+// --- Storage ---
+
+// Zeroes the storage slots in [start, endSlot). Mirrors solc's
+// clear_storage_range, used when a dynamic array shrinks so that regrowing it
+// cannot resurrect the old elements.
+function clearStorageRange(start: word, endSlot: word) -> () {
+    for (; start < endSlot; start += 1) {
+        sstore(start, 0);
+    }
+}
 
 forall self.
 class self:StorageSize {
@@ -1603,6 +1928,18 @@ forall self.
 class self:StorageType {
     function load(ptr:word) -> self;
     function store(ptr:word, value:self) -> ();
+}
+
+// How to copy one element of type self from one storage slot to another.
+// Whole-array assignment (a = b) copies element by element through this class,
+// the way solc's copy_array_to_storage calls the element's own copy routine.
+// The constraint lives on the *element* type, so it can gate CanStore.store for
+// storage(array(self)) without also gating CanStore.load, which must stay
+// unconstrained, a field read has to yield the array's storage reference.
+// Instances live below, next to the CanStore instances the dynamic ones rely on.
+forall self.
+class self:StorageCopy {
+    function copySlot(dst:storage(self), src:storage(self)) -> ();
 }
 
 instance word:StorageType {
@@ -1723,6 +2060,102 @@ instance mapping(index, member):StorageSize {
     }
 }
 
+forall member . instance array(member):Typedef(word) {
+    function rep(x:array(member)) -> word {
+        match x {
+            | array(y) => return y;
+        }
+    }
+    function abs(x:word) -> array(member) {
+        return array(x);
+    }
+}
+
+// cf https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html#mappings-and-dynamic-arrays
+// the slot itself stores the array length; elements live at keccak256(slot) + i
+forall member .
+instance array(member):StorageSize {
+    function size(x:Proxy(array(member))) -> word {
+        return 1;
+    }
+}
+
+forall self . class self:Length {
+    function length(arr:self) -> uint256;
+}
+
+// Dynamic storage arrays carry their length at the slot itself (matching the
+// Solidity convention) while elements live at keccak256(slot) + i.
+forall self . class self:Array {
+    function setLength(arr:self, n:uint256) -> ();
+    function pop(arr:self) -> ();
+}
+
+// push is split into its own MPTC so its element type only shows up where it
+// actually matters (the value being appended), without forcing `length`/
+// `setLength`/`pop` to drag along an unconstrained `elem` parameter.
+forall self elem . class self:ArrayPush(elem) {
+    function push(arr:self, val:elem) -> ();
+}
+
+forall t .
+instance storage(array(t)):Length {
+    function length(arr:storage(array(t))) -> uint256 {
+        return uint256(sload(Typedef.rep(arr)));
+    }
+}
+
+// A lazily-decoded calldata array reports its length from the head length-word
+// of its handle (see abiArrayLength), so `arr.length()` resolves through the
+// same Length class / UFCS as storage arrays.
+forall t .
+instance calldata(array(t)):Length {
+    function length(arr:calldata(array(t))) -> uint256 {
+        return abiArrayLength(arr);
+    }
+}
+
+forall t .
+instance storage(array(t)):Array {
+    // Shrinking clears the abandoned slots, matching solc's resize_array.
+    // For string/bytes elements this zeroes the inline slot, which makes any
+    // keccak-derived tail unreachable (reads are governed by the length word) but
+    // does not reclaim it.
+    function setLength(arr:storage(array(t)), n:uint256) -> () {
+        let slot : word = Typedef.rep(arr);
+        let oldLen : word = sload(slot);
+        let newLen : word = Typedef.rep(n);
+        if (newLen < oldLen) {
+            let base : word = hash1(slot);
+            clearStorageRange(base + newLen, base + oldLen);
+        }
+        sstore(slot, newLen);
+    }
+    // Zeroes the removed element before decrementing, as solc's array_pop does.
+    function pop(arr:storage(array(t))) -> () {
+        let slot : word = Typedef.rep(arr);
+        let n : word = sload(slot);
+        if (n == 0) { out_of_bounds(); }
+        sstore(hash1(slot) + (n - 1), 0);
+        sstore(slot, n - 1);
+    }
+}
+
+// The value pushed is whatever the element's storage reference can store, rather
+// than the element tag type itself. That is what lets array(string) accept a
+// memory(string), via storage(string):CanStore(memory(string)). For word-sized
+// elements v collapses to the element type and CanStore.store delegates to
+// StorageType.store, so the generated code is unchanged.
+forall t v . storage(t):CanStore(v) =>
+instance storage(array(t)):ArrayPush(v) {
+    function push(arr:storage(array(t)), val:v) -> () {
+        let slot : word = Typedef.rep(arr);
+        let n : word = sload(slot);
+        CanStore.store(storage(hash1(slot) + n):storage(t), val);
+        sstore(slot, n + 1);
+    }
+}
+
 forall self memberRefType.
 class self:LVA(memberRefType) {
     function acc(x:self) -> memberRefType;
@@ -1810,6 +2243,17 @@ default instance a:CanStore(a) {
     }
 }
 
+// bool has no StorageType instance (it is a builtin, not a Typedef(word)), but it
+// round-trips through word via frombool / tobool, so it can still be stored.
+instance storage(bool):CanStore(bool) {
+    function store(l:storage(bool), r:bool) -> () {
+      StorageType.store(Typedef.rep(l), frombool(r));
+    }
+    function load(l:storage(bool)) -> bool {
+      return tobool(StorageType.load(Typedef.rep(l)));
+    }
+}
+
 forall k v.
  instance storage(mapping(k,v)):CanStore(storage(mapping(k,v))) {
     function store(l:storage(mapping(k,v)), r:storage(mapping(k,v))) -> () {
@@ -1817,12 +2261,66 @@ forall k v.
       unimplemented();
     }
     function load(l:storage(mapping(k,v))) -> storage(mapping(k,v)) {
-      // return StorageType.load(Typedef.rep(l));
-      unimplemented();
+      // "Loading" a storage mapping field yields its storage reference (the
+      // slot); indexed access / method calls consume that reference directly.
       return l;
     }
 }
 
+forall v. v:StorageCopy =>
+ instance storage(array(v)):CanStore(storage(array(v))) {
+    // Whole-array assignment is a deep copy, as in Solidity: a = b resizes a
+    // to b's length and then copies every
+    // element. Assigning an array to itself is a no-op. A *local* bound to an
+    // array field stays an alias, because a let is not an Assign.assign.
+    function store(l:storage(array(v)), r:storage(array(v))) -> () {
+      let dst : word = Typedef.rep(l);
+      let src : word = Typedef.rep(r);
+      if (dst != src) {
+        let oldLen : word = sload(dst);
+        let newLen : word = sload(src);
+        let dstBase : word = hash1(dst);
+        if (newLen < oldLen) {
+          clearStorageRange(dstBase + newLen, dstBase + oldLen);
+        }
+        sstore(dst, newLen);
+        let srcBase : word = hash1(src);
+        for (let i = 0; i < newLen; i += 1) {
+          StorageCopy.copySlot(storage(dstBase + i):storage(v), storage(srcBase + i):storage(v));
+        }
+      }
+    }
+    function load(l:storage(array(v))) -> storage(array(v)) {
+      // "Loading" a storage array field yields its storage reference (the
+      // slot). push / pop / length / arr[i] all consume that reference, so a
+      // field read like `ArrayPush.push(members, x)` must return the slot,
+      // not a copy.
+      return l;
+    }
+}
+
+// Assigning an array literal to a storage array field: `xs = [1,2,3]`.
+//
+// This is Solidity's memory -> storage array copy. It is a plain function, not
+// a CanStore instance, on purpose: instance overlap is decided by the main type
+// alone, so a second CanStore instance for storage(array(t)) would clash with
+// the deep-copy one above. FieldAccess routes `field = <array literal>` here
+// instead of through Assign.assign.
+//
+// Array.setLength resizes and clears the abandoned tail, so old elements never
+// resurrect. The element types differ: `t` is the storage element tag and `v`
+// what a value of it looks like in memory (they coincide for word-sized
+// elements; for array(string), t = string and v = memory(string)).
+forall t v . storage(t):CanStore(v), v:Typedef(word) =>
+function storeArrayLit(dst : storage(array(t)), src : memory(DynArray(v))) -> () {
+    let n : word = mload(Typedef.rep(src));
+    Array.setLength(dst, uint256(n));
+    let base : word = hash1(Typedef.rep(dst));
+    let i : word = 0;
+    for (; i < n; i += 1) {
+        CanStore.store(storage(base + i) : storage(t), IndexAccess.get(src, uint256(i)));
+    }
+}
 
 instance storage(string):CanStore(memory(string)) {
   function store(dst:storage(string), src:memory(string)) -> () {
@@ -1855,6 +2353,53 @@ instance storage(bytes):CanStore(memory(bytes)) {
     let endPtr = loadBytesFromStorage(srcPtr, dstPtr);
     set_free_memory(endPtr);
     return memory(dstPtr);
+  }
+}
+
+// --- StorageCopy: per-element copy used by whole-array assignment ---
+
+// Word-sized elements are self-contained: the slot is the value.
+instance word:StorageCopy {
+  function copySlot(dst:storage(word), src:storage(word)) -> () {
+    sstore(Typedef.rep(dst), sload(Typedef.rep(src)));
+  }
+}
+instance uint256:StorageCopy {
+  function copySlot(dst:storage(uint256), src:storage(uint256)) -> () {
+    sstore(Typedef.rep(dst), sload(Typedef.rep(src)));
+  }
+}
+instance bytes32:StorageCopy {
+  function copySlot(dst:storage(bytes32), src:storage(bytes32)) -> () {
+    sstore(Typedef.rep(dst), sload(Typedef.rep(src)));
+  }
+}
+instance address:StorageCopy {
+  function copySlot(dst:storage(address), src:storage(address)) -> () {
+    sstore(Typedef.rep(dst), sload(Typedef.rep(src)));
+  }
+}
+
+// Dynamic elements keep their payload at keccak256(elementSlot), so copying the
+// inline slot alone would leave the destination pointing at the *source's* tail.
+// Round-tripping through memory copies the payload too.
+instance string:StorageCopy {
+  function copySlot(dst:storage(string), src:storage(string)) -> () {
+    CanStore.store(dst, CanStore.load(src):memory(string));
+  }
+}
+instance bytes:StorageCopy {
+  function copySlot(dst:storage(bytes), src:storage(bytes)) -> () {
+    CanStore.store(dst, CanStore.load(src):memory(bytes));
+  }
+}
+
+// Nested arrays recurse into the array CanStore instance above. The recursion is
+// on the element type, so it terminates with the type's structure.
+forall t . t:StorageCopy =>
+instance array(t):StorageCopy {
+  function copySlot(dst:storage(array(t)), src:storage(array(t))) -> () {
+    CanStore.store(dst, src);
   }
 }
 
@@ -1904,16 +2449,16 @@ function loadBytesFromStorage(slot:word, memPtr:word) -> word {
     let pos = memPtr;
     let slotValue = sload(slot);
     let length = slotValue / 2;
-    let outOfPlaceEncoding = tobool(and_(slotValue, 1));
+    let outOfPlaceEncoding = tobool(slotValue & 1);
     if (!outOfPlaceEncoding) {
-        length = and_(length, 0x7f);
+        length &= 0x7f;
     }
     mstore(pos, length);
     pos += 32;
     match outOfPlaceEncoding {
         | false =>
             // Short byte array
-            mstore(pos, and_(slotValue, not_(0xff)));
+            mstore(pos, slotValue & ~0xff);
             let empty = iszero(length);
             let notzero = iszero(empty);
             return pos + (notzero * 32);
@@ -1921,9 +2466,8 @@ function loadBytesFromStorage(slot:word, memPtr:word) -> word {
             // Long byte array
             let dataPos = hash1(slot);
             let i = 0;
-            for (; i < length; i += 32) {
+            for (; i < length; i += 32, dataPos += 1) {
                 mstore(pos + i, sload(dataPos));
-                dataPos += 1;
             }
             return pos + i;
     }
@@ -1949,7 +2493,7 @@ instance (storage(mapping(i,a)), i): LValueIdxAccess(storage(a)) {
   }
 }
 
-forall i a . a:StorageType, i:Typedef(word) =>
+forall i a . storage(a):CanStore(a), i:Typedef(word) =>
 instance (storage(mapping(i,a)), i): RValueIdxAccess(a) {
   function lookup(xi : (storage(mapping(i,a)), i)) -> a {
   /*
@@ -1961,9 +2505,66 @@ instance (storage(mapping(i,a)), i): RValueIdxAccess(a) {
   }
 }
 
-forall a. a:StorageType =>
+forall a i . i:Typedef(word) =>
+instance (storage(array(a)), i): LValueIdxAccess(storage(a)) {
+  function lookup(xi : (storage(array(a)), i)) -> storage(a) {
+    match(xi) {
+      | (x, i) =>
+          let slot : word = Typedef.rep(x);
+          let idx : word = Typedef.rep(i);
+          // Bounds check: idx must be in [0, length). Length lives at the
+          // slot itself; inlined to avoid an Array(t) dispatch here.
+          if (idx >= sload(slot)) { out_of_bounds(); }
+          return storage(hash1(slot) + idx);
+    }
+  }
+}
+
+// Reading arr[i] yields whatever the element's storage reference loads, rather
+// than the element tag type. For word-sized elements that is the element itself;
+// for array(string) it is a memory(string); for a nested array(array(t)) it
+// is the inner array's handle, which push/pop/length then consume.
+forall a v i . storage(a):CanStore(v), i:Typedef(word) =>
+instance (storage(array(a)), i): RValueIdxAccess(v) {
+  function lookup(xi : (storage(array(a)), i)) -> v {
+    return CanStore.load(LValueIdxAccess.lookup(xi));
+  }
+}
+
+// Indexed read of a lazily-decoded calldata array: `arr[i]` desugars to
+// ridx(arr, i), which dispatches here and decodes element i on demand via
+// abiArrayGet. There is deliberately no LValueIdxAccess instance — calldata is
+// immutable, so `arr[i] = …` is (correctly) rejected at compile time.
+forall t t_decoded i .
+    t : ABIAttribs,
+    ABIDecoder(t, CalldataWordReader):ABIDecode(t_decoded),
+    i : Typedef(word) =>
+instance (calldata(array(t)), i): RValueIdxAccess(t_decoded) {
+  function lookup(xi : (calldata(array(t)), i)) -> t_decoded {
+    match(xi) {
+      | (a, idx) => return abiArrayGet(a, uint256(Typedef.rep(idx)));
+    }
+  }
+}
+
+// Memory arrays are read-only through `m[i]`: there is no memory cell reference
+// type, so they get an RValue instance but no LValue one.
+forall t i . t:Typedef(word), i:Typedef(word) =>
+instance (memory(DynArray(t)), i): RValueIdxAccess(t) {
+  function lookup(xi : (memory(DynArray(t)), i)) -> t {
+    match xi {
+      | (x, j) => return IndexAccess.get(x, uint256(Typedef.rep(j)));
+    }
+  }
+}
+
+
+// Mapping reads go through CanStore, matching the write side (Assign -> CanStore.store).
+// This lets a mapping hold any value with a CanStore instance — including ADTs whose
+// fields are dynamic (memory(bytes)) — not just the fixed-slot StorageType primitives.
+forall a. storage(a):CanStore(a) =>
 function readStorage(x:storage(a)) -> a {
-  return StorageType.load(Typedef.rep(x));
+  return CanStore.load(x);
 }
 /*
 forall r a. a:StorageType, r: RValueIdxAccess(a) =>
@@ -1977,14 +2578,18 @@ function lval(x:r) -> a {
 }
 */
 
-forall i a . i:Typedef(word) =>
-function lidx( m: storage(mapping(i,a)), x:i) -> storage(a) {
-  return storage(hash2(Typedef.rep(m), Typedef.rep(x)));
+// lidx/ridx are the generic indexed-access helpers used by the `arr[i]`
+// desugaring. They dispatch through LValueIdxAccess / RValueIdxAccess, so any
+// collection (mapping, array, ...) that provides those instances supports the
+// `arr[i]` syntax.
+forall col idx ref . (col, idx):LValueIdxAccess(ref) =>
+function lidx(c: col, i: idx) -> ref {
+    return LValueIdxAccess.lookup((c, i));
 }
 
-forall i a . i:Typedef(word), a:StorageType  =>
-function ridx( m: storage(mapping(i,a)), x:i) -> a {
-  return StorageType.load(hash2(Typedef.rep(m), Typedef.rep(x)));
+forall col idx val . (col, idx):RValueIdxAccess(val) =>
+function ridx(c: col, i: idx) -> val {
+    return RValueIdxAccess.lookup((c, i));
 }
 
 // --- Memory Encoding ---
@@ -2115,8 +2720,7 @@ function slice_(input: a, start: word) -> memory_ref {
     let len = MemorySize.len(input);
     // TODO: should this allow (it does now) a zero-length slice?
     require(len >= start, Error(0xb4120f14)); // OutOfBounds()
-    let ptr_ = MemoryPointer.ptr(input);
-    return memory_ref(ptr_ + start, len - start);
+    return memory_ref(MemoryPointer.ptr(input) + start, len - start);
 }
 
 forall a . a:MemorySize, a:MemoryPointer =>
@@ -2178,6 +2782,12 @@ function ecrecover(hash: bytes32, v: uint256, r: bytes32, s: bytes32) -> address
     mstore(ptr + 32, v_);
     mstore(ptr + 64, r_);
     mstore(ptr + 96, s_);
+    // Clear the [0, 32] scratch space that receives the return data. On a
+    // failed recovery (e.g. v not in {27, 28}, or the generic could-not-recover
+    // case) the precompile still reports success but returns no data, leaving
+    // the output area untouched. Without this, a stale non-zero value would
+    // slip past the `res != 0` check below and yield a bogus address.
+    mstore(0, 0);
     let ret = staticcall(gas(), 1, ptr, 128, 0, 32);
     require(ret != 0, Error(0x578763f7)); // ECRecoverCallFailed()
     let res = mload(0);
@@ -2185,20 +2795,11 @@ function ecrecover(hash: bytes32, v: uint256, r: bytes32, s: bytes32) -> address
     return address(res);
 }
 
-// TODO: use string here
-// TODO: eventually this needs to become comptime
-function erc7201(id: memory(bytes)) -> bytes32 {
-//    return keccak256_(to_bytes(keccak256_(id) - 1)) & ~0xff;
-    return Typedef.abs(
-        and_(
-            Typedef.rep(
-                keccak256_(
-                    to_bytes(bytes32(Typedef.rep(keccak256_(id)) - 1))
-                )
-            ),
-            not_(0xff)
-        )
-    );
+// ERC-7201 namespaced storage slot, computed entirely at compile time from a
+// string-literal namespace `id`:
+//   keccak256(abi.encode(uint256(keccak256(bytes(id))) - 1)) & ~bytes32(uint256(0xff))
+function erc7201(comptime id: string) -> comptime bytes32 {
+    return bytes32(keccakWordLit(keccakLit(id) - 1) & ~0xff);
 }
 
 forall a . a:MemorySize, a:MemoryPointer => function raw_call(target: address, value: uint256, payload: a) -> (bool, memory(bytes)) {
@@ -2214,10 +2815,6 @@ forall a . a:MemorySize, a:MemoryPointer => function raw_call(target: address, v
     let retSize = returndatasize();
     let retData = allocate_memory(32 + retSize);
     mstore(retData, retSize);
-    // TODO: use returndatacopy(retData + 32, 0, retSize);, but it is a parser error
-    // See https://github.com/argotorg/solcore/issues/497
-    assembly {
-        returndatacopy(add(retData, 32), 0, retSize)
-    }
+    returndatacopy(retData + 32, 0, retSize);
     return (tobool(ret), memory(retData));
 }

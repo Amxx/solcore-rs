@@ -17,8 +17,8 @@ use hir::{
 use rustc_hash::FxHashMap;
 
 use crate::{
-    BoundTyVar, BuiltinClassId, BuiltinTyCtor, ClassId, Pred, QualTy, Ty, TyCtor, TyKind, TyScheme,
-    UserTyCtor, UserTyCtorKind,
+    BoundTyVar, BuiltinClassId, BuiltinTyCtor, ClassId, Db, Pred, QualTy, Ty, TyCtor, TyKind,
+    TyScheme, UserTyCtor, UserTyCtorKind,
 };
 
 /// Mapping from nameres type-variable binders to de Bruijn scheme indices.
@@ -490,7 +490,7 @@ pub fn class_method_type_vars<'db>(
 /// Returns the builtin value scheme for a resolved builtin term or class
 /// method.
 pub fn builtin_scheme<'db>(
-    db: &'db dyn HirDb,
+    db: &'db dyn Db,
     builtin: hir_nameres::BuiltinKind,
 ) -> Option<TyScheme<'db>> {
     match builtin {
@@ -576,7 +576,7 @@ fn builtin_function_scheme<'db>(
 }
 
 fn builtin_method_scheme<'db>(
-    db: &'db dyn HirDb,
+    db: &'db dyn Db,
     method: hir_nameres::BuiltinClassMethod,
 ) -> Option<TyScheme<'db>> {
     match method {
@@ -595,6 +595,24 @@ fn builtin_method_scheme<'db>(
                     db,
                     vec![pred],
                     Ty::function(db, vec![Ty::integer(db)], result),
+                ),
+            ))
+        }
+        hir_nameres::BuiltinClassMethod::StrFromString => {
+            let result = Ty::bound(db, 0);
+            let pred = Pred::in_class(
+                db,
+                ClassId::Builtin(BuiltinClassId::Str),
+                result,
+                Vec::new(),
+            );
+            Some(TyScheme::new(
+                db,
+                1,
+                QualTy::new(
+                    db,
+                    vec![pred],
+                    Ty::function(db, vec![crate::support::source_string_ty(db)], result),
                 ),
             ))
         }
@@ -635,6 +653,7 @@ fn builtin_class(class: hir_nameres::BuiltinClass) -> BuiltinClassId {
     match class {
         hir_nameres::BuiltinClass::Invokable => BuiltinClassId::Invokable,
         hir_nameres::BuiltinClass::Int => BuiltinClassId::Int,
+        hir_nameres::BuiltinClass::Str => BuiltinClassId::Str,
     }
 }
 
@@ -642,6 +661,7 @@ fn builtin_class_name(class: hir_nameres::BuiltinClass) -> &'static str {
     match class {
         hir_nameres::BuiltinClass::Invokable => "invokable",
         hir_nameres::BuiltinClass::Int => "Int",
+        hir_nameres::BuiltinClass::Str => "Str",
     }
 }
 

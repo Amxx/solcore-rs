@@ -2,10 +2,13 @@ use hir::{ast::function::LitKind, span::Span};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{CEnv, TypeReg, VEnv, assigned::AssignedNames, value::BigInt};
-use crate::ir::{
-    MonoArm, MonoBuiltinCtor, MonoExpr, MonoExprKind, MonoId, MonoParam, MonoPat, MonoPatKind,
-    MonoStmt, MonoStmtKind, MonoTy,
-    visit::{Visitor, walk_pat, walk_stmt},
+use crate::{
+    ir::{
+        MonoArm, MonoBuiltinCtor, MonoExpr, MonoExprKind, MonoId, MonoParam, MonoPat, MonoPatKind,
+        MonoStmt, MonoStmtKind, MonoTy,
+        visit::{Visitor, walk_pat, walk_stmt},
+    },
+    string_literal::decode_string_literal,
 };
 
 pub(super) fn build_type_reg<'db>(
@@ -62,7 +65,7 @@ pub(super) fn known_int(expr: &MonoExpr<'_>) -> Option<BigInt> {
 
 pub(super) fn known_string(expr: &MonoExpr<'_>) -> Option<String> {
     match &expr.kind {
-        MonoExprKind::Lit(LitKind::String(text)) => decode_string_lit(text),
+        MonoExprKind::Lit(LitKind::String(text)) => decode_string_literal(text),
         MonoExprKind::TypeAnnot { expr, .. } => known_string(expr),
         _ => None,
     }
@@ -230,7 +233,7 @@ fn literal_matches(lit: &LitKind, value: &MonoExpr<'_>) -> bool {
             literal_bigint(lit).is_some_and(|lhs| known_int(value).is_some_and(|rhs| lhs == rhs))
         }
         LitKind::String(text) => known_string(value)
-            .is_some_and(|rhs| decode_string_lit(text).is_some_and(|lhs| lhs == rhs)),
+            .is_some_and(|rhs| decode_string_literal(text).is_some_and(|lhs| lhs == rhs)),
         LitKind::Error => false,
     }
 }
@@ -271,6 +274,7 @@ pub(super) fn lvalue_root_name(expr: &MonoExpr<'_>) -> Option<String> {
     match &expr.kind {
         MonoExprKind::Var(id) => Some(id.name.clone()),
         MonoExprKind::Index { base, .. }
+        | MonoExprKind::MemoryArrayIndex { base, .. }
         | MonoExprKind::StorageIndex { base, .. }
         | MonoExprKind::Field { base, .. }
         | MonoExprKind::TypeAnnot { expr: base, .. } => lvalue_root_name(base),
@@ -295,27 +299,6 @@ impl<'out, 'db> Visitor<'db> for PatBinderCollector<'out> {
     }
 
     fn visit_expr(&mut self, _expr: &MonoExpr<'db>) {}
-}
-
-fn decode_string_lit(text: &str) -> Option<String> {
-    let inner = text.strip_prefix('"')?.strip_suffix('"')?;
-    let mut out = String::new();
-    let mut chars = inner.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        match chars.next()? {
-            '"' => out.push('"'),
-            '\\' => out.push('\\'),
-            'n' => out.push('\n'),
-            'r' => out.push('\r'),
-            't' => out.push('\t'),
-            other => out.push(other),
-        }
-    }
-    Some(out)
 }
 
 fn encode_string_lit(value: &str) -> String {

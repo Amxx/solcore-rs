@@ -107,6 +107,10 @@ pub enum AssignOp {
     Add,
     /// `-=` assignment.
     Sub,
+    /// `*=` assignment.
+    Mul,
+    /// `/=` assignment.
+    Div,
     /// `^=` assignment.
     BitXor,
     /// `&=` assignment.
@@ -290,6 +294,8 @@ pub enum ExprKind<'db> {
     },
     /// Tuple expression; an empty tuple is the unit value.
     Tuple(Vec<Id<Expr<'db>>>),
+    /// Array literal expression, including an empty literal.
+    Array(Vec<Id<Expr<'db>>>),
     /// Parser recovery placeholder.
     Error,
 }
@@ -437,6 +443,8 @@ pub enum BinOp {
 pub enum UnOp {
     /// Logical negation.
     Not,
+    /// Bitwise complement.
+    BitNot,
     /// Parser recovery placeholder.
     Error,
 }

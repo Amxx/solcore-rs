@@ -53,6 +53,7 @@ impl<'db, 'a> TypeResolver<'db, 'a> {
                 );
             }
             Item::AdtDef(def) => {
+                self.adt_derives(def);
                 self.with_item_type_vars(
                     def.def_id_value(self.db),
                     def.ty_param_elems(self.db),
@@ -173,6 +174,23 @@ impl<'db, 'a> TypeResolver<'db, 'a> {
             Resolution::Err
         });
         self.map.preds.push(PredResolution { pred, resolution });
+    }
+
+    fn adt_derives(&mut self, adt: AdtDef<'db>) {
+        for (index, target) in adt.derives(self.db).iter().enumerate() {
+            let name = ident_text_str(self.db, target);
+            let resolution = self.lookup_class(name).unwrap_or_else(|| {
+                self.map
+                    .diagnostics
+                    .push(undefined_class(self.db, name, target.span(self.db)));
+                Resolution::Err
+            });
+            self.map.derives.push(AdtDeriveResolution {
+                adt: adt.def_id_value(self.db),
+                index: index as u32,
+                resolution,
+            });
+        }
     }
 
     fn ty(&mut self, ty: TypeRef<'db>) {

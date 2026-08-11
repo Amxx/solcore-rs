@@ -1,8 +1,11 @@
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, VecDeque},
+};
 
 use hir::{
     ast::function::{
-        AssignOp, BinOp, UnOp, YulExpr, YulExprKind, YulLitKind, YulStmt, YulStmtKind,
+        AssignOp, BinOp, LitKind, UnOp, YulExpr, YulExprKind, YulLitKind, YulStmt, YulStmtKind,
     },
     span::Span,
 };
@@ -18,8 +21,9 @@ use super::{
         intrinsic_is_pure, storage_field_names,
     },
     erasure::{
-        display_backend_symbol, display_mono_function_name, lambda_ret_is_comptime,
-        param_is_comptime, ty_is_builtin, ty_is_comptime, ty_is_function,
+        display_backend_symbol, display_mono_function_name, erase_comptime_ty,
+        lambda_ret_is_comptime, param_is_comptime, ty_is_builtin, ty_is_comptime,
+        ty_is_comptime_string, ty_is_function,
     },
     ident_text,
     known::{
@@ -27,7 +31,9 @@ use super::{
         literal_from_known_expr, lvalue_root_name, match_arms_with, match_expr_arms_with,
         remove_assigned, remove_comptime_assigned, string_expr,
     },
-    value::{BigInt, bitand_word, bitor_word, bitxor_word, word_div, word_low_byte, word_mod},
+    value::{
+        BigInt, bitand_word, bitor_word, bitxor_word, not_word, word_div, word_low_byte, word_mod,
+    },
     yul_const::{
         eval_yul_op, merge_yul_state, subst_yul_block, venv_to_yul_state, venv_to_yul_subst,
         yul_written_names,
@@ -52,6 +58,19 @@ struct InlineFrame<'db> {
     name: String,
     args: Vec<MonoExpr<'db>>,
     comptime: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StringCloneKey {
+    callee: String,
+    // Parameter positions keep the key unambiguous even for recovered `_`
+    // parameter names; decoded contents deduplicate equivalent folded literals.
+    bindings: Vec<(usize, String)>,
+}
+
+struct PendingStringClone<'db> {
+    function: MonoFunction<'db>,
+    env: VEnv<'db>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +113,14 @@ pub(super) struct Evaluator<'db> {
     inline_stack: Vec<InlineFrame<'db>>,
     fuel_limit: usize,
     fuel: usize,
+    // Unlike inline fuel, clone fuel is never reset per emitted function. A
+    // recursive function deriving a fresh literal therefore terminates.
+    clone_fuel: usize,
+    // Mono functions are module-global. Hull's object reachability copies a
+    // shared clone into every object that calls it, so module-wide dedup is safe.
+    clone_names: FxHashMap<StringCloneKey, String>,
+    pending_string_clones: VecDeque<PendingStringClone<'db>>,
+    next_clone_id: usize,
     inline_depth_limit: usize,
     memory: BTreeMap<BigInt, u8>,
     comptime_mode: bool,
@@ -160,6 +187,10 @@ impl<'db> Evaluator<'db> {
             inline_stack: Vec::new(),
             fuel_limit: fuel,
             fuel,
+            clone_fuel: fuel,
+            clone_names: FxHashMap::default(),
+            pending_string_clones: VecDeque::new(),
+            next_clone_id: 0,
             inline_depth_limit,
             memory: BTreeMap::new(),
             comptime_mode: false,
@@ -167,7 +198,20 @@ impl<'db> Evaluator<'db> {
         }
     }
 
-    pub(super) fn eval_function(&mut self, mut function: MonoFunction<'db>) -> MonoFunction<'db> {
+    pub(super) fn eval_function(&mut self, function: MonoFunction<'db>) -> MonoFunction<'db> {
+        self.eval_function_with_env(function, VEnv::default())
+    }
+
+    pub(super) fn eval_next_string_clone(&mut self) -> Option<MonoFunction<'db>> {
+        let pending = self.pending_string_clones.pop_front()?;
+        Some(self.eval_function_with_env(pending.function, pending.env))
+    }
+
+    fn eval_function_with_env(
+        &mut self,
+        mut function: MonoFunction<'db>,
+        initial_env: VEnv<'db>,
+    ) -> MonoFunction<'db> {
         // Bound total unfolding work for each emitted function. The counter is
         // monotone while that function is evaluated, so sibling calls cannot
         // repeatedly reclaim the same budget.
@@ -180,10 +224,11 @@ impl<'db> Evaluator<'db> {
             .iter()
             .filter(|param| ret_comptime || param_is_comptime(self.db, param))
             .map(|param| param.name.clone())
+            .chain(initial_env.keys().cloned())
             .collect::<CEnv>();
         let (_, _, body) = self.eval_stmts(
             &type_reg,
-            VEnv::default(),
+            initial_env,
             comptime_env,
             function.body,
             ret_comptime,
@@ -436,6 +481,8 @@ impl<'db> Evaluator<'db> {
                 op:
                     op @ (AssignOp::Add
                     | AssignOp::Sub
+                    | AssignOp::Mul
+                    | AssignOp::Div
                     | AssignOp::BitXor
                     | AssignOp::BitAnd
                     | AssignOp::BitOr
@@ -641,7 +688,12 @@ impl<'db> Evaluator<'db> {
                         }],
                     )
                 } else {
-                    let (env, comptime_env) = self.preserve_comptime_known_env(env, comptime_env);
+                    let (mut env, mut comptime_env) =
+                        self.preserve_comptime_known_env(env, comptime_env);
+                    for name in written {
+                        env.remove(&name);
+                        comptime_env.remove(&name);
+                    }
                     (
                         env,
                         comptime_env,
@@ -735,7 +787,12 @@ impl<'db> Evaluator<'db> {
 
     fn expr_survives_unknown_write(&self, expr: &MonoExpr<'db>) -> bool {
         match &expr.kind {
-            MonoExprKind::Proxy(_) | MonoExprKind::Lambda { .. } => true,
+            // A compile-time string has no mutable runtime location. Keep a
+            // clone binding across unknown callees; the assembly path removes
+            // names explicitly written by that block before carrying it on.
+            MonoExprKind::Lit(LitKind::String(_))
+            | MonoExprKind::Proxy(_)
+            | MonoExprKind::Lambda { .. } => true,
             MonoExprKind::Var(id) => self.functions.contains_key(&id.name),
             MonoExprKind::Tuple(elems) => elems
                 .iter()
@@ -813,7 +870,26 @@ impl<'db> Evaluator<'db> {
                     target,
                 )
             }
-            MonoExprKind::StorageIndex { base, index } => {
+            MonoExprKind::MemoryArrayIndex { base, index } => {
+                let base = self.eval_expr(env, comptime_env, *base);
+                let index = self.eval_expr(env, comptime_env, *index);
+                (
+                    MonoExpr {
+                        span,
+                        ty,
+                        kind: MonoExprKind::MemoryArrayIndex {
+                            base: Box::new(base),
+                            index: Box::new(index),
+                        },
+                    },
+                    None,
+                )
+            }
+            MonoExprKind::StorageIndex {
+                storage_kind,
+                base,
+                index,
+            } => {
                 let (base, target) = self.eval_lvalue(env, comptime_env, *base);
                 let index = self.eval_expr(env, comptime_env, *index);
                 (
@@ -821,6 +897,7 @@ impl<'db> Evaluator<'db> {
                         span,
                         ty,
                         kind: MonoExprKind::StorageIndex {
+                            storage_kind,
                             base: Box::new(base),
                             index: Box::new(index),
                         },
@@ -924,6 +1001,9 @@ impl<'db> Evaluator<'db> {
                     if let Some(result) = self.try_inline(&callee.name, &args, span) {
                         return result;
                     }
+                    if let Some(result) = self.try_clone_string_call(&callee, &args, ty, span) {
+                        return result;
+                    }
                 }
                 MonoExpr {
                     span,
@@ -1002,10 +1082,23 @@ impl<'db> Evaluator<'db> {
                     index: Box::new(self.eval_expr(env, comptime_env, *index)),
                 },
             },
-            MonoExprKind::StorageIndex { base, index } => MonoExpr {
+            MonoExprKind::MemoryArrayIndex { base, index } => MonoExpr {
+                span,
+                ty,
+                kind: MonoExprKind::MemoryArrayIndex {
+                    base: Box::new(self.eval_expr(env, comptime_env, *base)),
+                    index: Box::new(self.eval_expr(env, comptime_env, *index)),
+                },
+            },
+            MonoExprKind::StorageIndex {
+                storage_kind,
+                base,
+                index,
+            } => MonoExpr {
                 span,
                 ty,
                 kind: MonoExprKind::StorageIndex {
+                    storage_kind,
                     base: Box::new(self.eval_expr(env, comptime_env, *base)),
                     index: Box::new(self.eval_expr(env, comptime_env, *index)),
                 },
@@ -1154,14 +1247,16 @@ impl<'db> Evaluator<'db> {
                 let args = self.closure_call_args(function, args);
                 self.check_comptime_params(&id.name, &args, &CEnv::default(), span);
                 self.try_inline(&id.name, &args, span).or_else(|| {
-                    Some(MonoExpr {
-                        span,
-                        ty,
-                        kind: MonoExprKind::Call {
-                            callee: id.clone(),
-                            args,
-                            origin: MonoCallOrigin::ByName,
-                        },
+                    self.try_clone_string_call(id, &args, ty, span).or_else(|| {
+                        Some(MonoExpr {
+                            span,
+                            ty,
+                            kind: MonoExprKind::Call {
+                                callee: id.clone(),
+                                args,
+                                origin: MonoCallOrigin::ByName,
+                            },
+                        })
                     })
                 })
             }
@@ -1381,6 +1476,10 @@ impl<'db> Evaluator<'db> {
                 let hash = hir::keccak::keccak256(known_string(arg)?.as_bytes());
                 Some(int_expr(BigInt::from_be_bytes(&hash), ty, span))
             }
+            (MonoIntrinsic::KeccakWordLit, [arg]) => {
+                let hash = hir::keccak::keccak256(&known_int(arg)?.to_word_be_bytes());
+                Some(int_expr(BigInt::from_be_bytes(&hash), ty, span))
+            }
             (MonoIntrinsic::PrimAddWord, [lhs, rhs]) => self.eval_word_binary(
                 WordBinaryOp::Add,
                 known_int(lhs)?,
@@ -1426,6 +1525,9 @@ impl<'db> Evaluator<'db> {
                 ty,
                 span,
             ),
+            (MonoIntrinsic::BnotWord, [arg]) => {
+                Some(int_expr(not_word(&known_int(arg)?), ty, span))
+            }
             (MonoIntrinsic::PrimEqWord, [lhs, rhs]) => {
                 self.eval_word_binary(WordBinaryOp::Eq, known_int(lhs)?, known_int(rhs)?, ty, span)
             }
@@ -1506,6 +1608,10 @@ impl<'db> Evaluator<'db> {
     ) -> Option<MonoExpr<'db>> {
         match op {
             UnOp::Not => known_bool(self.db, expr).map(|value| bool_expr(!value, ty, span)),
+            UnOp::BitNot if ty_is_builtin(self.db, ty.ty(), BuiltinTyCtor::Word) => {
+                known_int(expr).map(|value| int_expr(not_word(&value), ty, span))
+            }
+            UnOp::BitNot => None,
             UnOp::Error => None,
         }
     }
@@ -1589,9 +1695,141 @@ impl<'db> Evaluator<'db> {
         let frame = self.inline_stack.pop();
         debug_assert!(frame.is_some_and(|frame| frame.name == name));
         match result {
-            FoldOutcome::ReturnedKnown(expr) => Some(expr),
+            FoldOutcome::ReturnedKnown(mut expr) => {
+                // A comptime return is a promise that the call will disappear.
+                // Once inlining has produced a concrete value, materialize that
+                // value at the corresponding runtime type so the comptime marker
+                // cannot leak into backend IR.
+                if ret_comptime {
+                    expr = materialize_comptime_value(self.db, expr);
+                }
+                Some(expr)
+            }
             FoldOutcome::ReturnedUnknownAbort | FoldOutcome::FellThroughContinue(_, _) => None,
         }
+    }
+
+    fn try_clone_string_call(
+        &mut self,
+        callee: &MonoId<'db>,
+        args: &[MonoExpr<'db>],
+        result_ty: MonoTy<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        // This hook runs after argument folding and ordinary inlining. It can
+        // therefore use the final string contents as the clone identity and
+        // make direct and folded-equivalent call sites share one definition.
+        let function = self.functions.get(&callee.name)?.clone();
+        if function.params.len() != args.len() {
+            return None;
+        }
+
+        let mut key_bindings = Vec::new();
+        let mut env = VEnv::default();
+        let mut erased = FxHashSet::default();
+        for (index, (param, arg)) in function.params.iter().zip(args).enumerate() {
+            if !ty_is_comptime_string(self.db, param.ty.ty()) {
+                continue;
+            }
+            let value = known_string(arg)?;
+            key_bindings.push((index, value.clone()));
+            env.insert(param.name.clone(), string_expr(value, param.ty, arg.span));
+            erased.insert(index);
+        }
+        if key_bindings.is_empty() {
+            return None;
+        }
+
+        let key = StringCloneKey {
+            callee: callee.name.clone(),
+            bindings: key_bindings,
+        };
+        let kept_params = function
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !erased.contains(index))
+            .map(|(_, param)| param.clone())
+            .collect::<Vec<_>>();
+        let clone_ty = MonoTy::new_unchecked(hir_ty::Ty::function(
+            self.db,
+            kept_params.iter().map(|param| param.ty.ty()).collect(),
+            function.ret.ty(),
+        ));
+
+        let clone_name = if let Some(name) = self.clone_names.get(&key) {
+            name.clone()
+        } else {
+            if self.clone_fuel == 0 {
+                self.push_clone_fuel_diagnostic(&function, span);
+                return None;
+            }
+            self.clone_fuel -= 1;
+            let name = self.fresh_string_clone_name(&function.name);
+            let mut clone = function.clone();
+            clone.name = name.clone();
+            clone.params = kept_params;
+
+            if self.pure_funs.contains(&function.name) {
+                self.pure_funs.insert(name.clone());
+            }
+            self.write_effects.insert(
+                name.clone(),
+                self.write_effects
+                    .get(&function.name)
+                    .cloned()
+                    .unwrap_or(AssignedNames::All),
+            );
+            self.functions.insert(name.clone(), clone.clone());
+            self.pending_string_clones.push_back(PendingStringClone {
+                function: clone,
+                env,
+            });
+            self.clone_names.insert(key, name.clone());
+            name
+        };
+
+        Some(MonoExpr {
+            span,
+            ty: result_ty,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name: clone_name,
+                    ty: clone_ty,
+                    span: callee.span,
+                },
+                args: args
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| !erased.contains(index))
+                    .map(|(_, arg)| arg.clone())
+                    .collect(),
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
+    fn fresh_string_clone_name(&mut self, base: &str) -> String {
+        loop {
+            let name = format!("{base}$ct{}", self.next_clone_id);
+            self.next_clone_id += 1;
+            if !self.functions.contains_key(&name) {
+                return name;
+            }
+        }
+    }
+
+    fn push_clone_fuel_diagnostic(&mut self, function: &MonoFunction<'db>, span: Span<'db>) {
+        if self.has_inline_failure_diagnostic() {
+            return;
+        }
+        self.diagnostics.push(SpecializeDiagnostic {
+            kind: SpecializeDiagnosticKind::ComptimeFuelExhausted {
+                function: display_mono_function_name(self.db, function),
+                limit: self.fuel_limit,
+            },
+            span: Some(span),
+        });
     }
 
     fn try_inline_stmt_call(
@@ -1601,10 +1839,22 @@ impl<'db> Evaluator<'db> {
         span: Span<'db>,
     ) -> Option<Vec<MonoStmt<'db>>> {
         let function = self.functions.get(&callee.name)?.clone();
-        if !self.function_is_std_dispatch(&function) || function.params.len() != args.len() {
+        if !self.function_is_std_dispatch(&function)
+            || !self.ty_is_unit(function.ret.ty())
+            || function.params.len() != args.len()
+        {
             return None;
         }
         if !args.iter().all(|arg| self.expr_is_known_value(arg)) {
+            return None;
+        }
+        // A source `return ()` exits the dispatch helper, not the function that
+        // called it. Statement inlining erases that function boundary, so only
+        // inline bodies whose returns are all in tail position and remove those
+        // returns before splicing the body into the caller. Otherwise a failed
+        // selector match can `leave` the contract entry before its fallback.
+        let mut checked_body = function.body.clone();
+        if !self.normalize_inlined_unit_body(&mut checked_body) {
             return None;
         }
         let ret_comptime = ty_is_comptime(self.db, function.ret.ty());
@@ -1641,10 +1891,76 @@ impl<'db> Evaluator<'db> {
             comptime_env.insert(param.name.clone());
         }
         let type_reg = build_type_reg(&function.params, &function.body);
-        let (_, _, body) = self.eval_stmts(&type_reg, env, comptime_env, function.body, false);
+        let (_, _, mut body) = self.eval_stmts(&type_reg, env, comptime_env, function.body, false);
         let frame = self.inline_stack.pop();
         debug_assert!(frame.is_some_and(|frame| frame.name == callee.name));
+        let normalized = self.normalize_inlined_unit_body(&mut body);
+        debug_assert!(
+            normalized,
+            "evaluating an inline-safe body introduced an unsafe return"
+        );
+        if !normalized {
+            return None;
+        }
         Some(body)
+    }
+
+    fn normalize_inlined_unit_body(&self, body: &mut Vec<MonoStmt<'db>>) -> bool {
+        if body.iter().any(stmt_has_yul_leave) {
+            return false;
+        }
+        self.strip_tail_unit_returns(body)
+    }
+
+    fn strip_tail_unit_returns(&self, body: &mut Vec<MonoStmt<'db>>) -> bool {
+        let Some(last_index) = body.len().checked_sub(1) else {
+            return true;
+        };
+        if body[..last_index].iter().any(stmt_has_return) {
+            return false;
+        }
+
+        let mut remove_last = false;
+        let mut returned_effect = None;
+        let safe = match &mut body[last_index].kind {
+            MonoStmtKind::Return(expr) => {
+                let is_unit = expr
+                    .as_ref()
+                    .is_none_or(|expr| self.ty_is_unit(expr.ty.ty()));
+                if is_unit {
+                    match expr.take() {
+                        Some(expr) if !self.expr_is_known_value(&expr) => {
+                            returned_effect = Some(expr);
+                        }
+                        Some(_) | None => remove_last = true,
+                    }
+                }
+                is_unit
+            }
+            MonoStmtKind::Match { arms, .. } => arms
+                .iter_mut()
+                .all(|arm| self.strip_tail_unit_returns(&mut arm.body)),
+            MonoStmtKind::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                self.strip_tail_unit_returns(then_body)
+                    && else_body
+                        .as_mut()
+                        .is_none_or(|body| self.strip_tail_unit_returns(body))
+            }
+            MonoStmtKind::Block(body) => self.strip_tail_unit_returns(body),
+            _ => !stmt_has_return(&body[last_index]),
+        };
+        if safe {
+            if let Some(expr) = returned_effect {
+                body[last_index].kind = MonoStmtKind::Expr(expr);
+            } else if remove_last {
+                body.pop();
+            }
+        }
+        safe
     }
 
     fn function_can_inline(&self, name: &str, function: &MonoFunction<'db>) -> bool {
@@ -1911,6 +2227,8 @@ impl<'db> Evaluator<'db> {
                     op:
                         AssignOp::Add
                         | AssignOp::Sub
+                        | AssignOp::Mul
+                        | AssignOp::Div
                         | AssignOp::BitXor
                         | AssignOp::BitAnd
                         | AssignOp::BitOr
@@ -2003,7 +2321,7 @@ impl<'db> Evaluator<'db> {
                 self.expr_is_comptime(base, comptime_env)
                     && self.expr_is_comptime(index, comptime_env)
             }
-            MonoExprKind::StorageIndex { .. } => false,
+            MonoExprKind::MemoryArrayIndex { .. } | MonoExprKind::StorageIndex { .. } => false,
             MonoExprKind::Field { base, .. } => self.expr_is_comptime(base, comptime_env),
             MonoExprKind::TypeAnnot { expr, .. } => self.expr_is_comptime(expr, comptime_env),
             MonoExprKind::Match { scrutinee, arms } => {
@@ -2129,6 +2447,135 @@ impl<'db> Evaluator<'db> {
             },
             span,
         });
+    }
+}
+
+fn stmt_has_return(stmt: &MonoStmt<'_>) -> bool {
+    match &stmt.kind {
+        MonoStmtKind::Return(_) => true,
+        MonoStmtKind::Match { arms, .. } => {
+            arms.iter().any(|arm| arm.body.iter().any(stmt_has_return))
+        }
+        MonoStmtKind::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().any(stmt_has_return)
+                || else_body
+                    .as_deref()
+                    .is_some_and(|body| body.iter().any(stmt_has_return))
+        }
+        MonoStmtKind::For {
+            init, post, body, ..
+        } => {
+            init.iter().any(stmt_has_return)
+                || post.iter().any(stmt_has_return)
+                || body.iter().any(stmt_has_return)
+        }
+        MonoStmtKind::Block(body) => body.iter().any(stmt_has_return),
+        _ => false,
+    }
+}
+
+fn stmt_has_yul_leave(stmt: &MonoStmt<'_>) -> bool {
+    match &stmt.kind {
+        MonoStmtKind::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| arm.body.iter().any(stmt_has_yul_leave)),
+        MonoStmtKind::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().any(stmt_has_yul_leave)
+                || else_body
+                    .as_deref()
+                    .is_some_and(|body| body.iter().any(stmt_has_yul_leave))
+        }
+        MonoStmtKind::For {
+            init, post, body, ..
+        } => {
+            init.iter().any(stmt_has_yul_leave)
+                || post.iter().any(stmt_has_yul_leave)
+                || body.iter().any(stmt_has_yul_leave)
+        }
+        MonoStmtKind::Block(body) => body.iter().any(stmt_has_yul_leave),
+        MonoStmtKind::Assembly(body) => yul_stmts_have_leave(body),
+        _ => false,
+    }
+}
+
+fn yul_stmts_have_leave(stmts: &[YulStmt<'_>]) -> bool {
+    stmts.iter().any(|stmt| match &stmt.kind {
+        YulStmtKind::Leave => true,
+        YulStmtKind::Block(body) | YulStmtKind::If { body, .. } => yul_stmts_have_leave(body),
+        YulStmtKind::For {
+            init, post, body, ..
+        } => yul_stmts_have_leave(init) || yul_stmts_have_leave(post) || yul_stmts_have_leave(body),
+        YulStmtKind::Switch { cases, default, .. } => {
+            cases.iter().any(|case| yul_stmts_have_leave(&case.body))
+                || default.as_deref().is_some_and(yul_stmts_have_leave)
+        }
+        // A nested Yul function retains its own `leave` boundary.
+        YulStmtKind::FunctionDef { .. }
+        | YulStmtKind::Let { .. }
+        | YulStmtKind::Assign { .. }
+        | YulStmtKind::Expr(_)
+        | YulStmtKind::Break
+        | YulStmtKind::Continue
+        | YulStmtKind::Error => false,
+    })
+}
+
+fn materialize_comptime_value<'db>(db: &'db dyn Db, expr: MonoExpr<'db>) -> MonoExpr<'db> {
+    let MonoExpr { span, ty, kind } = expr;
+    let runtime_ty = || MonoTy::new_unchecked(erase_comptime_ty(db, ty.ty()));
+    match kind {
+        MonoExprKind::Lit(lit @ (LitKind::Number(_) | LitKind::Hex(_))) => MonoExpr {
+            span,
+            ty: runtime_ty(),
+            kind: MonoExprKind::Lit(lit),
+        },
+        MonoExprKind::Tuple(elems) => MonoExpr {
+            span,
+            ty: runtime_ty(),
+            kind: MonoExprKind::Tuple(
+                elems
+                    .into_iter()
+                    .map(|elem| materialize_comptime_value(db, elem))
+                    .collect(),
+            ),
+        },
+        MonoExprKind::Con { mut ctor, args } => {
+            ctor.ty = MonoTy::new_unchecked(erase_comptime_ty(db, ctor.ty.ty()));
+            MonoExpr {
+                span,
+                ty: runtime_ty(),
+                kind: MonoExprKind::Con {
+                    ctor,
+                    args: args
+                        .into_iter()
+                        .map(|arg| materialize_comptime_value(db, arg))
+                        .collect(),
+                },
+            }
+        }
+        MonoExprKind::TypeAnnot {
+            expr: inner,
+            ty: annotation,
+        } => MonoExpr {
+            span,
+            ty: runtime_ty(),
+            kind: MonoExprKind::TypeAnnot {
+                expr: Box::new(materialize_comptime_value(db, *inner)),
+                ty: MonoTy::new_unchecked(erase_comptime_ty(db, annotation.ty())),
+            },
+        },
+        // String literals and function-like values have no direct backend
+        // representation. Keep their comptime marker so the erasure check
+        // rejects them unless a surrounding comptime operation consumes them.
+        kind => MonoExpr { span, ty, kind },
     }
 }
 

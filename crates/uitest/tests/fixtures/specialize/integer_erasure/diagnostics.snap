@@ -13,5 +13,5 @@ error[SC0411]: runtime lowering cannot represent `integer` in return type of `ma
   | |___^ not representable at runtime
 5 |   }
   |
-  = note: `integer` and `comptime` values must be eliminated before runtime lowering
+  = note: `integer`, `string`, and `comptime` values must be eliminated before runtime lowering
   = note: help: evaluate the value at comptime or change it to a runtime-representable type

@@ -176,6 +176,17 @@ where
             })
             .boxed();
 
+        let array_expr = expr
+            .clone()
+            .separated_by(just(Token::Comma))
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LBracket), just(Token::RBracket))
+            .map_with(|elems, e| ParsedExpr {
+                span: e.span(),
+                kind: ParsedExprKind::Array(elems),
+            })
+            .boxed();
+
         let proxy_expr = just(Token::At)
             .map_with(|_, e| e.span())
             .then(type_parser())
@@ -211,6 +222,7 @@ where
             }))
             .or(proxy_expr)
             .or(tuple_or_paren_expr)
+            .or(array_expr)
             .or(lambda_expr)
             .or(if_expr)
             .recover_with(via_parser(atom_recovery))
@@ -255,6 +267,7 @@ where
 
         let unary_op = just(Token::Bang)
             .to(function::UnOp::Not)
+            .or(just(Token::Tilde).to(function::UnOp::BitNot))
             .map_with(|op, e| ParsedSpanned::new(op, e.span()));
         let unary = unary_op
             .repeated()

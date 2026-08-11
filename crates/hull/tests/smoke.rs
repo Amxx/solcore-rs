@@ -16,7 +16,9 @@ use solcore_hull::{
     CheckDiagnosticKind, EmitDiagnostic, EmitDiagnosticKind, EmitOptions, check_program_with_db,
     emit_module, pretty_program,
 };
-use specialize::{SpecializeOptions, SpecializeOutput, specialize_module};
+use specialize::{
+    SpecializeDiagnosticKind, SpecializeOptions, SpecializeOutput, specialize_module,
+};
 
 #[salsa::db]
 #[derive(Default, Clone)]
@@ -175,6 +177,141 @@ fn specialization_corpus_subset_emits_and_checks() {
 }
 
 #[test]
+fn objectless_string_materializers_are_content_deduplicated() {
+    let (db, output) = specialize_src_with_std(
+        "objectless_string_materializer",
+        r#"
+import std.{memory, string};
+
+function alpha() -> memory(string) { return "alpha"; }
+function beta() -> memory(string) { return "beta"; }
+function main() -> memory(string) {
+  alpha();
+  beta();
+  return "alpha";
+}
+"#,
+    );
+    assert_eq!(output.diagnostics, Vec::new());
+
+    let emitted = emit_module(db, &output.module, EmitOptions::default());
+    assert_eq!(emitted.diagnostics, Vec::new());
+    assert_eq!(check_program_with_db(db, &emitted.program), Vec::new());
+    let hull = pretty_program(db, &emitted.program);
+    assert_eq!(hull.matches("function __strlit_").count(), 2, "{hull}");
+    assert_eq!(hull.matches("function __strlit_0").count(), 1, "{hull}");
+    assert_eq!(hull.matches("__strlit_0()").count(), 2, "{hull}");
+    assert!(hull.contains("p := mload(0x40)"), "{hull}");
+    assert!(hull.contains("mstore(p, 5)"), "{hull}");
+    assert!(
+        hull.contains("0x616c706861000000000000000000000000000000000000000000000000000000"),
+        "{hull}"
+    );
+    assert!(hull.contains("mstore(0x40, add(p, 64))"), "{hull}");
+}
+
+#[test]
+fn contract_objects_receive_their_reachable_string_materializer() {
+    let (db, output) = specialize_src_with_std(
+        "contract_string_materializers",
+        r#"
+import std.{memory, string};
+
+contract A { function main() -> memory(string) { return "shared"; } }
+contract B { function main() -> memory(string) { return "shared"; } }
+"#,
+    );
+    assert_eq!(output.diagnostics, Vec::new());
+
+    let emitted = emit_module(db, &output.module, EmitOptions::default());
+    assert_eq!(emitted.diagnostics, Vec::new());
+    assert_eq!(check_program_with_db(db, &emitted.program), Vec::new());
+    let hull = pretty_program(db, &emitted.program);
+    // One content-deduplicated helper exists in the shared function table and
+    // reachability copies it into each runtime object that references it.
+    assert_eq!(hull.matches("function __strlit_0").count(), 2, "{hull}");
+    let deploy_a = hull.split("object \"ADeploy\"").nth(1).expect("A deploy");
+    let runtime_a = deploy_a.split("object \"A\"").nth(1).expect("A runtime");
+    assert!(runtime_a.contains("function __strlit_0"), "{hull}");
+    let deploy_b = hull.split("object \"BDeploy\"").nth(1).expect("B deploy");
+    let runtime_b = deploy_b.split("object \"B\"").nth(1).expect("B runtime");
+    assert!(runtime_b.contains("function __strlit_0"), "{hull}");
+}
+
+#[test]
+fn canonical_revert_literal_lowers_to_message_revert() {
+    let hull = pretty_src_hull_with_std(
+        "revert_literal",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract WithFallback {
+  public function answer() -> uint256 { return uint256(42); }
+
+  fallback() -> () {
+    revertLit("fallback-was-called");
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("revertLit \"fallback-was-called\""), "{hull}");
+    assert!(
+        !hull.contains("0x6e128399"),
+        "revertLit must not lower through std.unimplemented():\n{hull}"
+    );
+}
+
+#[test]
+fn let_initializer_revert_literal_lowers_to_message_revert() {
+    let hull = pretty_src_hull_with_std(
+        "let_revert_literal",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract C {
+  fallback() -> () {
+    let unreachable : () = revertLit("let-initializer");
+    return unreachable;
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("revertLit \"let-initializer\""), "{hull}");
+    assert!(!hull.contains("0x6e128399"), "{hull}");
+}
+
+#[test]
+fn nested_revert_literal_lowers_before_its_containing_expression() {
+    let hull = pretty_src_hull_with_std(
+        "nested_revert_literal",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract C {
+  fallback() -> () {
+    let raw : word;
+    assembly { raw := callvalue() }
+    let result : () = if (raw == 0) then revertLit("nested") else ();
+    return result;
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("revertLit \"nested\""), "{hull}");
+    assert!(
+        hull.contains("then (__revertlit_0()) else (())"),
+        "the reverting call must remain inside the selected branch:\n{hull}"
+    );
+    assert!(!hull.contains("0x6e128399"), "{hull}");
+}
+
+#[test]
 fn contract_without_runtime_main_defers_dispatch_to_specialization() {
     let (db, output) = specialize_src(
         "dispatch_word",
@@ -209,25 +346,27 @@ contract C {
 
 #[test]
 fn dispatch_basic_fixture_uses_std_dispatch_main() {
-    let fixture = repo_root()
-        .join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.solc");
-    let (db, output) = specialize_fixture(&fixture);
-    assert_eq!(output.diagnostics, Vec::new());
-    let emitted = emit_module(db, &output.module, EmitOptions::default());
-    assert_eq!(emitted.diagnostics, Vec::new());
-    assert_eq!(check_program_with_db(db, &emitted.program), Vec::new());
-    let hull = pretty_program(db, &emitted.program);
-    assert!(hull.contains("basic_C_main_"), "{hull}");
-    assert!(hull.contains("dispatch_selector_matches"), "{hull}");
-    assert!(
-        hull.contains("std_abi_decode_d")
-            && hull.contains("$calldata_")
-            && hull.contains("memory_")
-            && hull.contains("string_"),
-        "{hull}"
-    );
-    assert!(hull.contains("opcodes_mcopy"), "{hull}");
-    assert!(!hull.contains("dispatch_ret12_abi_head0_offset"), "{hull}");
+    solcore_test_utils::run_in_large_stack(|| {
+        let fixture = repo_root()
+            .join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.solc");
+        let (db, output) = specialize_fixture(&fixture);
+        assert_eq!(output.diagnostics, Vec::new());
+        let emitted = emit_module(db, &output.module, EmitOptions::default());
+        assert_eq!(emitted.diagnostics, Vec::new());
+        assert_eq!(check_program_with_db(db, &emitted.program), Vec::new());
+        let hull = pretty_program(db, &emitted.program);
+        assert!(hull.contains("basic_C_main_"), "{hull}");
+        assert!(hull.contains("dispatch_selector_matches"), "{hull}");
+        assert!(
+            hull.contains("std_abi_decode_d")
+                && hull.contains("$calldata_")
+                && hull.contains("memory_")
+                && hull.contains("string_"),
+            "{hull}"
+        );
+        assert!(hull.contains("opcodes_mcopy"), "{hull}");
+        assert!(!hull.contains("dispatch_ret12_abi_head0_offset"), "{hull}");
+    });
 }
 
 #[test]
@@ -640,8 +779,8 @@ fn recursive_adt_layouts_are_cycle_safe() {
 }
 
 #[test]
-fn unsupported_match_rows_produce_an_explicit_emit_diagnostic() {
-    let (db, output) = specialize_src(
+fn runtime_string_match_is_rejected_before_emission() {
+    let (_db, output) = specialize_src(
         "string_literal_match",
         r#"
 function main(s : string) -> word {
@@ -652,17 +791,14 @@ function main(s : string) -> word {
 }
 "#,
     );
-    assert_eq!(output.diagnostics, Vec::new());
-    let emitted = emit_module(db, &output.module, EmitOptions::default());
-
     assert!(
-        emitted.diagnostics.iter().any(|diagnostic| matches!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
             &diagnostic.kind,
-            EmitDiagnosticKind::UnsupportedMonoConstruct { construct }
-                if construct.contains("string literal match pattern")
+            SpecializeDiagnosticKind::IntegerErasure { context, ty }
+                if context == "pattern" && ty == "string"
         )),
         "{:?}",
-        emitted.diagnostics
+        output.diagnostics
     );
 }
 
@@ -830,7 +966,8 @@ contract MappingWriter {
     );
     assert!(mapping_hull.contains("sstore("), "{mapping_hull}");
     assert!(
-        mapping_main.contains("sload(__solcore_storage_hash2(0, 1))"),
+        mapping_main.contains("CanStore_load_")
+            && mapping_main.contains("(__solcore_storage_hash2(0, 1))"),
         "{mapping_main}\n{mapping_hull}"
     );
 
@@ -859,9 +996,9 @@ contract DirectWriter {
         direct_main.contains("_setv_"),
         "{direct_main}\n{direct_hull}"
     );
-    assert!(direct_hull.contains("sstore(0,"), "{direct_hull}");
+    assert!(direct_hull.contains("sstore("), "{direct_hull}");
     assert!(
-        direct_main.contains("return sload(0)"),
+        direct_main.contains("return CanStore_load_") && direct_main.contains("(0)"),
         "{direct_main}\n{direct_hull}"
     );
     assert!(
@@ -904,10 +1041,17 @@ contract StorageIndexOrder {
         "storage index assignment order",
         main,
         &[
-            "storage_store_storage_index_slot_1 := __solcore_storage_hash2(1, main_StorageIndexOrder_next_",
-            "storage_store_storage_index_2 := main_StorageIndexOrder_next_",
-            "sstore(storage_store_storage_index_slot_1, storage_store_storage_index_2)",
+            "$storage_index_slot_",
+            ":= __solcore_storage_hash2(1, main_StorageIndexOrder_next_",
+            "CanStore_store_",
+            "($storage_index_slot_",
+            ", main_StorageIndexOrder_next_",
         ],
+    );
+    assert_eq!(
+        main.matches("main_StorageIndexOrder_next_").count(),
+        2,
+        "{main}"
     );
 
     let compound_hull = pretty_src_hull_with_std(
@@ -943,10 +1087,13 @@ contract StorageIndexCompound {
         "compound storage index assignment order",
         compound_main,
         &[
-            "storage_store_storage_index_slot_3 := __solcore_storage_hash2(1, main_StorageIndexCompound_next_",
-            "storage_store_storage_index_4 := Add_add_",
-            "(sload(storage_store_storage_index_slot_3), main_StorageIndexCompound_next_",
-            "sstore(storage_store_storage_index_slot_3, storage_store_storage_index_4)",
+            ":= __solcore_storage_hash2(1, main_StorageIndexCompound_next_",
+            "CanStore_store_",
+            "($storage_index_slot_",
+            ", Add_add_",
+            "(CanStore_load_",
+            "($storage_index_slot_",
+            ", main_StorageIndexCompound_next_",
         ],
     );
     assert_eq!(
@@ -956,6 +1103,81 @@ contract StorageIndexCompound {
         2,
         "{compound_main}"
     );
+}
+
+#[test]
+fn new_compound_assignments_evaluate_storage_lhs_once() {
+    let hull = pretty_src_hull_with_std(
+        "storage_index_bit_not_compound",
+        r#"
+import std.{*};
+
+contract StorageIndexBitNotCompound {
+  counter: word;
+  m: mapping(word, word);
+
+  function next() -> word {
+    let cur: word = counter;
+    let res: word;
+    assembly {
+      res := add(cur, 1)
+    }
+    counter = res;
+    return res;
+  }
+
+  public function main() -> word {
+    counter = 0;
+    m[1] = 10;
+    m[next()] ~=;
+    return m[1];
+  }
+}
+"#,
+    );
+    let main = hull_function(&hull, "_main_");
+    assert_eq!(
+        main.matches("main_StorageIndexBitNotCompound_next_")
+            .count(),
+        1,
+        "compound bit-not must evaluate the storage index exactly once:\n{main}"
+    );
+
+    for (name, operator) in [("mul", "*="), ("div", "/=")] {
+        let source = format!(
+            r#"
+import std.{{*}};
+
+contract StorageIndexBinaryCompound {{
+  counter: word;
+  m: mapping(word, word);
+
+  function next() -> word {{
+    let cur: word = counter;
+    let res: word;
+    assembly {{ res := add(cur, 1) }}
+    counter = res;
+    return res;
+  }}
+
+  public function main() -> word {{
+    counter = 0;
+    m[1] = 12;
+    m[next()] {operator} next();
+    return m[1];
+  }}
+}}
+"#
+        );
+        let hull = pretty_src_hull_with_std(&format!("storage_index_{name}_compound"), &source);
+        let main = hull_function(&hull, "_main_");
+        assert_eq!(
+            main.matches("main_StorageIndexBinaryCompound_next_")
+                .count(),
+            2,
+            "{operator} must evaluate the lhs index once and the rhs once:\n{main}"
+        );
+    }
 }
 
 #[test]
@@ -1277,6 +1499,132 @@ contract C {
     }
 }
 
+#[test]
+fn aliased_mapping_field_keeps_the_storage_hash_helper_reachable() {
+    let hull = pretty_src_hull_with_std(
+        "aliased_mapping_field",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+type Balances = mapping(uint256, uint256);
+
+contract C {
+  balances : Balances;
+
+  public function roundtrip(k:uint256, v:uint256) -> uint256 {
+    balances[k] = v;
+    return balances[k];
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("function __solcore_storage_hash2"), "{hull}");
+    assert!(hull.contains("__solcore_storage_hash2("), "{hull}");
+}
+
+#[test]
+fn contract_field_offsets_honor_custom_storage_size_instances() {
+    let hull = pretty_src_hull_with_std(
+        "custom_contract_field_offset",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+data Wide = Wide(word);
+
+instance Wide:StorageSize {
+  function size(x:Proxy(Wide)) -> word { return 7; }
+}
+
+instance storage(Wide):CanStore(Wide) {
+  function store(r:storage(Wide), v:Wide) -> () {
+    let slot:word;
+    let value:word;
+    match r { | storage(x) => slot = x; }
+    match v { | Wide(x) => value = x; }
+    assembly { sstore(slot, value) }
+  }
+  function load(r:storage(Wide)) -> Wide {
+    let slot:word;
+    let value:word;
+    match r { | storage(x) => slot = x; }
+    assembly { value := sload(slot) }
+    return Wide(value);
+  }
+}
+
+contract C {
+  first : Wide;
+  second : uint256;
+
+  public function setAndGet(v:uint256) -> uint256 {
+    second = v;
+    return second;
+  }
+}
+"#,
+    );
+    let function = hull_function(&hull, "function main_C_setAndGet_");
+    assert!(function.contains(":= 7"), "{function}\n{hull}");
+}
+
+#[test]
+fn compound_contract_field_access_replays_effectful_storage_size() {
+    let hull = pretty_src_hull_with_std(
+        "effectful_contract_field_offset",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+data Wide = Wide(word);
+
+instance Wide:StorageSize {
+  function size(x:Proxy(Wide)) -> word {
+    let result:word;
+    assembly { result := sload(99) }
+    return result;
+  }
+}
+
+instance storage(Wide):CanStore(Wide) {
+  function store(r:storage(Wide), v:Wide) -> () {
+    let slot:word;
+    let value:word;
+    match r { | storage(x) => slot = x; }
+    match v { | Wide(x) => value = x; }
+    assembly { sstore(slot, value) }
+  }
+  function load(r:storage(Wide)) -> Wide {
+    let slot:word;
+    let value:word;
+    match r { | storage(x) => slot = x; }
+    assembly { value := sload(slot) }
+    return Wide(value);
+  }
+}
+
+contract C {
+  prefix : string;
+  first : Wide;
+  second : uint256;
+
+  public function bump(v:uint256) -> uint256 {
+    second += v;
+    return v;
+  }
+}
+"#,
+    );
+    let function = hull_function(&hull, "function main_C_bump_");
+    assert_eq!(
+        function.matches("StorageSize_size_").count(),
+        2,
+        "compound LVA and RVA each recompute the offset:\n{function}\n{hull}"
+    );
+}
+
 fn specialize_src(name: &str, src: &str) -> (&'static TestDb, SpecializeOutput<'static>) {
     let db = Box::leak(Box::new(TestDb::default()));
     let module = parse_module(db, name, src);
@@ -1491,6 +1839,178 @@ fn overloaded_binary_operators_emit_instance_results() {
     );
 }
 
+#[test]
+fn bit_not_and_new_compound_operators_emit_expected_results() {
+    let custom = pretty_src_hull_with_std("operator-custom-bit-not", OPERATOR_CUSTOM_BIT_NOT);
+    let custom_main = hull_function(&custom, "_main_");
+    assert!(
+        custom_main.contains("return 42"),
+        "custom BitNot instance was not selected:\n{custom_main}"
+    );
+
+    let compound = pretty_src_hull_with_std("operator-all-compound", OPERATOR_ALL_COMPOUND);
+    let compound_main = hull_function(&compound, "_main_");
+    assert!(
+        compound_main.contains("return 3"),
+        "compound operator result was not folded to 3:\n{compound_main}"
+    );
+}
+
+#[test]
+fn dynamic_array_helpers_check_bounds_and_preserve_typedef_representations() {
+    let hull = pretty_src_hull_with_std(
+        "array-checked-typedef",
+        r#"
+import std.{*};
+
+data Shifted = Shifted(word);
+instance Shifted:Typedef(word) {
+  function rep(x:Shifted) -> word {
+    match x { | Shifted(w) => return w + 100; }
+  }
+  function abs(w:word) -> Shifted { return Shifted(w - 100); }
+}
+
+data Second = Second(word);
+instance Second:Typedef(word) {
+  function rep(x:Second) -> word {
+    match x { | Second(w) => return w + 1; }
+  }
+  function abs(w:word) -> Second { return Second(w - 1); }
+}
+
+type Numbers = array(uint256);
+
+contract CheckedArrays {
+  xs : Numbers;
+  seed : word;
+
+  function main() -> word {
+    let m : memory(DynArray(Shifted)) = [Shifted(3), Shifted(4)];
+    xs = [10, 20];
+    let p : storage(Numbers) = xs;
+    let idx : Second = Second(seed);
+    p[idx] += uint256(1);
+    let picked : Shifted = m[idx];
+    return Typedef.rep(picked) + Typedef.rep(p[idx]);
+  }
+}
+"#,
+    );
+
+    let memory_helper = hull_function(&hull, "__solcore_memory_array_index");
+    assert!(
+        memory_helper.contains("lt(index, mload(base))"),
+        "{memory_helper}"
+    );
+    assert!(memory_helper.contains("0xb4120f14"), "{memory_helper}");
+    assert!(
+        memory_helper.contains("mload(add(add(base, 32), mul(index, 32)))"),
+        "{memory_helper}"
+    );
+
+    let storage_helper = hull_function(&hull, "__solcore_storage_array_slot");
+    assert!(
+        storage_helper.contains("lt(index, sload(base))"),
+        "{storage_helper}"
+    );
+    assert!(storage_helper.contains("0xb4120f14"), "{storage_helper}");
+    assert!(
+        storage_helper.contains("keccak256(0, 32)"),
+        "{storage_helper}"
+    );
+}
+
+#[test]
+fn storage_array_slot_helper_is_reachable_without_array_fields() {
+    let hull = pretty_src_hull_with_std(
+        "array-local-storage-ref",
+        r#"
+import std.{*};
+
+function main() -> uint256 {
+  let xs : storage(array(uint256)) = storage(0x100);
+  return xs[uint256(0)];
+}
+"#,
+    );
+
+    assert!(
+        hull.contains("function __solcore_storage_array_slot"),
+        "{hull}"
+    );
+    assert!(hull.contains("__solcore_storage_array_slot("), "{hull}");
+}
+
+#[test]
+fn nested_and_dynamic_storage_array_values_emit_deep_conversion_paths() {
+    let hull = pretty_src_hull_with_std(
+        "array-nested-dynamic",
+        r#"
+import std.{*};
+
+contract CollectionArray {
+  flags : array(bool);
+  grid : array(array(uint256));
+  names : array(string);
+  backup : array(string);
+
+  function main() -> uint256 {
+    Array.setLength(flags, uint256(0));
+    ArrayPush.push(flags, true);
+    let flag : bool = flags[uint256(0)];
+
+    Array.setLength(grid, uint256(1));
+    ArrayPush.push(grid[uint256(0)], uint256(7));
+    grid[uint256(0)][uint256(0)] = uint256(9);
+    let row : storage(array(uint256)) = grid[uint256(0)];
+    ArrayPush.push(row, uint256(11));
+
+    let s : memory(string) = "hello";
+    ArrayPush.push(names, s);
+    names[uint256(0)] = s;
+    let loaded : memory(string) = names[uint256(0)];
+    backup = names;
+    let copied : memory(string) = backup[uint256(0)];
+
+    if flag {
+      return row[uint256(1)] + uint256(strlen(loaded)) + uint256(strlen(copied));
+    }
+    return uint256(0);
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("__solcore_storage_array_slot"), "{hull}");
+    assert!(hull.contains("storeBytesFromMemory"), "{hull}");
+    assert!(hull.contains("loadBytesFromStorage"), "{hull}");
+    assert!(hull.contains("frombool"), "{hull}");
+    assert!(hull.contains("tobool"), "{hull}");
+}
+
+#[test]
+fn public_dynamic_array_return_emits_abi_copy() {
+    let hull = pretty_src_hull_with_std(
+        "array-public-return",
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract PublicArray {
+  constructor() {}
+
+  public function values() -> memory(DynArray(uint256)) {
+    return [1, 2, 3];
+  }
+}
+"#,
+    );
+
+    assert!(hull.contains("ABIEncode"), "{hull}");
+    assert!(hull.contains("mcopy"), "{hull}");
+}
+
 const OPERATOR_CUSTOM_UINT_ADD: &str = r#"
 import std.{*};
 
@@ -1514,6 +2034,51 @@ contract C {
     let b:uint = uint.u(2);
     let c:uint = a + b;
     return unwrap(c);
+  }
+}
+"#;
+
+const OPERATOR_CUSTOM_BIT_NOT: &str = r#"
+import std.{*};
+
+data mask = mask(word);
+
+instance mask:BitNot {
+  function bnot(x:mask) -> mask {
+    return mask(42);
+  }
+}
+
+function unwrap(x:mask) -> word {
+  match x {
+  | mask(w) => return w;
+  }
+}
+
+contract C {
+  public function main() -> word {
+    return unwrap(~mask(0));
+  }
+}
+"#;
+
+const OPERATOR_ALL_COMPOUND: &str = r#"
+import std.{*};
+
+contract C {
+  public function main() -> word {
+    let acc:word = 6;
+    acc += 4;
+    acc -= 3;
+    acc *= 6;
+    acc /= 2;
+    acc %= 8;
+    acc ^= 3;
+    acc |= 9;
+    acc &= 12;
+    acc ~=;
+    acc &= 15;
+    return acc;
   }
 }
 "#;

@@ -1491,6 +1491,7 @@ dependencies = [
  "solcore-nameres",
  "solcore-parser",
  "solcore-specialize",
+ "solcore-test-utils",
  "url",
 ]
 
@@ -1574,6 +1575,7 @@ dependencies = [
  "solcore-hir-ty",
  "solcore-nameres",
  "solcore-parser",
+ "solcore-test-utils",
  "url",
 ]
 

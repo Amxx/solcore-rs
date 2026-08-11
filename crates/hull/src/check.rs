@@ -245,6 +245,7 @@ struct Env<'db> {
     db: Option<&'db dyn HirDb>,
     vars: ScopeStack<BTreeMap<String, Ty<'db>>>,
     funs: BTreeMap<String, FunSig<'db>>,
+    asm_funs: ScopeStack<BTreeMap<String, FunSig<'db>>>,
     ret: Option<Ty<'db>>,
     diagnostics: Vec<CheckDiagnostic<'db>>,
 }
@@ -268,6 +269,7 @@ fn check_program_inner<'db>(
         db,
         vars: ScopeStack::new_root(BTreeMap::new()),
         funs: builtin_funs(program.span),
+        asm_funs: ScopeStack::new_root(BTreeMap::new()),
         ret: None,
         diagnostics: Vec::new(),
     };
@@ -611,8 +613,45 @@ impl<'db> Env<'db> {
     }
 
     fn check_asm_block(&mut self, stmts: &[YulStmt<'db>]) {
+        self.asm_funs.push(BTreeMap::new());
+        self.predeclare_asm_functions(stmts);
+        self.check_asm_stmt_seq(stmts);
+        let _ = self.asm_funs.pop();
+    }
+
+    fn check_asm_stmt_seq(&mut self, stmts: &[YulStmt<'db>]) {
         for stmt in stmts {
             self.check_asm_stmt(stmt);
+        }
+    }
+
+    fn predeclare_asm_functions(&mut self, stmts: &[YulStmt<'db>]) {
+        for stmt in stmts {
+            let YulStmtKind::FunctionDef {
+                name, params, rets, ..
+            } = &stmt.kind
+            else {
+                continue;
+            };
+            let name = self.yul_name(name);
+            if self
+                .asm_funs
+                .iter()
+                .next_back()
+                .is_some_and(|scope| scope.contains_key(&name))
+            {
+                self.push(
+                    stmt.span,
+                    CheckDiagnosticKind::DuplicateFunction { name: name.clone() },
+                );
+            }
+            self.asm_funs.last_mut().insert(
+                name,
+                FunSig {
+                    args: vec![Ty::word(stmt.span); params.len()],
+                    ret: n_returns(stmt.span, rets.len()),
+                },
+            );
         }
     }
 
@@ -696,10 +735,13 @@ impl<'db> Env<'db> {
                 post,
                 body,
             } => self.with_scope(|env| {
-                env.check_asm_block(init);
+                env.asm_funs.push(BTreeMap::new());
+                env.predeclare_asm_functions(init);
+                env.check_asm_stmt_seq(init);
                 env.check_asm_arg(cond);
-                env.check_asm_block(post);
-                env.check_asm_block(body);
+                env.with_scope(|env| env.check_asm_block(post));
+                env.with_scope(|env| env.check_asm_block(body));
+                let _ = env.asm_funs.pop();
             }),
             YulStmtKind::Switch {
                 expr,
@@ -715,28 +757,18 @@ impl<'db> Env<'db> {
                 }
             }
             YulStmtKind::FunctionDef {
-                name,
-                params,
-                rets,
-                body,
+                params, rets, body, ..
             } => {
-                let fun_name = self.yul_name(name);
-                self.funs.insert(
-                    fun_name,
-                    FunSig {
-                        args: vec![Ty::word(stmt.span); params.len()],
-                        ret: n_returns(stmt.span, rets.len()),
-                    },
-                );
-                self.with_scope(|env| {
-                    for param in params {
-                        env.insert_var(env.yul_name(param), Ty::word(stmt.span));
-                    }
-                    for ret in rets {
-                        env.insert_var(env.yul_name(ret), Ty::word(stmt.span));
-                    }
-                    env.check_asm_block(body);
-                });
+                let saved_vars =
+                    std::mem::replace(&mut self.vars, ScopeStack::new_root(BTreeMap::new()));
+                for param in params {
+                    self.insert_var(self.yul_name(param), Ty::word(stmt.span));
+                }
+                for ret in rets {
+                    self.insert_var(self.yul_name(ret), Ty::word(stmt.span));
+                }
+                self.check_asm_block(body);
+                self.vars = saved_vars;
             }
             YulStmtKind::Leave
             | YulStmtKind::Break
@@ -796,11 +828,36 @@ impl<'db> Env<'db> {
     }
 
     fn lookup_asm_fun(&mut self, span: Span<'db>, name: &str) -> FunSig<'db> {
+        if let Some(key) = name.strip_prefix("usr$") {
+            return match self.funs.get(key).cloned() {
+                Some(sig) => FunSig {
+                    args: vec![Ty::word(span); sig.args.len()],
+                    ret: n_returns(span, return_count(&sig.ret)),
+                },
+                None => {
+                    self.push(
+                        span,
+                        CheckDiagnosticKind::UndefinedFunction {
+                            name: name.to_owned(),
+                        },
+                    );
+                    FunSig {
+                        args: Vec::new(),
+                        ret: Ty::unit(span),
+                    }
+                }
+            };
+        }
         if let Some(sig) = asm_builtin_sig(span, name) {
             return sig;
         }
-        let key = name.strip_prefix("usr$").unwrap_or(name);
-        match self.funs.get(key).cloned() {
+        let sig = self
+            .asm_funs
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned())
+            .or_else(|| self.funs.get(name).cloned());
+        match sig {
             Some(sig) => FunSig {
                 args: vec![Ty::word(span); sig.args.len()],
                 ret: n_returns(span, return_count(&sig.ret)),
@@ -956,7 +1013,7 @@ fn builtin_funs<'db>(span: Span<'db>) -> BTreeMap<String, FunSig<'db>> {
         add(name, vec![word.clone(), word.clone()], bool_sum.clone());
     }
     add("iszero", vec![bool_sum.clone()], bool_sum.clone());
-    for name in ["not", "clz", "wordToInteger"] {
+    for name in ["not", "bnotWord", "clz", "wordToInteger"] {
         add(name, vec![word.clone()], word.clone());
     }
     for name in [
@@ -1198,7 +1255,10 @@ fn asm_stmt_terminates(stmt: &YulStmt<'_>, db: Option<&dyn HirDb>) -> bool {
         }) => db
             .map(|db| {
                 let name = (*name.atom()).text(db);
-                matches!(name, "return" | "revert")
+                matches!(
+                    name,
+                    "return" | "revert" | "stop" | "invalid" | "selfdestruct"
+                )
             })
             .unwrap_or(false),
         YulStmtKind::Switch { cases, default, .. } => {

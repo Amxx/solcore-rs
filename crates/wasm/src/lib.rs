@@ -740,8 +740,12 @@ mod tests {
         let diagnostic = result
             .diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.code.as_deref() == Some("SC0421"))
-            .expect("Hull diagnostic");
+            .find(|diagnostic| diagnostic.code.as_deref() == Some("SC0411"))
+            .expect("specialization diagnostic");
+        assert_eq!(
+            diagnostic.message,
+            "runtime lowering cannot represent `string` in return type of `main`"
+        );
         assert!(diagnostic.primary.is_some());
     }
 

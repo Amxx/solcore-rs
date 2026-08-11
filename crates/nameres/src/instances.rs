@@ -35,6 +35,20 @@ pub fn instance_imports<'db>(db: &'db dyn Db, module: ModuleId<'db>) -> Instance
     InstanceImports { local, imported }
 }
 
+/// Returns the modules whose instances are visible from `module`.
+///
+/// Unlike the general module graph, this follows import edges only. Re-export
+/// references do not bring an explicit instance into scope and therefore must
+/// not make compiler-synthesized instances visible either.
+#[salsa::tracked]
+pub fn instance_import_modules<'db>(db: &'db dyn Db, module: ModuleId<'db>) -> Vec<ModuleId<'db>> {
+    let mut modules = vec![module];
+    let mut seen = FxHashSet::default();
+    seen.insert(module);
+    collect_imported_modules(db, module, &mut seen, &mut modules);
+    modules
+}
+
 /// Collects import-chain instance origins using imports parsed from `file`.
 ///
 /// This is useful for synthetic HIR modules that share a logical `ModuleId`
@@ -95,6 +109,37 @@ pub fn instance_imports_for_hir_module<'db>(
     }
 }
 
+/// Returns instance-visible modules from an effective HIR module.
+///
+/// The first element is always the owning module. Direct imports come from the
+/// supplied HIR, while transitive imports continue through their file-backed
+/// modules. This keeps synthesized import overlays aligned with explicit
+/// instance visibility.
+pub fn instance_import_modules_for_hir_module<'db>(
+    db: &'db dyn Db,
+    module: ModuleId<'db>,
+    hir_module: Module<'db>,
+) -> Vec<ModuleId<'db>> {
+    let mut modules = vec![module];
+    let mut seen = FxHashSet::default();
+    seen.insert(module);
+    for import in hir_module.items(db).iter().filter_map(|item| match item {
+        Item::Import(import) => Some(*import),
+        _ => None,
+    }) {
+        let path = path_ref_from_import(db, import);
+        let Ok(target) = resolve_module_path(db, module, path) else {
+            continue;
+        };
+        if !seen.insert(target) {
+            continue;
+        }
+        modules.push(target);
+        collect_imported_modules(db, target, &mut seen, &mut modules);
+    }
+    modules
+}
+
 fn collect_imported_instances<'db>(
     db: &'db dyn Db,
     module: ModuleId<'db>,
@@ -105,6 +150,28 @@ fn collect_imported_instances<'db>(
         return;
     };
     collect_imported_instances_from_file(db, module, file, seen, out);
+}
+
+fn collect_imported_modules<'db>(
+    db: &'db dyn Db,
+    module: ModuleId<'db>,
+    seen: &mut FxHashSet<ModuleId<'db>>,
+    out: &mut Vec<ModuleId<'db>>,
+) {
+    let Some(file) = db.module_file(module) else {
+        return;
+    };
+    let refs = module_imports(db, file);
+    for path in refs.import_refs {
+        let Ok(target) = resolve_module_path(db, module, path) else {
+            continue;
+        };
+        if !seen.insert(target) {
+            continue;
+        }
+        out.push(target);
+        collect_imported_modules(db, target, seen, out);
+    }
 }
 
 fn collect_imported_instances_from_file<'db>(

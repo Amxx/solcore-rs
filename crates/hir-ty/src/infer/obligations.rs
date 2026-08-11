@@ -1,20 +1,5 @@
 use super::*;
 
-pub(super) fn infer_ty_has_comptime_wrapper<'db>(ty: &InferTy<'db>) -> bool {
-    matches!(ty, InferTy::Comptime(_))
-}
-
-pub(super) fn ty_requires_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
-    match ty.kind(db) {
-        TyKind::Comptime(_) => true,
-        TyKind::Named {
-            ctor: TyCtor::Builtin(crate::BuiltinTyCtor::Integer),
-            args,
-        } => args.is_empty(),
-        _ => false,
-    }
-}
-
 struct CanonicalizedPending<'db> {
     pred: Pred<'db>,
     allowed_vars: Vec<u32>,
@@ -246,6 +231,12 @@ fn apply_solver_ty_subst<'db>(
 }
 
 impl<'db> InferCtx<'db> {
+    pub(super) fn default_open_string_coercions_without_solver(&mut self) {
+        let pending = self.pending.clone();
+        let unresolved = (0..pending.len()).collect::<Vec<_>>();
+        self.default_open_string_coercions(&pending, &unresolved);
+    }
+
     pub(super) fn solve_pending_obligations(
         &mut self,
         trait_env: TraitEnvId<'db>,
@@ -305,6 +296,7 @@ impl<'db> InferCtx<'db> {
         unresolved.sort_unstable();
 
         self.default_integer_literals_with_non_int_obligations(&pending, &unresolved);
+        self.default_open_string_coercions(&pending, &unresolved);
 
         // Final phase: no further improvement is possible, so report the
         // remaining deferred obligations exactly as the single-pass solver
@@ -375,6 +367,42 @@ impl<'db> InferCtx<'db> {
             if vars.iter().any(|var| constrained_vars.contains(var)) {
                 self.unify(obligation.main.clone(), word.clone());
             }
+        }
+    }
+
+    fn default_open_string_coercions(
+        &mut self,
+        pending: &[PendingObligation<'db>],
+        unresolved: &[usize],
+    ) {
+        let source_string = self.source_string();
+        for &index in unresolved {
+            let obligation = &pending[index];
+            if obligation.class != ClassId::Builtin(BuiltinClassId::Str)
+                || !obligation.args.is_empty()
+                || !matches!(
+                    obligation.source,
+                    ObligationSource::StringCoercion { .. }
+                        | ObligationSource::CallSite {
+                            callee: CallSiteCallee::Builtin(hir_nameres::BuiltinKind::ClassMethod(
+                                hir_nameres::BuiltinClassMethod::StrFromString,
+                            ),),
+                            ..
+                        }
+                )
+                || !self.open_string_coercion_main(obligation.main.clone())
+            {
+                continue;
+            }
+            self.unify(obligation.main.clone(), source_string.clone());
+        }
+    }
+
+    fn open_string_coercion_main(&mut self, ty: InferTy<'db>) -> bool {
+        match self.engine.resolve(ty) {
+            InferTy::Unknown | InferTy::Var(_) => true,
+            InferTy::Comptime(inner) => self.open_string_coercion_main(*inner),
+            _ => false,
         }
     }
 
@@ -637,6 +665,7 @@ impl<'db> InferCtx<'db> {
     fn obligation_source_poisoned(&self, source: &ObligationSource<'db>) -> bool {
         match source {
             ObligationSource::IntegerLiteral { body, expr }
+            | ObligationSource::StringCoercion { body, expr }
             | ObligationSource::ClassMethod { body, expr } => self.expr_is_poisoned(*body, *expr),
             ObligationSource::CallSite {
                 body,

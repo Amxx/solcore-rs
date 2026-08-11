@@ -74,6 +74,7 @@ pub(super) fn lower_callee(callee: &str, user_functions: &BTreeSet<String>) -> L
         "bxorWord" => "xor",
         "bandWord" => "and",
         "borWord" => "or",
+        "bnotWord" => "not",
         "wordFromInteger" | "wordToInteger" => return LoweredCallee::Identity,
         name => name,
     };
@@ -273,4 +274,17 @@ pub(super) fn is_forbidden_yul_identifier(name: &str) -> bool {
             | "mcopy"
             | "clz"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lowers_bit_not_word_intrinsic_to_yul_not() {
+        let LoweredCallee::Call(name) = lower_callee("bnotWord", &BTreeSet::new()) else {
+            panic!("bnotWord must lower to a Yul call");
+        };
+        assert_eq!(name.as_str(), "not");
+    }
 }

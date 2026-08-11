@@ -29,6 +29,7 @@ pub(super) fn builtin_name(kind: hir_nameres::BuiltinKind) -> &'static str {
         hir_nameres::BuiltinKind::ClassMethod(method) => match method {
             hir_nameres::BuiltinClassMethod::InvokableInvoke => "invokable.invoke",
             hir_nameres::BuiltinClassMethod::IntFromInteger => "Int.fromInteger",
+            hir_nameres::BuiltinClassMethod::StrFromString => "Str.fromString",
         },
         hir_nameres::BuiltinKind::Type(_) | hir_nameres::BuiltinKind::Class(_) => "<builtin>",
     }
@@ -46,6 +47,13 @@ pub(super) fn overloaded_operator_method(op: BinOp) -> Option<(&'static str, &'s
         BinOp::BitOr => Some(("BitOr", "bor")),
         BinOp::Eq => Some(("Eq", "eq")),
         BinOp::Gt => Some(("Ord", "gt")),
+        _ => None,
+    }
+}
+
+pub(super) fn overloaded_unary_operator_method(op: UnOp) -> Option<(&'static str, &'static str)> {
+    match op {
+        UnOp::BitNot => Some(("BitNot", "bnot")),
         _ => None,
     }
 }

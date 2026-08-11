@@ -12,8 +12,8 @@ use hir::{
     ast::{
         Ident,
         function::{
-            BinOp, Expr, ExprKind, FuncBody, FuncParam, MatchArm, Pat, PatKind, Stmt, StmtKind,
-            UnOp,
+            BinOp, Expr, ExprKind, FuncBody, FuncParam, LitKind, MatchArm, Pat, PatKind, Stmt,
+            StmtKind, UnOp,
         },
         item::{
             AdtDef, ContractItem, FuncKind, FunctionDef, Import, ImportSelector, InstanceDef, Item,
@@ -32,9 +32,10 @@ use hir_ty::{
     ComptimeObligationKind, Db, DispatchConstructor, DispatchFallback, Evidence,
     GeneratedOriginKind, InferenceResult, LoweredFunction, Pred, PredKind, PreparedModule,
     ProductShape, Solution, Ty, TyCtor, TyKind, TypeLowering, UserTyCtor, UserTyCtorKind,
-    canonical_goal, contract_dispatch_surface_for_module, contract_overlay_backend_name,
+    canonical_goal, canonical_goal_with_allowed, contract_dispatch_name_type_name,
+    contract_dispatch_surface_for_module, contract_overlay_backend_name,
     derived_generic_instance_plan, derived_generic_plan, frontend_desugar_plan, infer_body,
-    is_contract_deployment_main_def, is_contract_dispatch_main_def,
+    is_canonical_std_def_named, is_contract_deployment_main_def, is_contract_dispatch_main_def,
     lower_normalized_function_with_inferred_signature, prepare_module, solve,
     solver::DerivedClauseKind, trait_env_from_module_resolution,
     trait_env_from_module_resolution_and_imports, trait_env_with_givens,
@@ -50,13 +51,16 @@ use crate::{
         MonoComptimeObligationKind, MonoConstructor, MonoContract, MonoEntry, MonoExpr,
         MonoExprArm, MonoExprKind, MonoFallback, MonoFunction, MonoFunctionOrigin, MonoId,
         MonoIntrinsic, MonoItem, MonoModule, MonoParam, MonoPat, MonoPatKind,
-        MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, MonoTy, ParamMode,
+        MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, MonoStorageIndexKind, MonoTy, ParamMode,
     },
 };
 
 mod body;
 mod call_resolver;
+mod derived_abi;
+mod derived_class;
 mod derived_generic;
+mod derived_storage;
 mod diagnostics;
 mod driver;
 mod evidence;
@@ -67,20 +71,24 @@ mod ty_subst;
 
 use body::{BinOpExpr, BodyCtx, BodyIndex};
 pub use diagnostics::{SpecializeDiagnostic, SpecializeDiagnosticKind};
-use driver::{Driver, FunctionInfo, SpecKey, SyntheticKey};
+use driver::{
+    AdtInfo, DerivedAbiFamily, DerivedAbiKey, DerivedClassKey, DerivedStorageFamily,
+    DerivedStorageKey, Driver, FunctionInfo, SpecKey, SyntheticKey,
+};
+use evidence::replay_evidence_bindings;
 use intrinsics::{
     builtin_ctor_name, builtin_intrinsic, builtin_name, overloaded_operator_method,
-    plain_operator_function,
+    overloaded_unary_operator_method, plain_operator_function,
 };
 pub(crate) use naming::display_backend_ty;
 pub use naming::specialize_name;
 use naming::{
     body_map_contains, class_method_name_parts, collect_body_order, ctor_name, def_hash_suffix,
-    def_owner_path, function_param_ty, function_ret_ty, ident_text, join_sanitized_name_components,
-    module_id_for_source_file, mono_abi_params, param_comptime, param_name, param_names,
-    pred_is_closed, reachable_modules, resolve_specialize_module, specialization_trait_env,
-    strip_comptime_ty, ty_is_builtin, ty_is_closed, ty_is_comptime, ty_node_budget_exceeded,
-    type_var_bindings,
+    def_owner_path, evidence_hash_suffix, function_param_ty, function_ret_ty, ident_text,
+    join_sanitized_name_components, module_id_for_source_file, mono_abi_params, param_comptime,
+    param_name, param_names, pred_is_closed, reachable_modules, resolve_specialize_module,
+    specialization_trait_env, strip_comptime_ty, ty_is_builtin, ty_is_closed, ty_is_comptime,
+    ty_node_budget_exceeded, type_var_bindings,
 };
 use products::{
     product_expr_from_elems, product_expr_from_vars, product_pat_from_elems, product_pat_from_vars,
@@ -105,9 +113,10 @@ impl Default for SpecializeOptions {
             max_depth: 128,
             max_type_nodes: 4096,
             // This is a per-emitted-function work budget. It must accommodate
-            // the canonical std dispatch pipeline while still bounding
-            // exponential pure-call fan-out.
-            eval_fuel: 4096,
+            // the canonical std dispatch pipeline, including e136's 31-method
+            // `basic` surface, while still bounding exponential pure-call
+            // fan-out.
+            eval_fuel: 8192,
         }
     }
 }

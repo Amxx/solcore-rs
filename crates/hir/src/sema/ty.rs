@@ -132,6 +132,8 @@ pub enum BuiltinClassId {
     Invokable,
     /// Reserved integer-literal class `Int`.
     Int,
+    /// Reserved string-literal conversion class `Str`.
+    Str,
 }
 
 /// Interned semantic predicate.
@@ -241,6 +243,7 @@ impl BuiltinClassId {
         match self {
             Self::Invokable => "invokable",
             Self::Int => "Int",
+            Self::Str => "Str",
         }
     }
 }

@@ -11,5 +11,5 @@ error[SC0001]: parse error: unexpected end of input
 4 |     }
   |      ^ unexpected token
   |
-  = note: expecting `}`, contract field, or contract member
+  = note: expecting `}`, contract field, contract member, or derive attribute
   = note: while parsing contract declaration

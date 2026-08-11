@@ -38,6 +38,9 @@ pub(crate) fn evaluate_module<'db>(
             item => items.push(item),
         }
     }
+    while let Some(function) = evaluator.eval_next_string_clone() {
+        items.push(MonoItem::Function(function));
+    }
     module.items = items;
     module = eliminate_dead_functions(module);
     if !evaluator.diagnostics.iter().any(|diagnostic| {

@@ -18,14 +18,14 @@ use hir::{
     span::{Span, Spanned, SpannedElem},
 };
 use hir_ty::{
-    BinderEnv, BuiltinTyCtor, Ty as SemTy, TyCtor, TyKind as SemTyKind, TypeLowering,
-    UserTyCtorKind, contract::FrontendTransform,
+    AliasNormalizer, BinderEnv, BuiltinTyCtor, Ty as SemTy, TyCtor, TyKind as SemTyKind,
+    TypeLowering, UserTyCtorKind, contract::FrontendTransform, is_canonical_std_def_named,
 };
 use parser::parse_file_to_hir;
 use specialize::{
     MonoArm, MonoBuiltinCtor, MonoCallOrigin, MonoContract, MonoEntry, MonoExpr, MonoExprArm,
     MonoExprKind, MonoFunction, MonoId, MonoIntrinsic, MonoItem, MonoModule, MonoPat, MonoPatKind,
-    MonoStmt, MonoStmtKind,
+    MonoStmt, MonoStmtKind, MonoStorageIndexKind, decode_string_literal,
 };
 
 use crate::{
@@ -60,10 +60,13 @@ use storage::StorageFieldKind;
 const STORAGE_INDEX_READ: &str = "__solcore_storage_index_read";
 const STORAGE_INDEX_SLOT: &str = "__solcore_storage_index_slot";
 const STORAGE_HASH2_HELPER: &str = "__solcore_storage_hash2";
+const STORAGE_ARRAY_SLOT_HELPER: &str = "__solcore_storage_array_slot";
 const STORAGE_MAPPING_VALUE_HELPER: &str = "__solcore_storage_mapping_value";
+const MEMORY_ARRAY_INDEX_HELPER: &str = "__solcore_memory_array_index";
 /// Error selector of the reference std's `Unimplemented` error
 /// (`Error(0x6e128399)` raised by `unimplemented()` in std.solc).
 const UNIMPLEMENTED_SELECTOR: &str = "0x6e128399";
+const OUT_OF_BOUNDS_SELECTOR: &str = "0xb4120f14";
 
 struct Emitter<'db> {
     db: &'db dyn hir_ty::Db,
@@ -75,6 +78,16 @@ struct Emitter<'db> {
     layout_stack: Vec<(DefId<'db>, Vec<SemTy<'db>>)>,
     if_stmt_spans: Vec<Span<'db>>,
     predeclared_lets: Vec<PredeclaredLet<'db>>,
+    /// Runtime allocators for compile-time string literals, keyed by decoded
+    /// UTF-8 bytes so equivalent literal spellings share one helper.
+    string_literals: BTreeMap<Vec<u8>, StringLiteralHelper<'db>>,
+    next_string_literal: usize,
+    /// Runtime helpers for literal revert messages. A helper call remains an
+    /// expression, preserving conditional and argument evaluation boundaries.
+    revert_literals: BTreeMap<String, RevertLiteralHelper<'db>>,
+    next_revert_literal: usize,
+    memory_array_index_used: bool,
+    storage_array_index_used: bool,
     fresh: usize,
 }
 
@@ -83,4 +96,16 @@ struct PredeclaredLet<'db> {
     span: Span<'db>,
     backend_name: String,
     ty: Ty<'db>,
+}
+
+#[derive(Clone)]
+struct StringLiteralHelper<'db> {
+    span: Span<'db>,
+    name: String,
+}
+
+#[derive(Clone)]
+struct RevertLiteralHelper<'db> {
+    span: Span<'db>,
+    name: String,
 }

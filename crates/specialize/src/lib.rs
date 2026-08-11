@@ -17,15 +17,17 @@
 mod evaluate;
 mod ir;
 mod specialize;
+mod string_literal;
 
 pub use ir::{
     LetMode, MonoAbiParam, MonoArm, MonoBuiltinCtor, MonoCallOrigin, MonoComptimeObligation,
     MonoComptimeObligationKind, MonoConstructor, MonoContract, MonoEntry, MonoExpr, MonoExprArm,
     MonoExprKind, MonoFallback, MonoFunction, MonoFunctionOrigin, MonoId, MonoIntrinsic, MonoItem,
     MonoModule, MonoParam, MonoPat, MonoPatKind, MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind,
-    MonoTy, ParamMode,
+    MonoStorageIndexKind, MonoTy, ParamMode,
 };
 pub use specialize::{
     SpecializeDiagnostic, SpecializeDiagnosticKind, SpecializeOptions, SpecializeOutput,
     specialize_module, specialize_name, specialize_prepared_module,
 };
+pub use string_literal::decode_string_literal;

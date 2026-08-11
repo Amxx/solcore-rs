@@ -8,7 +8,7 @@ use hir::{
     nameres::{
         DefResolutionKind, EmptyImportedNames, ImportedNames, ModuleRef, NameresDiagnostic,
         NameresDiagnosticPolicy, Namespace, Resolution, UndefinedNameKind, item_scope,
-        resolve_module, resolve_module_with_imports_and_policy,
+        resolve_module, resolve_module_with_imports, resolve_module_with_imports_and_policy,
     },
 };
 use solcore_parser::{parse_diagnostics, parse_file_to_hir};
@@ -93,6 +93,19 @@ fn contract_function<'db>(
         .expect("contract function")
 }
 
+fn top_class_id<'db>(db: &'db TestDb, module: Module<'db>, name: &str) -> hir::anchor::DefId<'db> {
+    module
+        .items(db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ClassDef(class) if (*class.head(db).kind(db).class.atom()).text(db) == name => {
+                Some(class.def_id_value(db))
+            }
+            _ => None,
+        })
+        .expect("top-level class")
+}
+
 fn diagnostics<'db>(db: &'db TestDb, module: Module<'db>) -> Vec<Diagnostic> {
     resolve_module(db, module)
         .diagnostics
@@ -113,6 +126,14 @@ struct ModuleOnlyImports<'db> {
 }
 
 struct UnknownWildcardImports;
+
+struct QualifiedClassImports<'db> {
+    class: hir::anchor::DefId<'db>,
+}
+
+struct ClassMethodImports<'db> {
+    methods: Vec<(String, Resolution<'db>)>,
+}
 
 impl<'db> ImportedNames<'db> for UnknownWildcardImports {
     fn imported(
@@ -148,6 +169,131 @@ impl<'db> ImportedNames<'db> for ModuleOnlyImports<'db> {
             })
         })
     }
+}
+
+impl<'db> ImportedNames<'db> for QualifiedClassImports<'db> {
+    fn imported(
+        &self,
+        _db: &'db dyn hir::Db,
+        namespace: Namespace,
+        name: &str,
+    ) -> Option<Resolution<'db>> {
+        (namespace == Namespace::Type && name == "pkg.Eq").then_some(Resolution::Def {
+            def: self.class,
+            kind: DefResolutionKind::Class,
+        })
+    }
+}
+
+impl<'db> ImportedNames<'db> for ClassMethodImports<'db> {
+    fn imported(
+        &self,
+        _db: &'db dyn hir::Db,
+        namespace: Namespace,
+        name: &str,
+    ) -> Option<Resolution<'db>> {
+        (namespace == Namespace::Term)
+            .then(|| {
+                self.methods
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+                    .map(|(_, resolution)| resolution.clone())
+            })
+            .flatten()
+    }
+
+    fn candidate_names(&self, _db: &'db dyn hir::Db, namespace: Namespace) -> Vec<String> {
+        if namespace == Namespace::Term {
+            self.methods.iter().map(|(name, _)| name.clone()).collect()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[test]
+fn derive_targets_resolve_in_source_order_for_top_level_and_contract_adts() {
+    let db = TestDb::default();
+    let module = parse_module(
+        &db,
+        "class a:Eq {}\n\
+         #[derive(Eq, Eq)] data Top;\n\
+         contract C { #[derive(Eq)] data Local; }",
+    );
+    let resolution = resolve_module(&db, module);
+    assert!(resolution.diagnostics.is_empty());
+    let derives = &resolution.item_resolutions.derives;
+    assert_eq!(derives.len(), 3);
+    assert_eq!(
+        derives
+            .iter()
+            .map(|derive| derive.index)
+            .collect::<Vec<_>>(),
+        [0, 1, 0]
+    );
+    assert_ne!(derives[0].adt, derives[2].adt);
+    let class = derives[0].resolution.clone();
+    assert!(matches!(
+        class,
+        Resolution::Def {
+            kind: DefResolutionKind::Class,
+            ..
+        }
+    ));
+    assert_eq!(derives[1].resolution, class);
+    assert_eq!(derives[2].resolution, class);
+}
+
+#[test]
+fn derive_targets_report_unknown_and_wrong_kind_names() {
+    let db = TestDb::default();
+    let module = parse_module(
+        &db,
+        "data NotAClass; #[derive(Missing, NotAClass)] data Target;",
+    );
+    let resolution = resolve_module(&db, module);
+    let undefined = resolution
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| match diagnostic {
+            NameresDiagnostic::UndefinedClass { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(undefined, ["Missing", "NotAClass"]);
+    assert!(
+        resolution
+            .item_resolutions
+            .derives
+            .iter()
+            .all(|derive| matches!(derive.resolution, Resolution::Err))
+    );
+}
+
+#[test]
+fn qualified_derive_target_uses_the_exact_imported_class_path() {
+    let db = TestDb::default();
+    let module = parse_module(&db, "class a:Eq {} #[derive(pkg.Eq)] data Target;");
+    let class = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ClassDef(class) => Some(class.def_id_value(&db)),
+            _ => None,
+        })
+        .expect("class");
+    let scope = item_scope(&db, module);
+    let imports = QualifiedClassImports { class };
+    let resolution = resolve_module_with_imports(&db, module, scope, &imports);
+    assert!(resolution.diagnostics.is_empty());
+    assert_eq!(resolution.item_resolutions.derives.len(), 1);
+    assert!(matches!(
+        resolution.item_resolutions.derives[0].resolution,
+        Resolution::Def {
+            def,
+            kind: DefResolutionKind::Class,
+        } if def == class
+    ));
 }
 
 #[test]
@@ -393,6 +539,352 @@ fn ident_resolutions<'db>(
             _ => None,
         })
         .collect()
+}
+
+fn field_resolutions<'db>(
+    db: &'db TestDb,
+    body: FuncBody<'db>,
+    map: &hir::nameres::BodyResolutionMap<'db>,
+) -> Vec<(&'db str, Resolution<'db>)> {
+    map.exprs
+        .iter()
+        .filter(|entry| entry.body == body)
+        .filter_map(|entry| match &body.exprs(db).get(entry.expr).kind {
+            ExprKind::Field { field, .. } => {
+                Some(((*field.atom()).text(db), entry.resolution.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn field_ufcs_resolves_a_unique_local_class_method() {
+    let db = TestDb::default();
+    let module = parse_module(
+        &db,
+        "forall self . class self:Combiner {
+           function combine(x: self, y: word) -> word;
+         }
+         contract C {
+           value: word;
+           function viaUfcs(y: word) -> word { return value.combine(y); }
+         }",
+    );
+    let resolution = resolve_module(&db, module);
+    assert!(resolution.diagnostics.is_empty());
+
+    let function = contract_function(&db, module, "C", "viaUfcs");
+    let body = function.body(&db).expect("body");
+    let map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == body))
+        .expect("body map");
+    let receiver = ident_resolutions(&db, body, map)
+        .into_iter()
+        .find(|(name, _)| *name == "value")
+        .expect("UFCS receiver");
+    assert!(matches!(receiver.1, Resolution::Field(_)));
+    assert!(
+        field_resolutions(&db, body, map)
+            .into_iter()
+            .any(|(name, resolution)| matches!(
+                resolution,
+                Resolution::ClassMethod { name: method, .. }
+                    if name == "combine" && method == "combine"
+            ))
+    );
+}
+
+#[test]
+fn field_ufcs_resolves_a_unique_imported_class_method() {
+    let db = TestDb::default();
+    let provider = parse_module(
+        &db,
+        "forall self . class self:RemoteOps {
+           function touch(x: self) -> word;
+         }",
+    );
+    let class = top_class_id(&db, provider, "RemoteOps");
+    let module = parse_module(
+        &db,
+        "contract C {
+           value: word;
+           function viaImport() -> word { return value.touch(); }
+         }",
+    );
+    let imports = ClassMethodImports {
+        methods: vec![(
+            "pkg.RemoteOps.touch".to_owned(),
+            Resolution::ClassMethod {
+                class,
+                name: "touch".to_owned(),
+            },
+        )],
+    };
+    let resolution = resolve_module_with_imports(&db, module, item_scope(&db, module), &imports);
+    assert!(resolution.diagnostics.is_empty());
+
+    let function = contract_function(&db, module, "C", "viaImport");
+    let body = function.body(&db).expect("body");
+    let map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == body))
+        .expect("body map");
+    let receiver = ident_resolutions(&db, body, map)
+        .into_iter()
+        .find(|(name, _)| *name == "value")
+        .expect("UFCS receiver");
+    assert!(matches!(receiver.1, Resolution::Field(_)));
+    assert!(
+        field_resolutions(&db, body, map)
+            .into_iter()
+            .any(|(name, resolution)| matches!(
+                resolution,
+                Resolution::ClassMethod { class: resolved, name: method }
+                    if name == "touch" && resolved == class && method == "touch"
+            ))
+    );
+}
+
+#[test]
+fn ufcs_reports_undefined_name_when_visible_methods_conflict() {
+    let db = TestDb::default();
+    let provider = parse_module(
+        &db,
+        "forall self . class self:RemoteOps {
+           function collide(x: self) -> word;
+         }",
+    );
+    let remote_class = top_class_id(&db, provider, "RemoteOps");
+    let module = parse_module(
+        &db,
+        "forall self . class self:LocalOps {
+           function collide(x: self) -> word;
+         }
+         contract C {
+           value: word;
+           function ambiguous() -> word { return value.collide(); }
+           function ambiguousParameter(value: word) -> word { return value.collide(); }
+           function missing() -> word { return value.absent(); }
+         }",
+    );
+    let imports = ClassMethodImports {
+        methods: vec![(
+            "RemoteOps.collide".to_owned(),
+            Resolution::ClassMethod {
+                class: remote_class,
+                name: "collide".to_owned(),
+            },
+        )],
+    };
+    let resolution = resolve_module_with_imports(&db, module, item_scope(&db, module), &imports);
+    assert!(resolution.diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic,
+        NameresDiagnostic::UndefinedName {
+            name,
+            kind: UndefinedNameKind::Field,
+            ..
+        } if name == "collide"
+    )));
+    assert!(resolution.diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic,
+        NameresDiagnostic::UndefinedName {
+            name,
+            kind: UndefinedNameKind::Field,
+            ..
+        } if name == "absent"
+    )));
+
+    let function = contract_function(&db, module, "C", "ambiguous");
+    let body = function.body(&db).expect("body");
+    let map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == body))
+        .expect("body map");
+    assert!(
+        field_resolutions(&db, body, map)
+            .into_iter()
+            .any(|(name, resolution)| name == "collide" && resolution == Resolution::Err)
+    );
+
+    let parameter = contract_function(&db, module, "C", "ambiguousParameter");
+    let parameter_body = parameter.body(&db).expect("body");
+    let parameter_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == parameter_body))
+        .expect("parameter body map");
+    assert!(ident_resolutions(&db, parameter_body, parameter_map)
+        .into_iter()
+        .any(|(name, resolution)| name == "value"
+            && matches!(resolution, Resolution::Param(_))));
+    assert!(
+        field_resolutions(&db, parameter_body, parameter_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "collide" && resolution == Resolution::Err)
+    );
+
+    let missing = contract_function(&db, module, "C", "missing");
+    let missing_body = missing.body(&db).expect("body");
+    let missing_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == missing_body))
+        .expect("body map");
+    assert!(
+        field_resolutions(&db, missing_body, missing_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "absent" && resolution == Resolution::Err)
+    );
+}
+
+#[test]
+fn value_ufcs_resolves_parameters_and_locals_while_preserving_qualified_calls() {
+    let db = TestDb::default();
+    let module = parse_module(
+        &db,
+        "forall self . class self:Combiner {
+           function combine(x: self, y: word) -> word;
+         }
+         contract C {
+           value: word;
+           Combiner: word;
+           function qualified(y: word) -> word {
+             return Combiner.combine(value, y);
+           }
+           function sameNameQualifier(y: word) -> word {
+             return Combiner.combine(Combiner, y);
+           }
+           function parameter(value: word, y: word) -> word {
+             return value.combine(y);
+           }
+           function local(value: word, y: word) -> word {
+             let receiver = value;
+             return receiver.combine(y);
+           }
+           function arbitrary(y: word) -> word {
+             return (value + y).combine(y);
+           }
+         }",
+    );
+    let resolution = resolve_module(&db, module);
+    assert!(resolution.diagnostics.is_empty());
+
+    let qualified = contract_function(&db, module, "C", "qualified");
+    let qualified_body = qualified.body(&db).expect("body");
+    let qualified_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == qualified_body))
+        .expect("qualified body map");
+    assert!(
+        field_resolutions(&db, qualified_body, qualified_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "combine"
+                && matches!(resolution, Resolution::ClassMethod { .. }))
+    );
+    assert!(
+        ident_resolutions(&db, qualified_body, qualified_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "Combiner"
+                && matches!(
+                    resolution,
+                    Resolution::Def {
+                        kind: DefResolutionKind::Class,
+                        ..
+                    }
+                ))
+    );
+
+    let same_name = contract_function(&db, module, "C", "sameNameQualifier");
+    let same_name_body = same_name.body(&db).expect("same-name body");
+    let same_name_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == same_name_body))
+        .expect("same-name body map");
+    let same_name_resolutions = ident_resolutions(&db, same_name_body, same_name_map)
+        .into_iter()
+        .filter(|(name, _)| *name == "Combiner")
+        .map(|(_, resolution)| resolution)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        same_name_resolutions
+            .iter()
+            .filter(|resolution| matches!(
+                resolution,
+                Resolution::Def {
+                    kind: DefResolutionKind::Class,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "callee qualifier must resolve as the class: {same_name_resolutions:?}"
+    );
+    assert_eq!(
+        same_name_resolutions
+            .iter()
+            .filter(|resolution| matches!(resolution, Resolution::Field(_)))
+            .count(),
+        1,
+        "the explicit argument must still resolve as the field: {same_name_resolutions:?}"
+    );
+
+    let parameter = contract_function(&db, module, "C", "parameter");
+    let parameter_body = parameter.body(&db).expect("body");
+    let parameter_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == parameter_body))
+        .expect("parameter body map");
+    assert!(ident_resolutions(&db, parameter_body, parameter_map)
+        .into_iter()
+        .any(|(name, resolution)| name == "value"
+            && matches!(resolution, Resolution::Param(_))));
+    assert!(
+        field_resolutions(&db, parameter_body, parameter_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "combine"
+                && matches!(resolution, Resolution::ClassMethod { .. }))
+    );
+
+    let local = contract_function(&db, module, "C", "local");
+    let local_body = local.body(&db).expect("body");
+    let local_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == local_body))
+        .expect("local body map");
+    assert!(
+        ident_resolutions(&db, local_body, local_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "receiver"
+                && matches!(resolution, Resolution::Local(_)))
+    );
+    assert!(
+        field_resolutions(&db, local_body, local_map)
+            .into_iter()
+            .any(|(name, resolution)| name == "combine"
+                && matches!(resolution, Resolution::ClassMethod { .. }))
+    );
+
+    let arbitrary = contract_function(&db, module, "C", "arbitrary");
+    let arbitrary_body = arbitrary.body(&db).expect("body");
+    let arbitrary_map = resolution
+        .bodies
+        .iter()
+        .find(|map| map.exprs.iter().any(|entry| entry.body == arbitrary_body))
+        .expect("arbitrary body map");
+    assert!(
+        !field_resolutions(&db, arbitrary_body, arbitrary_map)
+            .into_iter()
+            .any(|(_, resolution)| matches!(resolution, Resolution::ClassMethod { .. }))
+    );
 }
 
 #[test]

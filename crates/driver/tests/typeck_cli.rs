@@ -29,7 +29,12 @@ fn cli_prints_help_and_version() {
     assert!(stdout.contains("-o, --output-dir DIR"), "{stdout}");
     assert!(stdout.contains("--abi"), "{stdout}");
     assert!(stdout.contains("--emit-sonatina[=FILE]"), "{stdout}");
-    assert!(stdout.contains("--pe-fuel N"), "{stdout}");
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("--pe-fuel N") && line.contains("default: 8192")),
+        "{stdout}"
+    );
     assert!(stdout.contains("--pe-depth N"), "{stdout}");
     assert!(stdout.contains("--pe-max-instantiations N"), "{stdout}");
     assert!(stdout.contains("--pe-max-type-nodes N"), "{stdout}");
@@ -871,13 +876,16 @@ contract C {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("error[SC0421]"), "stderr:\n{stderr}");
+    assert!(stderr.contains("error[SC0411]"), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("cannot lower literal `\"nope\"` to Hull"),
+        stderr.contains("runtime lowering cannot represent `string` in return type of `main`"),
         "stderr:\n{stderr}"
     );
-    assert!(!stderr.contains("UnsupportedType {"), "stderr:\n{stderr}");
-    assert!(!stderr.contains("HULL-EMIT"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("IntegerErasure {"), "stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("specialization failed"),
+        "stderr:\n{stderr}"
+    );
 }
 
 #[test]

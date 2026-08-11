@@ -244,6 +244,8 @@ pub enum BuiltinClass {
     Invokable,
     /// `Int`.
     Int,
+    /// String-literal conversion class `Str`.
+    Str,
 }
 
 /// Builtin constructor names.
@@ -295,6 +297,8 @@ pub enum BuiltinClassMethod {
     InvokableInvoke,
     /// `Int.fromInteger`.
     IntFromInteger,
+    /// `Str.fromString`.
+    StrFromString,
 }
 
 /// Builtin resolution category.
@@ -521,6 +525,17 @@ pub struct PredResolution<'db> {
     pub resolution: Resolution<'db>,
 }
 
+/// Resolution attached to one class requested by an ADT `derive` attribute.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
+pub struct AdtDeriveResolution<'db> {
+    /// ADT carrying the attribute.
+    pub adt: DefId<'db>,
+    /// Zero-based target index in source order.
+    pub index: u32,
+    /// Resolution for the class path or `Err`.
+    pub resolution: Resolution<'db>,
+}
+
 /// Diagnostic side of item-signature resolution.
 pub type ItemResolutionDiagnostics = Vec<NameresDiagnostic>;
 
@@ -531,6 +546,8 @@ pub struct ItemResolutionFacts<'db> {
     pub types: Vec<TypeResolution<'db>>,
     /// Resolved predicate references.
     pub preds: Vec<PredResolution<'db>>,
+    /// Resolved `derive` class targets in source order.
+    pub derives: Vec<AdtDeriveResolution<'db>>,
 }
 
 /// Type and predicate resolutions for item signatures.

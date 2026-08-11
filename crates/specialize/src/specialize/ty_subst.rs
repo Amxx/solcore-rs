@@ -87,6 +87,60 @@ impl<'db> TySubst<'db> {
         }
     }
 
+    /// Matches the concrete portions of a partially recovered call-site type.
+    /// Error, unknown, and still-bound target nodes carry no information and
+    /// therefore must not claim a source binder.
+    pub(super) fn match_ty_known(
+        &mut self,
+        db: &'db dyn Db,
+        pattern: Ty<'db>,
+        target: Ty<'db>,
+    ) -> bool {
+        let pattern = strip_comptime_ty(db, pattern);
+        let target = strip_comptime_ty(db, target);
+        if matches!(
+            target.kind(db),
+            TyKind::Error | TyKind::Unknown | TyKind::BoundVar(_)
+        ) {
+            return true;
+        }
+        match pattern.kind(db) {
+            TyKind::BoundVar(var) => self.insert_if_consistent(var.index, target),
+            TyKind::Named { ctor, args } => match target.kind(db) {
+                TyKind::Named {
+                    ctor: target_ctor,
+                    args: target_args,
+                } if ctor == target_ctor && args.len() == target_args.len() => args
+                    .iter()
+                    .zip(target_args)
+                    .all(|(arg, target)| self.match_ty_known(db, *arg, *target)),
+                _ => false,
+            },
+            TyKind::Function { params, ret } => match target.kind(db) {
+                TyKind::Function {
+                    params: target_params,
+                    ret: target_ret,
+                } if params.len() == target_params.len() => {
+                    params
+                        .iter()
+                        .zip(target_params)
+                        .all(|(param, target)| self.match_ty_known(db, *param, *target))
+                        && self.match_ty_known(db, *ret, *target_ret)
+                }
+                _ => false,
+            },
+            TyKind::Tuple(elems) => match target.kind(db) {
+                TyKind::Tuple(target_elems) if elems.len() == target_elems.len() => elems
+                    .iter()
+                    .zip(target_elems)
+                    .all(|(elem, target)| self.match_ty_known(db, *elem, *target)),
+                _ => false,
+            },
+            TyKind::Comptime(inner) => self.match_ty_known(db, *inner, target),
+            TyKind::Error | TyKind::Unknown => true,
+        }
+    }
+
     pub(super) fn apply_ty(&self, db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
         match ty.kind(db) {
             TyKind::BoundVar(var) => self.vars.get(&var.index).copied().unwrap_or(ty),

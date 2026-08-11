@@ -661,6 +661,67 @@ contract AssemblyFunctionShadowing {
 }
 
 #[test]
+fn assembly_function_names_are_hoisted_for_forward_and_mutual_calls() {
+    let yul = render_source(
+        "assembly_function_mutual_recursion",
+        r#"
+contract AssemblyFunctionMutualRecursion {
+  public function main() -> word {
+    let result : word;
+    assembly {
+      result := even(6)
+      function even(n) -> value {
+        switch n
+        case 0 { value := 1 }
+        default { value := odd(sub(n, 1)) }
+      }
+      function odd(n) -> value {
+        switch n
+        case 0 { value := 0 }
+        default { value := even(sub(n, 1)) }
+      }
+    }
+    return result;
+  }
+}
+"#,
+    );
+
+    let function_name = |source_prefix: &str| {
+        yul.lines()
+            .find_map(|line| {
+                line.trim_start()
+                    .strip_prefix("function ")
+                    .and_then(|line| line.split_once('('))
+                    .map(|(name, _)| name)
+                    .filter(|name| name.starts_with(source_prefix))
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| panic!("missing `{source_prefix}` definition:\n{yul}"))
+    };
+    let even = function_name("asm$even_");
+    let odd = function_name("asm$odd_");
+    assert!(yul.matches(&format!("{even}(")).count() >= 3, "{yul}");
+    assert!(yul.matches(&format!("{odd}(")).count() >= 2, "{yul}");
+    assert!(!yul.contains(":= even("), "{yul}");
+    assert!(!yul.contains(":= odd("), "{yul}");
+}
+
+#[test]
+fn polymorphic_inline_yul_terminators_render_in_value_functions() {
+    let fixture =
+        repo_root().join("crates/hir-ty/tests/fixtures/ok/yul_polymorphic_terminators/main.solc");
+    let yul = render_fixture(&fixture);
+
+    for terminator in ["stop()", "invalid()", "selfdestruct(", "revert("] {
+        assert!(
+            yul.contains(terminator),
+            "missing `{terminator}` in Yul output:\n{yul}"
+        );
+    }
+}
+
+#[test]
 fn top_level_no_object_hull_wraps_like_assemble_hs_snapshot() {
     let db = TestDb::default();
     let sp = test_span(&db);

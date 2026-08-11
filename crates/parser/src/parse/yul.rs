@@ -192,13 +192,28 @@ where
             .ignore_then(parsed_yul_expr_parser())
             .then(case.repeated().collect::<Vec<_>>())
             .then(default.or_not())
-            .map_with(|((expr, cases), default), e| ParsedYulStmt {
-                span: e.span(),
-                kind: ParsedYulStmtKind::Switch {
-                    expr,
-                    cases,
-                    default,
-                },
+            .validate(|((expr, cases), default), e, emitter| {
+                let span = e.span();
+                // `default` is only an optional fallback; Yul requires at
+                // least one proper case arm in every switch.
+                if cases.is_empty() {
+                    emitter.emit(Rich::custom(
+                        span,
+                        "Yul switch requires at least one `case` arm",
+                    ));
+                    return ParsedYulStmt {
+                        span,
+                        kind: ParsedYulStmtKind::Error,
+                    };
+                }
+                ParsedYulStmt {
+                    span,
+                    kind: ParsedYulStmtKind::Switch {
+                        expr,
+                        cases,
+                        default,
+                    },
+                }
             })
             .boxed();
 

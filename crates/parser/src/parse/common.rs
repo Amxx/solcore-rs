@@ -79,12 +79,13 @@ where
     select! { Token::Ident(name) if name == "then" => () }.labelled("then")
 }
 
-fn top_level_item_start_token_parser<'src, I>() -> impl Parser<'src, I, (), ParserErr<'src>>
+pub(super) fn top_level_item_start_token_parser<'src, I>()
+-> impl Parser<'src, I, (), ParserErr<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = LexSpan>,
 {
     select! {
-        Token::Import | Token::Export | Token::Pragma | Token::Type | Token::Data
+        Token::Hash | Token::Import | Token::Export | Token::Pragma | Token::Type | Token::Data
         | Token::Class | Token::Instance | Token::Contract | Token::Public
         | Token::Payable | Token::Function | Token::Constructor | Token::Fallback
         | Token::Forall | Token::Default => (),
@@ -125,16 +126,20 @@ where
         Token::OrOr => "||",
         Token::PlusEq => "+=",
         Token::MinusEq => "-=",
+        Token::StarEq => "*=",
+        Token::SlashEq => "/=",
         Token::CaretEq => "^=",
         Token::AmpEq => "&=",
         Token::PipeEq => "|=",
         Token::PercentEq => "%=",
+        Token::TildeEq => "~=",
         Token::Plus => "+",
         Token::Minus => "-",
         Token::Star => "*",
         Token::Slash => "/",
         Token::Percent => "%",
         Token::Bang => "!",
+        Token::Tilde => "~",
         Token::Less => "<",
         Token::Greater => ">",
         Token::Eq => "=",

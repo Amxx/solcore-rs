@@ -10,8 +10,8 @@ use hir::{
 };
 use parser::parse_file_to_hir;
 use solcore_hull::{
-    Alt, Arg, CheckDiagnosticKind, CodeBlock, Con, Expr, Function, Object, Pat, PatKind, Program,
-    Stmt, StmtKind, Ty, check_program_with_db, pretty_program,
+    Alt, Arg, CheckDiagnosticKind, CodeBlock, Con, Expr, ExprKind, Function, Object, Pat, PatKind,
+    Program, Stmt, StmtKind, Ty, check_program_with_db, pretty_program,
 };
 
 #[salsa::db]
@@ -653,6 +653,243 @@ fn assembly_checker_rejects_multi_return_arity_mismatch() {
                 actual: 2,
                 ..
             }
+        )),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn assembly_functions_do_not_overwrite_same_named_hull_functions() {
+    let db = TestDb::default();
+    let sp = test_span(&db);
+    let word = Ty::word(sp);
+    let global = Function {
+        span: sp,
+        name: "foo".into(),
+        args: vec![Arg {
+            span: sp,
+            name: "value".into(),
+            ty: word.clone(),
+        }],
+        ret: word.clone(),
+        body: vec![Stmt {
+            span: sp,
+            kind: StmtKind::Return(Expr::var(sp, "value", word.clone())),
+        }],
+    };
+    let main = Function {
+        span: sp,
+        name: "main".into(),
+        args: Vec::new(),
+        ret: word.clone(),
+        body: vec![
+            Stmt {
+                span: sp,
+                kind: StmtKind::Let {
+                    name: "result".into(),
+                    ty: word.clone(),
+                },
+            },
+            Stmt {
+                span: sp,
+                kind: StmtKind::Assembly(vec![
+                    YulStmt {
+                        span: sp,
+                        kind: YulStmtKind::FunctionDef {
+                            name: spanned_ident(&db, sp, "foo"),
+                            params: vec![
+                                spanned_ident(&db, sp, "left"),
+                                spanned_ident(&db, sp, "right"),
+                            ],
+                            rets: vec![spanned_ident(&db, sp, "sum")],
+                            body: vec![yul_assign(
+                                &db,
+                                sp,
+                                &["sum"],
+                                yul_call(
+                                    &db,
+                                    sp,
+                                    "add",
+                                    vec![
+                                        YulExpr {
+                                            span: sp,
+                                            kind: YulExprKind::Ident(spanned_ident(
+                                                &db, sp, "left",
+                                            )),
+                                        },
+                                        YulExpr {
+                                            span: sp,
+                                            kind: YulExprKind::Ident(spanned_ident(
+                                                &db, sp, "right",
+                                            )),
+                                        },
+                                    ],
+                                ),
+                            )],
+                        },
+                    },
+                    yul_assign(
+                        &db,
+                        sp,
+                        &["result"],
+                        yul_call(&db, sp, "foo", vec![yul_num(sp, "1"), yul_num(sp, "2")]),
+                    ),
+                    yul_assign(
+                        &db,
+                        sp,
+                        &["result"],
+                        yul_call(
+                            &db,
+                            sp,
+                            "usr$foo",
+                            vec![YulExpr {
+                                span: sp,
+                                kind: YulExprKind::Ident(spanned_ident(&db, sp, "result")),
+                            }],
+                        ),
+                    ),
+                ]),
+            },
+            Stmt {
+                span: sp,
+                kind: StmtKind::Return(Expr {
+                    span: sp,
+                    ty: word.clone(),
+                    kind: ExprKind::Call {
+                        callee: "foo".into(),
+                        args: vec![Expr::var(sp, "result", word.clone())],
+                    },
+                }),
+            },
+        ],
+    };
+    let program = Program {
+        span: sp,
+        entry_points: Vec::new(),
+        functions: vec![global, main],
+        objects: Vec::new(),
+    };
+
+    assert_eq!(check_program_with_db(&db, &program), Vec::new());
+}
+
+#[test]
+fn assembly_function_bodies_cannot_capture_outer_hull_values() {
+    let db = TestDb::default();
+    let sp = test_span(&db);
+    let word = Ty::word(sp);
+    let program = Program {
+        span: sp,
+        entry_points: Vec::new(),
+        functions: vec![Function {
+            span: sp,
+            name: "main".into(),
+            args: Vec::new(),
+            ret: word.clone(),
+            body: vec![
+                Stmt {
+                    span: sp,
+                    kind: StmtKind::Let {
+                        name: "outer".into(),
+                        ty: word.clone(),
+                    },
+                },
+                Stmt {
+                    span: sp,
+                    kind: StmtKind::Assembly(vec![YulStmt {
+                        span: sp,
+                        kind: YulStmtKind::FunctionDef {
+                            name: spanned_ident(&db, sp, "capture"),
+                            params: Vec::new(),
+                            rets: vec![spanned_ident(&db, sp, "result")],
+                            body: vec![yul_assign(
+                                &db,
+                                sp,
+                                &["result"],
+                                YulExpr {
+                                    span: sp,
+                                    kind: YulExprKind::Ident(spanned_ident(&db, sp, "outer")),
+                                },
+                            )],
+                        },
+                    }]),
+                },
+                Stmt {
+                    span: sp,
+                    kind: StmtKind::Return(Expr::var(sp, "outer", word)),
+                },
+            ],
+        }],
+        objects: Vec::new(),
+    };
+
+    let diagnostics = check_program_with_db(&db, &program);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            CheckDiagnosticKind::UndefinedVariable { name } if name == "outer"
+        )),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn assembly_for_post_values_do_not_leak_into_the_body_block() {
+    let db = TestDb::default();
+    let sp = test_span(&db);
+    let word = Ty::word(sp);
+    let leaked = YulExpr {
+        span: sp,
+        kind: YulExprKind::Ident(spanned_ident(&db, sp, "leaked")),
+    };
+    let program = Program {
+        span: sp,
+        entry_points: Vec::new(),
+        functions: vec![Function {
+            span: sp,
+            name: "main".into(),
+            args: Vec::new(),
+            ret: word.clone(),
+            body: vec![
+                Stmt {
+                    span: sp,
+                    kind: StmtKind::Let {
+                        name: "result".into(),
+                        ty: word.clone(),
+                    },
+                },
+                Stmt {
+                    span: sp,
+                    kind: StmtKind::Assembly(vec![YulStmt {
+                        span: sp,
+                        kind: YulStmtKind::For {
+                            init: Vec::new(),
+                            cond: yul_num(sp, "0"),
+                            post: vec![YulStmt {
+                                span: sp,
+                                kind: YulStmtKind::Let {
+                                    names: vec![spanned_ident(&db, sp, "leaked")],
+                                    init: Some(yul_num(sp, "1")),
+                                },
+                            }],
+                            body: vec![yul_assign(&db, sp, &["result"], leaked)],
+                        },
+                    }]),
+                },
+                Stmt {
+                    span: sp,
+                    kind: StmtKind::Return(Expr::var(sp, "result", word)),
+                },
+            ],
+        }],
+        objects: Vec::new(),
+    };
+
+    let diagnostics = check_program_with_db(&db, &program);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            CheckDiagnosticKind::UndefinedVariable { name } if name == "leaked"
         )),
         "{diagnostics:?}"
     );

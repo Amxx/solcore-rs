@@ -355,7 +355,7 @@ impl<'db> DesugarCollector<'db> {
             }
             StmtKind::Expr(expr) => self.expr(*expr),
             StmtKind::Assign { lhs, rhs, .. } => {
-                self.field_write(stmt_id, *lhs);
+                self.field_write(stmt_id, *lhs, *rhs);
                 self.expr(*rhs);
             }
             StmtKind::Match { scrutinees, arms } => {
@@ -525,7 +525,7 @@ impl<'db> DesugarCollector<'db> {
                 self.expr(*then_expr);
                 self.expr(*else_expr);
             }
-            ExprKind::Tuple(elems) => {
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
                 for elem in elems {
                     self.expr(*elem);
                 }
@@ -571,12 +571,18 @@ impl<'db> DesugarCollector<'db> {
         }
     }
 
-    fn field_write(&mut self, stmt_id: Id<Stmt<'db>>, lhs: Id<Expr<'db>>) {
+    fn field_write(&mut self, stmt_id: Id<Stmt<'db>>, lhs: Id<Expr<'db>>, rhs: Id<Expr<'db>>) {
         if let Some(hir_nameres::Resolution::Field(field)) =
             self.expr_resolutions.get(&(self.body, lhs))
         {
             let selector = selector_name(self.db, field);
             let lhs_span = self.body.exprs(self.db).get(lhs).span;
+            let assignment = if matches!(self.body.exprs(self.db).get(rhs).kind, ExprKind::Array(_))
+            {
+                "storeArrayLit"
+            } else {
+                "Assign.assign"
+            };
             self.transforms.push(FrontendTransform::FieldWrite {
                 body: self.body,
                 stmt: stmt_id,
@@ -584,7 +590,7 @@ impl<'db> DesugarCollector<'db> {
                 field: *field,
                 selector: selector.clone(),
                 hook: format!(
-                    "Assign.assign(LVA.acc(MemberAccessProxy(ContractStorage(_), {selector})), <rhs>)"
+                    "{assignment}(LVA.acc(MemberAccessProxy(ContractStorage(_), {selector})), <rhs>)"
                 ),
             });
         } else {

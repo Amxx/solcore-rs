@@ -113,6 +113,7 @@ pub enum MonoIntrinsic {
     BxorWord,
     BandWord,
     BorWord,
+    BnotWord,
     WordToInteger,
     WordFromInteger,
     IntegerAdd,
@@ -123,6 +124,15 @@ pub enum MonoIntrinsic {
     ConcatLit,
     StrlenLit,
     KeccakLit,
+    KeccakWordLit,
+    /// Runtime materialization of a compile-time string literal into
+    /// `memory(string)`. This marker is deliberately not foldable: Hull
+    /// replaces it with a call to a generated allocator.
+    MemStringFromLit,
+    /// Runtime revert carrying the bytes of a compile-time string literal.
+    /// The std body is an `unimplemented()` guard; Hull replaces this marker
+    /// with its backend-neutral revert statement.
+    RevertLit,
 }
 
 /// Resolved origin for a monomorphic call expression.
@@ -270,6 +280,12 @@ pub enum MonoFunctionOrigin<'db> {
         adt: DefId<'db>,
         method: String,
     },
+    DerivedClass {
+        adt: DefId<'db>,
+        class: DefId<'db>,
+        target_index: u32,
+        method: String,
+    },
     External,
 }
 
@@ -383,6 +399,15 @@ pub struct MonoExpr<'db> {
     pub kind: MonoExprKind<'db>,
 }
 
+/// Storage slot formula used by a source index expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MonoStorageIndexKind {
+    /// Mapping element slot: `keccak256(key, base)`.
+    Mapping,
+    /// Dynamic array element slot: `keccak256(base) + index`.
+    Array,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonoExprKind<'db> {
     Var(MonoId<'db>),
@@ -414,7 +439,13 @@ pub enum MonoExprKind<'db> {
         base: Box<MonoExpr<'db>>,
         index: Box<MonoExpr<'db>>,
     },
+    /// Checked read from a `memory(DynArray(t))` value.
+    MemoryArrayIndex {
+        base: Box<MonoExpr<'db>>,
+        index: Box<MonoExpr<'db>>,
+    },
     StorageIndex {
+        storage_kind: MonoStorageIndexKind,
         base: Box<MonoExpr<'db>>,
         index: Box<MonoExpr<'db>>,
     },

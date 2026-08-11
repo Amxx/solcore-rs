@@ -10,7 +10,7 @@ error[SC0001]: parse error: unexpected `return`
 2 | function f() -> word { return g(1,); }
   |                        ^^^^^^ unexpected token
   |
-  = note: expecting `!`, `(`, `.`, `@`, `if`, or `lam`
+  = note: expecting `!`, `(`, `.`, `@`, `[`, `if`, `lam`, or `~`
 ---
 
 error[SC0001]: parse error: unexpected `)`
@@ -20,4 +20,4 @@ error[SC0001]: parse error: unexpected `)`
 2 | function f() -> word { return g(1,); }
   |                                   ^ unexpected token
   |
-  = note: expecting `!`, `(`, `.`, `@`, `if`, or `lam`
+  = note: expecting `!`, `(`, `.`, `@`, `[`, `if`, `lam`, or `~`

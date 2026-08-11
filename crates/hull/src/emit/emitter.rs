@@ -31,6 +31,12 @@ impl<'db> Emitter<'db> {
             layout_stack: Vec::new(),
             if_stmt_spans,
             predeclared_lets: Vec::new(),
+            string_literals: BTreeMap::new(),
+            next_string_literal: 0,
+            revert_literals: BTreeMap::new(),
+            next_revert_literal: 0,
+            memory_array_index_used: false,
+            storage_array_index_used: false,
             fresh: 0,
         }
     }
@@ -56,6 +62,37 @@ impl<'db> Emitter<'db> {
                 MonoItem::Contract(contract) => contracts.push(contract.clone()),
                 MonoItem::Adt(_) => {}
             }
+        }
+        // String materializers are registered while ordinary functions are
+        // emitted. Add them to the same function table afterwards so the
+        // existing reachability pass copies each helper into every deployment
+        // or runtime object that calls it. Object-less programs retain them in
+        // their top-level function list.
+        let string_literals = self
+            .string_literals
+            .iter()
+            .map(|(bytes, helper)| (bytes.clone(), helper.clone()))
+            .collect::<Vec<_>>();
+        for (bytes, helper) in string_literals {
+            let function = self.string_literal_function(helper.span, &helper.name, &bytes);
+            functions.insert(helper.name, function);
+        }
+        let revert_literals = self
+            .revert_literals
+            .iter()
+            .map(|(message, helper)| (message.clone(), helper.clone()))
+            .collect::<Vec<_>>();
+        for (message, helper) in revert_literals {
+            let function = self.revert_literal_function(helper.span, &helper.name, message);
+            functions.insert(helper.name, function);
+        }
+        if self.memory_array_index_used {
+            let function = self.memory_array_index_function(span, MEMORY_ARRAY_INDEX_HELPER);
+            functions.insert(MEMORY_ARRAY_INDEX_HELPER.to_owned(), function);
+        }
+        if self.storage_array_index_used {
+            let function = self.storage_array_slot_function(span, STORAGE_ARRAY_SLOT_HELPER);
+            functions.insert(STORAGE_ARRAY_SLOT_HELPER.to_owned(), function);
         }
 
         let program = if contracts.is_empty() {
@@ -246,6 +283,16 @@ impl<'db> Emitter<'db> {
                 lhs,
                 rhs,
             } => self.emit_assign_op(stmt.span, lhs, "sub", rhs),
+            MonoStmtKind::Assign {
+                op: AssignOp::Mul,
+                lhs,
+                rhs,
+            } => self.emit_assign_op(stmt.span, lhs, "mul", rhs),
+            MonoStmtKind::Assign {
+                op: AssignOp::Div,
+                lhs,
+                rhs,
+            } => self.emit_assign_op(stmt.span, lhs, "div", rhs),
             MonoStmtKind::Assign {
                 op: AssignOp::BitXor,
                 lhs,
@@ -447,6 +494,27 @@ impl<'db> Emitter<'db> {
     }
 
     pub(super) fn emit_expr(&mut self, expr: &MonoExpr<'db>) -> Expr<'db> {
+        if let Some(message) = revert_literal_call(expr) {
+            let helper = self.register_revert_literal(expr.span, message);
+            let ty = self.hull_ty(expr.ty.ty(), expr.span);
+            return Expr {
+                span: expr.span,
+                ty,
+                kind: ExprKind::Call {
+                    callee: helper.into(),
+                    args: Vec::new(),
+                },
+            };
+        }
+        if is_revert_literal_call(expr) {
+            self.push(
+                expr.span,
+                EmitDiagnosticKind::UnsupportedMonoConstruct {
+                    construct: "non-literal revertLit call".to_owned(),
+                },
+            );
+            return Expr::unit(expr.span);
+        }
         if let MonoExprKind::Var(id) = &expr.kind {
             if let Some(expr) = self.lookup_expr(&id.name) {
                 return expr;
@@ -459,6 +527,40 @@ impl<'db> Emitter<'db> {
             };
         }
         let ty = self.hull_ty(expr.ty.ty(), expr.span);
+        if let MonoExprKind::Call { args, origin, .. } = &expr.kind
+            && matches!(
+                origin,
+                MonoCallOrigin::Builtin(MonoIntrinsic::MemStringFromLit)
+            )
+        {
+            if let [arg] = args.as_slice()
+                && let Some(bytes) = decoded_string_literal(arg)
+            {
+                let helper = self.register_string_literal(expr.span, bytes);
+                return Expr {
+                    span: expr.span,
+                    ty,
+                    kind: ExprKind::Call {
+                        callee: helper.into(),
+                        args: Vec::new(),
+                    },
+                };
+            }
+            self.push(
+                expr.span,
+                EmitDiagnosticKind::UnsupportedMonoConstruct {
+                    construct: "non-literal memStringFromLit call".to_owned(),
+                },
+            );
+            return Expr {
+                span: expr.span,
+                ty,
+                kind: ExprKind::Call {
+                    callee: "unsupported".into(),
+                    args: Vec::new(),
+                },
+            };
+        }
         match &expr.kind {
             MonoExprKind::Var(_) => unreachable!("variable expressions return above"),
             MonoExprKind::Lit(lit) => self.emit_lit(expr.span, lit),
@@ -486,6 +588,20 @@ impl<'db> Emitter<'db> {
             MonoExprKind::UnaryOp { op, expr: inner } => {
                 self.emit_unary_op(expr.span, ty, *op, inner)
             }
+            MonoExprKind::MemoryArrayIndex { base, index } => {
+                self.memory_array_index_used = true;
+                Expr {
+                    span: expr.span,
+                    ty,
+                    kind: ExprKind::Call {
+                        callee: MEMORY_ARRAY_INDEX_HELPER.into(),
+                        args: vec![self.emit_expr(base), self.emit_expr(index)],
+                    },
+                }
+            }
+            MonoExprKind::StorageIndex { .. } if sem_ty_is_storage_ref(self.db, expr.ty.ty()) => {
+                self.emit_storage_slot_expr(expr)
+            }
             MonoExprKind::StorageIndex { .. } => Expr {
                 span: expr.span,
                 ty,
@@ -495,6 +611,7 @@ impl<'db> Emitter<'db> {
                 },
             },
             MonoExprKind::TypeAnnot { expr: inner, .. } => self.emit_expr(inner),
+            MonoExprKind::Proxy(_) if hull_ty_word_slots(&ty) == Some(0) => Expr::unit(expr.span),
             MonoExprKind::Match { scrutinee, arms } => {
                 self.emit_match_expr(expr, &ty, scrutinee, arms)
             }
@@ -669,16 +786,280 @@ impl<'db> Emitter<'db> {
         }
     }
 
+    fn register_string_literal(&mut self, span: Span<'db>, bytes: Vec<u8>) -> String {
+        if let Some(helper) = self.string_literals.get(&bytes) {
+            return helper.name.clone();
+        }
+        let name = loop {
+            let name = format!("__strlit_{}", self.next_string_literal);
+            self.next_string_literal += 1;
+            if self.function_names.insert(name.clone()) {
+                break name;
+            }
+        };
+        self.string_literals.insert(
+            bytes,
+            StringLiteralHelper {
+                span,
+                name: name.clone(),
+            },
+        );
+        name
+    }
+
+    fn register_revert_literal(&mut self, span: Span<'db>, message: String) -> String {
+        if let Some(helper) = self.revert_literals.get(&message) {
+            return helper.name.clone();
+        }
+        let name = loop {
+            let name = format!("__revertlit_{}", self.next_revert_literal);
+            self.next_revert_literal += 1;
+            if self.function_names.insert(name.clone()) {
+                break name;
+            }
+        };
+        self.revert_literals.insert(
+            message,
+            RevertLiteralHelper {
+                span,
+                name: name.clone(),
+            },
+        );
+        name
+    }
+
+    fn revert_literal_function(
+        &self,
+        span: Span<'db>,
+        name: &str,
+        message: String,
+    ) -> Function<'db> {
+        Function {
+            span,
+            name: name.into(),
+            args: Vec::new(),
+            ret: Ty::unit(span),
+            body: vec![Stmt {
+                span,
+                kind: StmtKind::Revert(message),
+            }],
+        }
+    }
+
+    fn string_literal_function(&self, span: Span<'db>, name: &str, bytes: &[u8]) -> Function<'db> {
+        let (words, total) = string_literal_layout(bytes);
+        let pointer = "p";
+        let mut assembly = vec![
+            self.yul_assign(
+                span,
+                pointer,
+                self.yul_call(span, "mload", vec![self.yul_number(span, "0x40")]),
+            ),
+            self.yul_expr_stmt(
+                span,
+                self.yul_call(
+                    span,
+                    "mstore",
+                    vec![
+                        self.yul_ident_expr(span, pointer),
+                        self.yul_number(span, bytes.len().to_string()),
+                    ],
+                ),
+            ),
+        ];
+        assembly.extend(words.into_iter().enumerate().map(|(index, word)| {
+            let offset = 32 * (index + 1);
+            self.yul_expr_stmt(
+                span,
+                self.yul_call(
+                    span,
+                    "mstore",
+                    vec![
+                        self.yul_call(
+                            span,
+                            "add",
+                            vec![
+                                self.yul_ident_expr(span, pointer),
+                                self.yul_number(span, offset.to_string()),
+                            ],
+                        ),
+                        self.yul_number(span, word),
+                    ],
+                ),
+            )
+        }));
+        assembly.push(self.yul_expr_stmt(
+            span,
+            self.yul_call(
+                span,
+                "mstore",
+                vec![
+                    self.yul_number(span, "0x40"),
+                    self.yul_call(
+                        span,
+                        "add",
+                        vec![
+                            self.yul_ident_expr(span, pointer),
+                            self.yul_number(span, total.to_string()),
+                        ],
+                    ),
+                ],
+            ),
+        ));
+        let word = Ty::word(span);
+        Function {
+            span,
+            name: name.into(),
+            args: Vec::new(),
+            ret: word.clone(),
+            body: vec![
+                Stmt {
+                    span,
+                    kind: StmtKind::Let {
+                        name: pointer.into(),
+                        ty: word.clone(),
+                    },
+                },
+                self.assembly_stmt(span, assembly),
+                Stmt {
+                    span,
+                    kind: StmtKind::Return(Expr::var(span, pointer, word)),
+                },
+            ],
+        }
+    }
+
+    fn memory_array_index_function(&self, span: Span<'db>, name: &str) -> Function<'db> {
+        let word = Ty::word(span);
+        let out_of_bounds = YulStmt {
+            span,
+            kind: YulStmtKind::If {
+                cond: self.yul_call(
+                    span,
+                    "iszero",
+                    vec![self.yul_call(
+                        span,
+                        "lt",
+                        vec![
+                            self.yul_ident_expr(span, "index"),
+                            self.yul_call(span, "mload", vec![self.yul_ident_expr(span, "base")]),
+                        ],
+                    )],
+                ),
+                body: vec![
+                    self.yul_expr_stmt(
+                        span,
+                        self.yul_call(
+                            span,
+                            "mstore",
+                            vec![
+                                self.yul_number(span, "0"),
+                                self.yul_number(span, OUT_OF_BOUNDS_SELECTOR),
+                            ],
+                        ),
+                    ),
+                    self.yul_expr_stmt(
+                        span,
+                        self.yul_call(
+                            span,
+                            "revert",
+                            vec![self.yul_number(span, "28"), self.yul_number(span, "4")],
+                        ),
+                    ),
+                ],
+            },
+        };
+        Function {
+            span,
+            name: name.into(),
+            args: vec![
+                Arg {
+                    span,
+                    name: "base".into(),
+                    ty: word.clone(),
+                },
+                Arg {
+                    span,
+                    name: "index".into(),
+                    ty: word.clone(),
+                },
+            ],
+            ret: word.clone(),
+            body: vec![
+                Stmt {
+                    span,
+                    kind: StmtKind::Let {
+                        name: "out".into(),
+                        ty: word.clone(),
+                    },
+                },
+                self.assembly_stmt(
+                    span,
+                    vec![
+                        out_of_bounds,
+                        self.yul_assign(
+                            span,
+                            "out",
+                            self.yul_call(
+                                span,
+                                "mload",
+                                vec![self.yul_call(
+                                    span,
+                                    "add",
+                                    vec![
+                                        self.yul_call(
+                                            span,
+                                            "add",
+                                            vec![
+                                                self.yul_ident_expr(span, "base"),
+                                                self.yul_number(span, "32"),
+                                            ],
+                                        ),
+                                        self.yul_call(
+                                            span,
+                                            "mul",
+                                            vec![
+                                                self.yul_ident_expr(span, "index"),
+                                                self.yul_number(span, "32"),
+                                            ],
+                                        ),
+                                    ],
+                                )],
+                            ),
+                        ),
+                    ],
+                ),
+                Stmt {
+                    span,
+                    kind: StmtKind::Return(Expr::var(span, "out", word)),
+                },
+            ],
+        }
+    }
+
     fn emit_storage_slot_expr(&mut self, expr: &MonoExpr<'db>) -> Expr<'db> {
         match &expr.kind {
-            MonoExprKind::StorageIndex { base, index } => Expr {
-                span: expr.span,
-                ty: Ty::word(expr.span),
-                kind: ExprKind::Call {
-                    callee: STORAGE_INDEX_SLOT.into(),
-                    args: vec![self.emit_storage_slot_expr(base), self.emit_expr(index)],
-                },
-            },
+            MonoExprKind::StorageIndex {
+                storage_kind,
+                base,
+                index,
+            } => {
+                let callee = match storage_kind {
+                    MonoStorageIndexKind::Mapping => STORAGE_INDEX_SLOT,
+                    MonoStorageIndexKind::Array => {
+                        self.storage_array_index_used = true;
+                        STORAGE_ARRAY_SLOT_HELPER
+                    }
+                };
+                Expr {
+                    span: expr.span,
+                    ty: Ty::word(expr.span),
+                    kind: ExprKind::Call {
+                        callee: callee.into(),
+                        args: vec![self.emit_storage_slot_expr(base), self.emit_expr(index)],
+                    },
+                }
+            }
             MonoExprKind::TypeAnnot { expr: inner, .. } => self.emit_storage_slot_expr(inner),
             _ => self.emit_expr(expr),
         }
@@ -937,6 +1318,14 @@ impl<'db> Emitter<'db> {
                     },
                 }
             }
+            UnOp::BitNot => Expr {
+                span,
+                ty,
+                kind: ExprKind::Call {
+                    callee: "not".into(),
+                    args: vec![self.emit_expr(expr)],
+                },
+            },
             UnOp::Error => {
                 self.push(
                     span,
@@ -1053,6 +1442,66 @@ fn collect_leaking_let_stmts<'a, 'db>(
     }
 }
 
+fn decoded_string_literal(expr: &MonoExpr<'_>) -> Option<Vec<u8>> {
+    decoded_string_literal_text(expr).map(String::into_bytes)
+}
+
+fn decoded_string_literal_text(expr: &MonoExpr<'_>) -> Option<String> {
+    match &expr.kind {
+        MonoExprKind::Lit(LitKind::String(source)) => decode_string_literal(source),
+        MonoExprKind::TypeAnnot { expr, .. } => decoded_string_literal_text(expr),
+        _ => None,
+    }
+}
+
+fn is_revert_literal_call(expr: &MonoExpr<'_>) -> bool {
+    match &expr.kind {
+        MonoExprKind::Call { origin, .. } => {
+            matches!(origin, MonoCallOrigin::Builtin(MonoIntrinsic::RevertLit))
+        }
+        MonoExprKind::TypeAnnot { expr, .. } => is_revert_literal_call(expr),
+        _ => false,
+    }
+}
+
+fn revert_literal_call(expr: &MonoExpr<'_>) -> Option<String> {
+    match &expr.kind {
+        MonoExprKind::Call {
+            args,
+            origin: MonoCallOrigin::Builtin(MonoIntrinsic::RevertLit),
+            ..
+        } => {
+            let [arg] = args.as_slice() else {
+                return None;
+            };
+            decoded_string_literal_text(arg)
+        }
+        MonoExprKind::TypeAnnot { expr, .. } => revert_literal_call(expr),
+        _ => None,
+    }
+}
+
+/// Returns the right-padded, big-endian EVM words holding the string bytes and
+/// the total allocation size (one length word plus the payload words).
+fn string_literal_layout(bytes: &[u8]) -> (Vec<String>, usize) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let words = bytes
+        .chunks(32)
+        .map(|chunk| {
+            let mut word = String::with_capacity(66);
+            word.push_str("0x");
+            for index in 0..32 {
+                let byte = chunk.get(index).copied().unwrap_or(0);
+                word.push(HEX[(byte >> 4) as usize] as char);
+                word.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+            word
+        })
+        .collect::<Vec<_>>();
+    let total = 32 * (1 + words.len());
+    (words, total)
+}
+
 fn call_name(origin: &MonoCallOrigin<'_>, name: &str) -> String {
     match origin {
         MonoCallOrigin::Builtin(intrinsic) => intrinsic_name(*intrinsic).to_owned(),
@@ -1070,6 +1519,7 @@ fn intrinsic_name(intrinsic: MonoIntrinsic) -> &'static str {
         MonoIntrinsic::BxorWord => "bxorWord",
         MonoIntrinsic::BandWord => "bandWord",
         MonoIntrinsic::BorWord => "borWord",
+        MonoIntrinsic::BnotWord => "bnotWord",
         MonoIntrinsic::WordToInteger => "wordToInteger",
         MonoIntrinsic::WordFromInteger => "wordFromInteger",
         MonoIntrinsic::IntegerAdd => "integerAdd",
@@ -1080,6 +1530,9 @@ fn intrinsic_name(intrinsic: MonoIntrinsic) -> &'static str {
         MonoIntrinsic::ConcatLit => "concatLit",
         MonoIntrinsic::StrlenLit => "strlenLit",
         MonoIntrinsic::KeccakLit => "keccakLit",
+        MonoIntrinsic::KeccakWordLit => "keccakWordLit",
+        MonoIntrinsic::MemStringFromLit => "memStringFromLit",
+        MonoIntrinsic::RevertLit => "revertLit",
     }
 }
 
@@ -1104,6 +1557,7 @@ fn mono_expr_name(kind: &MonoExprKind<'_>) -> &'static str {
     match kind {
         MonoExprKind::Field { .. } => "field access",
         MonoExprKind::Index { .. } => "index access",
+        MonoExprKind::MemoryArrayIndex { .. } => "memory array index access",
         MonoExprKind::StorageIndex { .. } => "storage index access",
         MonoExprKind::Match { .. } => "expression match",
         MonoExprKind::Proxy(_) => "proxy expression",
@@ -1112,6 +1566,16 @@ fn mono_expr_name(kind: &MonoExprKind<'_>) -> &'static str {
         MonoExprKind::Error => "error expression",
         _ => "expression",
     }
+}
+
+fn sem_ty_is_storage_ref<'db>(db: &'db dyn hir_ty::Db, ty: SemTy<'db>) -> bool {
+    matches!(
+        ty.kind(db),
+        SemTyKind::Named {
+            ctor: TyCtor::User(storage),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, storage.def, "storage")
+    )
 }
 
 fn bool_match_expr_arms<'a, 'db>(
@@ -1143,5 +1607,47 @@ fn bool_constructor_pat_value<'db>(db: &'db dyn hir_ty::Db, pat: &MonoPat<'db>) 
             Some(false)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod string_literal_tests {
+    use super::{decode_string_literal, string_literal_layout};
+
+    #[test]
+    fn layout_uses_utf8_bytes_and_word_boundaries() {
+        assert_eq!(string_literal_layout(b""), (Vec::new(), 32));
+
+        let (words, total) = string_literal_layout("é".as_bytes());
+        assert_eq!(total, 64);
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].len(), 66);
+        assert!(words[0].starts_with("0xc3a9"), "{}", words[0]);
+        assert!(words[0].ends_with(&"0".repeat(60)), "{}", words[0]);
+
+        let (words, total) = string_literal_layout(&[b'a'; 32]);
+        assert_eq!(words, vec![format!("0x{}", "61".repeat(32))]);
+        assert_eq!(total, 64);
+
+        let mut bytes = vec![b'a'; 32];
+        bytes.push(b'b');
+        let (words, total) = string_literal_layout(&bytes);
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0], format!("0x{}", "61".repeat(32)));
+        assert_eq!(words[1], format!("0x62{}", "00".repeat(31)));
+        assert_eq!(total, 96);
+    }
+
+    #[test]
+    fn source_escapes_are_decoded_before_materialization() {
+        assert_eq!(
+            decode_string_literal(r#""a\n\t\"\\b""#),
+            Some("a\n\t\"\\b".to_owned())
+        );
+        assert_eq!(
+            decode_string_literal(r#""before\qafter""#),
+            Some("beforeqafter".to_owned())
+        );
+        assert_eq!(decode_string_literal("not quoted"), None);
     }
 }

@@ -85,6 +85,70 @@ pub use self::{
     table::{InferTable, InferTy, Instantiated, TyVid, UnifyError, VarValue},
 };
 
+/// Returns the logical argument list for bare-identifier UFCS calls.
+///
+/// Name resolution records `receiver.method(args)` as a class-method resolution
+/// on the callee while preserving the bare receiver identifier's value
+/// resolution (contract field, local binding, or function parameter). The
+/// class-method scheme still contains the receiver parameter, so downstream
+/// consumers must prepend that identifier exactly once. Namespace-qualified
+/// calls and non-identifier receivers retain their source argument list.
+fn ufcs_logical_args<'db>(
+    db: &'db dyn Db,
+    expr_resolutions: &FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), hir_nameres::Resolution<'db>>,
+    body: FuncBody<'db>,
+    callee: Id<Expr<'db>>,
+    args: &[Id<Expr<'db>>],
+) -> Vec<Id<Expr<'db>>> {
+    let Some(receiver) = ufcs_receiver(db, expr_resolutions, body, callee) else {
+        return args.to_vec();
+    };
+
+    std::iter::once(receiver)
+        .chain(args.iter().copied())
+        .collect()
+}
+
+fn ufcs_receiver<'db>(
+    db: &'db dyn Db,
+    expr_resolutions: &FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), hir_nameres::Resolution<'db>>,
+    body: FuncBody<'db>,
+    callee: Id<Expr<'db>>,
+) -> Option<Id<Expr<'db>>> {
+    let ExprKind::Field { base, .. } = &body.exprs(db).get(callee).kind else {
+        return None;
+    };
+    if !matches!(
+        expr_resolutions.get(&(body, callee)),
+        Some(hir_nameres::Resolution::ClassMethod { .. })
+    ) || !matches!(body.exprs(db).get(*base).kind, ExprKind::Ident(_))
+        || !matches!(
+            expr_resolutions.get(&(body, *base)),
+            Some(
+                hir_nameres::Resolution::Field(_)
+                    | hir_nameres::Resolution::Param(_)
+                    | hir_nameres::Resolution::Local(
+                        hir_nameres::LocalBinding::Let { .. }
+                            | hir_nameres::LocalBinding::Pattern { .. }
+                    )
+            )
+        )
+    {
+        return None;
+    }
+
+    Some(*base)
+}
+
+fn is_ufcs_call<'db>(
+    db: &'db dyn Db,
+    expr_resolutions: &FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), hir_nameres::Resolution<'db>>,
+    body: FuncBody<'db>,
+    callee: Id<Expr<'db>>,
+) -> bool {
+    ufcs_receiver(db, expr_resolutions, body, callee).is_some()
+}
+
 /// Type-checking context for one body inference query.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
 pub struct BodyTyContext<'db> {
@@ -166,6 +230,13 @@ pub enum ObligationSource<'db> {
         /// Body containing the literal.
         body: FuncBody<'db>,
         /// Literal expression.
+        expr: Id<Expr<'db>>,
+    },
+    /// Obligation created by an implicit string-literal conversion.
+    StringCoercion {
+        /// Body containing the literal or `concatLit` call.
+        body: FuncBody<'db>,
+        /// Expression being converted.
         expr: Id<Expr<'db>>,
     },
     /// Obligation instantiated from a scheme.
@@ -275,14 +346,14 @@ pub struct ComptimeObligation<'db> {
 /// Source of a deferred comptime obligation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
 pub enum ComptimeObligationKind<'db> {
-    /// Initializer of a comptime or inferred-`integer` let binding.
+    /// Initializer of a comptime or comptime-only (`integer`/`string`) let binding.
     LetInit {
         /// Let statement.
         stmt: Id<Stmt<'db>>,
         /// Binding name.
         name: String,
     },
-    /// Return expression of a `-> comptime` body.
+    /// Return expression of a `-> comptime` body or a comptime-only return type.
     Return {
         /// Function or lambda context.
         context: String,

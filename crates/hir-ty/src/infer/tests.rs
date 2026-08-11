@@ -134,6 +134,140 @@ fn db_with_main_typeck(src: &str) -> (TestDb, ModuleKey) {
     (db, key)
 }
 
+fn db_with_array_std(main_src: &str) -> (TestDb, ModuleKey) {
+    let mut db = TestDb::default();
+    let std_path = PathBuf::from("/std/std.solc");
+    let main_path = PathBuf::from("/main/main.solc");
+    let std_file = source_file_at_path(
+        &db,
+        &std_path,
+        r#"
+export { memory(*), storage(*), calldata(*), DynArray, array(*), uint256(*), address(*), string, Encoded(*), Decoded(*), concatLit, Add, Array, ArrayPush, Length, Typedef, CanStore, RValueIdxAccess };
+
+data memory(t) = memory(word);
+data storage(t) = storage(word);
+data calldata(t) = calldata(word);
+data DynArray(t);
+data array(t) = array(word);
+data uint256 = uint256(word);
+data address = address(word);
+data string;
+data Encoded = Encoded(word);
+data Decoded = Decoded(word);
+
+function concatLit(comptime lhs:string, comptime rhs:string) -> string { return lhs; }
+
+forall self . class self:Add {
+  function add(lhs:self, rhs:self) -> self;
+}
+
+instance uint256:Add {
+  function add(lhs:uint256, rhs:uint256) -> uint256 { return lhs; }
+}
+
+forall abs rep . class abs:Typedef(rep) {
+  function abs(x:rep) -> abs;
+  function rep(x:abs) -> rep;
+}
+
+forall t . default instance t:Typedef(t) {
+  function abs(x:t) -> t { return x; }
+  function rep(x:t) -> t { return x; }
+}
+
+instance uint256:Typedef(word) {
+  function abs(x:word) -> uint256 { return uint256(x); }
+  function rep(x:uint256) -> word { return 0; }
+}
+
+instance memory(string):Typedef(word) {
+  function abs(x:word) -> memory(string) { return memory(x); }
+  function rep(x:memory(string)) -> word { return 0; }
+}
+
+forall col_idx val . class col_idx:RValueIdxAccess(val) {
+  function lookup(xi:col_idx) -> val;
+}
+
+forall i . i:Typedef(word) =>
+instance (calldata(array(Encoded)), i):RValueIdxAccess(Decoded) {
+  function lookup(xi:(calldata(array(Encoded)), i)) -> Decoded {
+    return Decoded(0);
+  }
+}
+
+forall dst value . class dst:CanStore(value) {
+  function store(dst:dst, value:value) -> ();
+  function load(dst:dst) -> value;
+}
+
+instance storage(word):CanStore(word) {
+  function store(dst:storage(word), value:word) -> () { return (); }
+  function load(dst:storage(word)) -> word { return 0; }
+}
+
+instance storage(uint256):CanStore(uint256) {
+  function store(dst:storage(uint256), value:uint256) -> () { return (); }
+  function load(dst:storage(uint256)) -> uint256 { return uint256(0); }
+}
+
+instance storage(string):CanStore(memory(string)) {
+  function store(dst:storage(string), value:memory(string)) -> () { return (); }
+  function load(dst:storage(string)) -> memory(string) { return memory(0); }
+}
+
+instance storage(array(word)):CanStore(storage(array(word))) {
+  function store(dst:storage(array(word)), value:storage(array(word))) -> () { return (); }
+  function load(dst:storage(array(word))) -> storage(array(word)) { return dst; }
+}
+
+forall self . class self:Length {
+  function length(value:self) -> uint256;
+}
+
+forall self . class self:Array {
+  function pop(value:self) -> ();
+}
+
+forall self elem . class self:ArrayPush(elem) {
+  function push(value:self, elem:elem) -> ();
+}
+
+forall t . instance storage(array(t)):Length {
+  function length(value:storage(array(t))) -> uint256 { return uint256(0); }
+}
+
+forall t . instance storage(array(t)):Array {
+  function pop(value:storage(array(t))) -> () { return (); }
+}
+
+forall t elem . storage(t):CanStore(elem) =>
+instance storage(array(t)):ArrayPush(elem) {
+  function push(value:storage(array(t)), elem:elem) -> () { return (); }
+}
+"#,
+    );
+    let main_file = source_file_at_path(&db, &main_path, main_src);
+    let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
+    let main_key =
+        module_key_for_path(LibraryId::Main, &PathBuf::from("/main"), &main_path).unwrap();
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key.clone(), main_file);
+    (db, main_key)
+}
+
+fn canonical_std_adt_ty<'db>(db: &'db TestDb, name: &str, args: Vec<Ty<'db>>) -> Ty<'db> {
+    let def = crate::support::canonical_std_adt_def(db, name).expect("canonical std type");
+    Ty::named(
+        db,
+        TyCtor::User(UserTyCtor {
+            def,
+            kind: UserTyCtorKind::Adt,
+        }),
+        args,
+    )
+}
+
 fn lowered_module_typeck_diagnostics(src: &str) -> Vec<Diagnostic> {
     let (db, key) = db_with_main_typeck(src);
     let module = module_id_from_key(&db, &key);
@@ -299,6 +433,81 @@ fn infer_function<'db>(
     (body, infer_body(db, body, ctx))
 }
 
+fn infer_module_function<'db>(
+    db: &'db TestDb,
+    module_id: ModuleId<'db>,
+    name: &str,
+) -> (FuncBody<'db>, InferenceResult<'db>) {
+    infer_module_function_impl(db, module_id, name, false)
+}
+
+fn infer_module_function_with_solver<'db>(
+    db: &'db TestDb,
+    module_id: ModuleId<'db>,
+    name: &str,
+) -> (FuncBody<'db>, InferenceResult<'db>) {
+    infer_module_function_impl(db, module_id, name, true)
+}
+
+fn infer_module_function_impl<'db>(
+    db: &'db TestDb,
+    module_id: ModuleId<'db>,
+    name: &str,
+    solve_obligations: bool,
+) -> (FuncBody<'db>, InferenceResult<'db>) {
+    let module = module_hir(db, module_id).expect("module hir");
+    let info = function_infos(db, module)
+        .into_iter()
+        .find(|info| function_name(db, info.function) == name)
+        .expect("function");
+    let function = info.function;
+    let body = function.body(db).expect("body");
+    let env = nameres::module_env_for_hir_module(db, module_id, module);
+    let scope = env.item_scope.clone().expect("item scope");
+    let module_resolution = hir_nameres::resolve_module_with_imports(db, module, scope, &env);
+    let lowerer = TypeLowering::from_item_resolutions(
+        db,
+        &module_resolution.item_resolutions,
+        BinderEnv::from_type_vars(&info.type_vars),
+    );
+    let mut lowered = lowerer.lower_function(function);
+    let mut normalizer = AliasNormalizer::new(db, module, &module_resolution.item_resolutions);
+    lowered.scheme = normalizer.normalize_scheme(lowered.scheme);
+    lowered.params = lowered
+        .params
+        .into_iter()
+        .map(|param| normalizer.normalize_ty(param))
+        .collect();
+    lowered.ret = normalizer.normalize_ty(lowered.ret);
+    let lookup = find_function_info(db, module, function.def_id_value(db)).expect("lookup");
+    let body_map = body_resolution_for_function_with_imports(db, module, &lookup, Some(&env))
+        .expect("body map");
+    let mut ctx = BodyTyContext::new(
+        module,
+        body_map,
+        info.type_vars,
+        lowered.params,
+        Some(lowered.ret),
+    )
+    .with_param_names(param_names(db, function.sig(db).params.atom()))
+    .with_entry_module(module_id);
+    if solve_obligations {
+        let base_trait_env = crate::solver::trait_env_from_module_resolution_and_imports(
+            db,
+            module,
+            &module_resolution,
+            &env.import_surface(),
+        );
+        let trait_env = trait_env_with_givens(
+            db,
+            base_trait_env,
+            lowered.scheme.body(db).preds(db).clone(),
+        );
+        ctx = ctx.with_trait_env(trait_env);
+    }
+    (body, infer_body(db, body, ctx))
+}
+
 fn infer_all_functions_with_solver<'db>(
     db: &'db TestDb,
     module: Module<'db>,
@@ -394,11 +603,13 @@ fn solve_class_report<'db>(
 }
 
 fn return_expr<'db>(db: &'db TestDb, body: FuncBody<'db>) -> Id<Expr<'db>> {
-    let stmt = body.stmts(db).get(body.top_level_stmts(db)[0]);
-    match &stmt.kind {
-        StmtKind::Return(Some(expr)) => *expr,
-        _ => panic!("expected return expression"),
-    }
+    body.top_level_stmts(db)
+        .iter()
+        .find_map(|stmt| match &body.stmts(db).get(*stmt).kind {
+            StmtKind::Return(Some(expr)) => Some(*expr),
+            _ => None,
+        })
+        .expect("expected return expression")
 }
 
 #[test]
@@ -484,6 +695,27 @@ fn assert_no_typeck(result: &InferenceResult<'_>) {
         "unexpected type diagnostics: {:?}",
         result.diagnostics
     );
+}
+
+fn has_user_obligation<'db>(
+    db: &'db TestDb,
+    result: &InferenceResult<'db>,
+    class_name: &str,
+    main: Ty<'db>,
+    args: &[Ty<'db>],
+) -> bool {
+    result.obligations.iter().any(|obligation| {
+        matches!(
+            obligation.pred.kind(db),
+            PredKind::InClass {
+                class: ClassId::User(class),
+                main: obligation_main,
+                args: obligation_args,
+            } if class.name(db).as_deref() == Some(class_name)
+                && *obligation_main == main
+                && obligation_args.as_slice() == args
+        )
+    })
 }
 
 #[test]
@@ -625,6 +857,1511 @@ function f() -> word {
             .any(|obligation| matches!(
                 &obligation.kind,
                 ComptimeObligationKind::LetInit { name, .. } if name == "x"
+            )),
+        "{:?}",
+        result.comptime_obligations
+    );
+}
+
+#[test]
+fn comptime_only_types_cover_params_returns_typed_lets_and_call_args() {
+    let mut db = TestDb::default();
+    let std_path = PathBuf::from("/std/std.solc");
+    let main_path = PathBuf::from("/main/main.solc");
+    let std_file = source_file_at_path(
+        &db,
+        &std_path,
+        r#"
+export { string };
+data string;
+"#,
+    );
+    let main_file = source_file_at_path(
+        &db,
+        &main_path,
+        r#"
+import std.{string};
+
+type Text = string;
+type Big = integer;
+
+function explicitlyNeedsText(comptime value: Text) -> () {
+  return ();
+}
+
+function explicitlyNeedsBig(comptime value: Big) -> () {
+  return ();
+}
+
+function textParamIsComptime(value: Text) -> () {
+  return explicitlyNeedsText(value);
+}
+
+function bigParamIsComptime(value: Big) -> () {
+  return explicitlyNeedsBig(value);
+}
+
+function takesText(value: Text) -> () {
+  return ();
+}
+
+function takesBig(value: Big) -> () {
+  return ();
+}
+
+function exerciseText(value: Text) -> Text {
+  let copy: Text = value;
+  takesText(copy);
+  return copy;
+}
+
+function exerciseBig(value: Big) -> Big {
+  let copy: Big = value;
+  takesBig(copy);
+  return copy;
+}
+"#,
+    );
+    let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
+    let main_key =
+        module_key_for_path(LibraryId::Main, &PathBuf::from("/main"), &main_path).unwrap();
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key.clone(), main_file);
+    let main_module = module_id_from_key(&db, &main_key);
+
+    for name in ["textParamIsComptime", "bigParamIsComptime"] {
+        let (_, result) = infer_module_function(&db, main_module, name);
+        assert_no_typeck(&result);
+    }
+
+    for name in ["exerciseText", "exerciseBig"] {
+        let (_, result) = infer_module_function(&db, main_module, name);
+        assert_no_typeck(&result);
+        assert!(
+            result
+                .comptime_obligations
+                .iter()
+                .any(|obligation| matches!(
+                    obligation.kind,
+                    ComptimeObligationKind::LetInit { .. }
+                )),
+            "{name}: {:?}",
+            result.comptime_obligations
+        );
+        assert!(
+            result
+                .comptime_obligations
+                .iter()
+                .any(|obligation| matches!(
+                    obligation.kind,
+                    ComptimeObligationKind::CallParam { .. }
+                )),
+            "{name}: {:?}",
+            result.comptime_obligations
+        );
+        assert!(
+            result
+                .comptime_obligations
+                .iter()
+                .any(|obligation| matches!(obligation.kind, ComptimeObligationKind::Return { .. })),
+            "{name}: {:?}",
+            result.comptime_obligations
+        );
+    }
+
+    let diagnostics = module_typeck_diagnostics(&db, main_module)
+        .iter()
+        .map(|diagnostic| diagnostic.lower(&db))
+        .collect::<Vec<_>>();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn string_literals_and_concat_lit_use_str_conversion_only_at_literal_sites() {
+    let mut db = TestDb::default();
+    let std_path = PathBuf::from("/std/std.solc");
+    let main_path = PathBuf::from("/main/main.solc");
+    let std_file = source_file_at_path(
+        &db,
+        &std_path,
+        r#"
+export { memory(*), string, concatLit, strlenLit };
+data memory(a) = memory(word);
+data string;
+function concatLit(comptime lhs: string, comptime rhs: string) -> string { return lhs; }
+function strlenLit(comptime value: string) -> word { return 0; }
+"#,
+    );
+    let main_file = source_file_at_path(
+        &db,
+        &main_path,
+        r#"
+import std;
+import std.{memory, string, strlenLit};
+
+data Tag = Tag(word);
+instance Tag : Str {
+  function fromString(comptime value: string) -> Tag {
+    return Tag(strlenLit(value));
+  }
+}
+
+function literal() -> memory(string) { return "hello"; }
+function concatLit(lhs: word, rhs: word) -> word { return lhs; }
+function concatenated() -> memory(string) { return std.concatLit("he", "llo"); }
+function explicit(value: string) -> memory(string) { return Str.fromString(value); }
+function tagged() -> Tag { return "abcd"; }
+function taggedFromLet() -> Tag {
+  let value = "abcd";
+  return Str.fromString(value);
+}
+function inferredLiteral() -> () { let value = "x"; return (); }
+function inferredConcat() -> () { let value = std.concatLit("a", "b"); return (); }
+function consumePair(value: (string, word)) -> word { return 0; }
+function inferredTuple() -> word {
+  let value = ("x", 0);
+  return consumePair(value);
+}
+function inferredComptimeParam() -> () {
+  let sink = lam (comptime value) -> () { return (); };
+  sink("x");
+  return ();
+}
+function invalidConcat() -> memory(string) { return concatLit(1, 2); }
+function makeWord() -> word { return 0; }
+function invalidSource() -> memory(string) {
+  let value;
+  let result: memory(string) = Str.fromString(value);
+  value = makeWord();
+  return result;
+}
+function runtime(value: string) -> memory(string) { return value; }
+"#,
+    );
+    let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
+    let main_key =
+        module_key_for_path(LibraryId::Main, &PathBuf::from("/main"), &main_path).unwrap();
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key.clone(), main_file);
+    assert!(
+        parse_diagnostics(&db, main_file).is_empty(),
+        "{:?}",
+        parse_diagnostics(&db, main_file)
+    );
+    let main_module = module_id_from_key(&db, &main_key);
+    let module_diagnostics = module_typeck_diagnostics(&db, main_module)
+        .iter()
+        .map(|diagnostic| diagnostic.lower(&db))
+        .collect::<Vec<_>>();
+    assert_eq!(module_diagnostics.len(), 3, "{module_diagnostics:?}");
+    assert!(
+        module_diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("SC0201")
+                && diagnostic.message.contains("memory")
+                && diagnostic.message.contains("string")
+        }),
+        "{module_diagnostics:?}"
+    );
+
+    assert!(
+        module_diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("SC0201")
+                && diagnostic.message.contains("string")
+                && diagnostic.message.contains("word")
+        }),
+        "{module_diagnostics:?}"
+    );
+
+    for name in [
+        "literal",
+        "concatenated",
+        "explicit",
+        "tagged",
+        "taggedFromLet",
+    ] {
+        let (_, result) = infer_module_function(&db, main_module, name);
+        assert_no_typeck(&result);
+        assert!(
+            result.obligations.iter().any(|obligation| {
+                matches!(
+                    obligation.pred.kind(&db),
+                    PredKind::InClass {
+                        class: ClassId::Builtin(BuiltinClassId::Str),
+                        ..
+                    }
+                )
+            }),
+            "{name}: {:?}",
+            result.obligations
+        );
+    }
+
+    for name in [
+        "inferredLiteral",
+        "inferredConcat",
+        "inferredTuple",
+        "inferredComptimeParam",
+    ] {
+        let (_, result) = infer_module_function(&db, main_module, name);
+        assert_no_typeck(&result);
+    }
+}
+
+#[test]
+fn array_literals_infer_canonical_memory_dyn_array_and_empty_uses_context() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{memory, DynArray};
+
+function filled(x:word, y:word) -> memory(DynArray(word)) { return [x, y]; }
+function empty() -> memory(DynArray(word)) { return []; }
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let word = Ty::word(&db);
+    let dyn_array = canonical_std_adt_ty(&db, "DynArray", vec![word]);
+    let expected = canonical_std_adt_ty(&db, "memory", vec![dyn_array]);
+
+    for name in ["filled", "empty"] {
+        let (body, result) = infer_module_function(&db, module, name);
+        assert_no_typeck(&result);
+        let expr = return_expr(&db, body);
+        assert!(matches!(body.exprs(&db).get(expr).kind, ExprKind::Array(_)));
+        assert_eq!(result.expr_ty(body, expr), Some(expected), "{name}");
+    }
+}
+
+#[test]
+fn array_literal_rejects_mixed_element_types() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{memory, DynArray};
+
+function mixed(x:word, flag:bool) -> memory(DynArray(word)) {
+  return [x, flag];
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function(&db, module, "mixed");
+
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn array_string_literals_use_memory_string_from_memory_and_storage_contexts() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std;
+import std.{memory, storage, DynArray, array, string, Typedef, CanStore};
+
+function inMemory() -> memory(DynArray(memory(string))) {
+  return ["hello"];
+}
+
+function explicitConversion() -> memory(DynArray(memory(string))) {
+  return [Str.fromString("hello")];
+}
+
+function concatenated() -> memory(DynArray(memory(string))) {
+  return [std.concatLit("hel", "lo")];
+}
+
+function conditional(flag:bool) -> memory(DynArray(memory(string))) {
+  return [if (flag) then "yes" else "no"];
+}
+
+contract C {
+  names:array(string);
+
+  function setNames() -> () {
+    names = ["alice", "bob"];
+    return ();
+  }
+
+  function clearNames() -> () {
+    names = [];
+    return ();
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let string = canonical_std_adt_ty(&db, "string", Vec::new());
+    let memory_string = canonical_std_adt_ty(&db, "memory", vec![string]);
+    let dyn_array = canonical_std_adt_ty(&db, "DynArray", vec![memory_string]);
+    let memory_array = canonical_std_adt_ty(&db, "memory", vec![dyn_array]);
+
+    for name in [
+        "inMemory",
+        "explicitConversion",
+        "concatenated",
+        "conditional",
+    ] {
+        let (body, result) = infer_module_function_with_solver(&db, module, name);
+        assert_no_typeck(&result);
+        let array = return_expr(&db, body);
+        assert_eq!(result.expr_ty(body, array), Some(memory_array), "{name}");
+        let ExprKind::Array(elems) = &body.exprs(&db).get(array).kind else {
+            panic!("array literal");
+        };
+        let actual_elem = result.expr_ty(body, elems[0]).expect("array element type");
+        assert_eq!(
+            actual_elem,
+            memory_string,
+            "{name}: {}",
+            Pred::in_class(
+                &db,
+                ClassId::Builtin(BuiltinClassId::Str),
+                actual_elem,
+                Vec::new(),
+            )
+            .display(&db)
+        );
+    }
+
+    let storage_string = canonical_std_adt_ty(&db, "storage", vec![string]);
+    let word = Ty::word(&db);
+    for name in ["setNames", "clearNames"] {
+        let (body, result) = infer_module_function_with_solver(&db, module, name);
+        assert_no_typeck(&result);
+        let rhs = body
+            .top_level_stmts(&db)
+            .iter()
+            .find_map(|stmt| match body.stmts(&db).get(*stmt).kind {
+                StmtKind::Assign { rhs, .. } => Some(rhs),
+                _ => None,
+            })
+            .expect("array field assignment");
+        let actual_rhs = result.expr_ty(body, rhs).expect("array literal type");
+        assert_eq!(
+            actual_rhs,
+            memory_array,
+            "{name}: actual={}, obligations={:?}",
+            Pred::in_class(
+                &db,
+                ClassId::Builtin(BuiltinClassId::Str),
+                actual_rhs,
+                Vec::new(),
+            )
+            .display(&db),
+            result
+                .obligations
+                .iter()
+                .map(|obligation| obligation.pred.display(&db))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            has_user_obligation(&db, &result, "CanStore", storage_string, &[memory_string],),
+            "{name}: {:?}",
+            result.obligations
+        );
+        assert!(
+            has_user_obligation(&db, &result, "Typedef", memory_string, &[word]),
+            "{name}: {:?}",
+            result.obligations
+        );
+    }
+}
+
+#[test]
+fn storage_array_field_ufcs_prepends_receiver_once() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{array, storage, uint256, Array, ArrayPush, Length};
+
+contract C {
+  members:array(uint256);
+
+  function memberCount() -> uint256 {
+    return members.length();
+  }
+
+  function append(value:uint256) -> () {
+    members.push(value);
+    return ();
+  }
+
+  function removeLast() -> () {
+    members.pop();
+    return ();
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let array = canonical_std_adt_ty(&db, "array", vec![uint256]);
+    let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
+
+    for (function, class, class_args) in [
+        ("memberCount", "Length", Vec::new()),
+        ("append", "ArrayPush", vec![uint256]),
+        ("removeLast", "Array", Vec::new()),
+    ] {
+        let (body, result) = infer_module_function_with_solver(&db, module, function);
+        assert_no_typeck(&result);
+        assert!(
+            has_user_obligation(&db, &result, class, storage_array, &class_args),
+            "{function}: {:?}",
+            result.obligations
+        );
+
+        let callee = body
+            .exprs(&db)
+            .iter()
+            .find_map(|(_, expr)| match &expr.kind {
+                ExprKind::Call { callee, .. } => Some(*callee),
+                _ => None,
+            })
+            .expect("UFCS callee");
+        let ExprKind::Field { base: receiver, .. } = &body.exprs(&db).get(callee).kind else {
+            panic!("field UFCS callee");
+        };
+        let receiver = *receiver;
+        assert_eq!(
+            result
+                .expr_tys
+                .iter()
+                .filter(|entry| entry.body == body && entry.expr == receiver)
+                .count(),
+            1,
+            "{function}: receiver must be inferred exactly once: {:?}",
+            result.expr_tys
+        );
+        assert_eq!(result.expr_ty(body, receiver), Some(storage_array));
+    }
+}
+
+#[test]
+fn local_and_parameter_ufcs_infer_receiver_and_evidence_once() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+forall self . class self:Echo {
+  function echo(value:self) -> self;
+}
+
+instance word:Echo {
+  function echo(value:word) -> word { return value; }
+}
+
+function parameterReceiver(value:word) -> word {
+  return value.echo();
+}
+
+function localReceiver(value:word) -> word {
+  let local:word = value;
+  return local.echo();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let word = Ty::word(&db);
+
+    for function in ["parameterReceiver", "localReceiver"] {
+        let (body, result) = infer_module_function_with_solver(&db, module, function);
+        assert_no_typeck(&result);
+        assert!(
+            has_user_obligation(&db, &result, "Echo", word, &[]),
+            "{function}: {:?}",
+            result.obligations
+        );
+
+        let call = return_expr(&db, body);
+        let ExprKind::Call { callee, .. } = &body.exprs(&db).get(call).kind else {
+            panic!("{function}: UFCS call");
+        };
+        let ExprKind::Field { base: receiver, .. } = &body.exprs(&db).get(*callee).kind else {
+            panic!("{function}: UFCS callee");
+        };
+        let receiver = *receiver;
+        assert_eq!(
+            result
+                .expr_tys
+                .iter()
+                .filter(|entry| entry.body == body && entry.expr == receiver)
+                .count(),
+            1,
+            "{function}: receiver must be inferred exactly once: {:?}",
+            result.expr_tys
+        );
+        assert_eq!(result.expr_ty(body, receiver), Some(word), "{function}");
+    }
+}
+
+#[test]
+fn field_ufcs_comptime_parameter_uses_explicit_argument_position() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{array, storage};
+
+forall self . class self:Stamp {
+  function stamp(value:self, comptime tag:word) -> word;
+}
+
+instance storage(array(word)):Stamp {
+  function stamp(value:storage(array(word)), comptime tag:word) -> word { return tag; }
+}
+
+contract C {
+  stored:array(word);
+
+  function literalTag() -> word {
+    return stored.stamp(7);
+  }
+
+  function runtimeTag(tag:word) -> word {
+    return stored.stamp(tag);
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (body, result) = infer_module_function_with_solver(&db, module, "literalTag");
+    assert_no_typeck(&result);
+
+    let (callee, explicit_arg) = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(_, expr)| match &expr.kind {
+            ExprKind::Call { callee, args } => Some((*callee, args[0])),
+            _ => None,
+        })
+        .expect("UFCS call");
+    let ExprKind::Field { base: receiver, .. } = &body.exprs(&db).get(callee).kind else {
+        panic!("field UFCS callee");
+    };
+    let receiver = *receiver;
+    assert!(
+        result.comptime_obligations.iter().any(|obligation| {
+            obligation.body == body
+                && obligation.expr == explicit_arg
+                && matches!(
+                    &obligation.kind,
+                    ComptimeObligationKind::CallParam { param, .. } if param == "arg1"
+                )
+        }),
+        "{:?}",
+        result.comptime_obligations
+    );
+    assert!(
+        result
+            .comptime_obligations
+            .iter()
+            .all(|obligation| obligation.expr != receiver),
+        "receiver must not be matched with the comptime parameter: {:?}",
+        result.comptime_obligations
+    );
+
+    let diagnostics = module_typeck_diagnostics(&db, module)
+        .iter()
+        .map(|diagnostic| diagnostic.lower(&db))
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some("SC0240"))
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].message.contains("'tag'")
+            && diagnostics[0].message.contains("'Stamp.stamp'"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn local_and_parameter_ufcs_comptime_parameter_uses_explicit_argument_position() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+forall self . class self:Stamp {
+  function stamp(value:self, comptime tag:word) -> word;
+}
+
+instance word:Stamp {
+  function stamp(value:word, comptime tag:word) -> word { return tag; }
+}
+
+function parameterLiteral(value:word) -> word {
+  return value.stamp(7);
+}
+
+function localLiteral(value:word) -> word {
+  let local:word = value;
+  return local.stamp(7);
+}
+
+function parameterRuntime(value:word, tag:word) -> word {
+  return value.stamp(tag);
+}
+
+function localRuntime(value:word, tag:word) -> word {
+  let local:word = value;
+  return local.stamp(tag);
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+
+    for function in ["parameterLiteral", "localLiteral"] {
+        let (body, result) = infer_module_function_with_solver(&db, module, function);
+        assert_no_typeck(&result);
+
+        let call = return_expr(&db, body);
+        let ExprKind::Call { callee, args } = &body.exprs(&db).get(call).kind else {
+            panic!("{function}: UFCS call");
+        };
+        let explicit_arg = args[0];
+        let ExprKind::Field { base: receiver, .. } = &body.exprs(&db).get(*callee).kind else {
+            panic!("{function}: UFCS callee");
+        };
+        let receiver = *receiver;
+        assert!(
+            result.comptime_obligations.iter().any(|obligation| {
+                obligation.body == body
+                    && obligation.expr == explicit_arg
+                    && matches!(
+                        &obligation.kind,
+                        ComptimeObligationKind::CallParam { param, .. } if param == "arg1"
+                    )
+            }),
+            "{function}: {:?}",
+            result.comptime_obligations
+        );
+        assert!(
+            result
+                .comptime_obligations
+                .iter()
+                .all(|obligation| obligation.expr != receiver),
+            "{function}: receiver must not be matched with the comptime parameter: {:?}",
+            result.comptime_obligations
+        );
+    }
+
+    let diagnostics = module_typeck_diagnostics(&db, module)
+        .iter()
+        .map(|diagnostic| diagnostic.lower(&db))
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some("SC0240"))
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+    assert!(
+        diagnostics.iter().all(|diagnostic| {
+            diagnostic.message.contains("'tag'") && diagnostic.message.contains("'Stamp.stamp'")
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn memory_dyn_array_index_returns_element_and_requires_word_typedefs() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{memory, DynArray, uint256, Typedef};
+
+function read(xs:memory(DynArray(word)), i:uint256) -> word {
+  return xs[i];
+}
+
+function write(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+  xs[i] = value;
+  return ();
+}
+
+function compound(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+  xs[i] += value;
+  return ();
+}
+
+function annotatedWrite(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+  (xs[i] : word) : word = value;
+  return ();
+}
+
+function annotatedCompound(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+  xs[i] : word += value;
+  return ();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (body, result) = infer_module_function(&db, module, "read");
+    assert_no_typeck(&result);
+    let indexed = return_expr(&db, body);
+    assert!(matches!(
+        body.exprs(&db).get(indexed).kind,
+        ExprKind::Index { .. }
+    ));
+    assert_eq!(result.expr_ty(body, indexed), Some(Ty::word(&db)));
+
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let word = Ty::word(&db);
+    assert!(
+        has_user_obligation(&db, &result, "Typedef", uint256, &[word]),
+        "{:?}",
+        result.obligations
+    );
+    assert!(
+        has_user_obligation(&db, &result, "Typedef", word, &[word]),
+        "{:?}",
+        result.obligations
+    );
+
+    for name in ["write", "compound", "annotatedWrite", "annotatedCompound"] {
+        let (_, write) = infer_module_function_with_solver(&db, module, name);
+        assert!(
+            write.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                TypeckDiagnostic::Mismatch { expected, .. }
+                    if expected == "assignable storage-backed index"
+            )),
+            "{name}: {:?}",
+            write.diagnostics
+        );
+    }
+}
+
+#[test]
+fn calldata_array_index_uses_rvalue_evidence_and_improves_decoded_type() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{*};
+
+function inferred(xs:calldata(array(Encoded)), i:uint256) -> () {
+  let value = xs[i];
+  return ();
+}
+
+function expected(xs:calldata(array(Encoded)), i:uint256) -> Decoded {
+  return xs[i];
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let encoded = canonical_std_adt_ty(&db, "Encoded", Vec::new());
+    let decoded = canonical_std_adt_ty(&db, "Decoded", Vec::new());
+    let array = canonical_std_adt_ty(&db, "array", vec![encoded]);
+    let calldata_array = canonical_std_adt_ty(&db, "calldata", vec![array]);
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let indexed_main = Ty::named(
+        &db,
+        TyCtor::Builtin(BuiltinTyCtor::Pair),
+        vec![calldata_array, uint256],
+    );
+
+    for name in ["inferred", "expected"] {
+        let (body, result) = infer_module_function_with_solver(&db, module, name);
+        assert_no_typeck(&result);
+        let indexed = body
+            .exprs(&db)
+            .iter()
+            .find_map(|(id, expr)| matches!(expr.kind, ExprKind::Index { .. }).then_some(id))
+            .expect("calldata array index");
+        assert_eq!(result.expr_ty(body, indexed), Some(decoded), "{name}");
+
+        let obligation = result
+            .obligations
+            .iter()
+            .position(|obligation| {
+                matches!(
+                    obligation.pred.kind(&db),
+                    PredKind::InClass {
+                        class: ClassId::User(class),
+                        main,
+                        args,
+                    } if class.name(&db).as_deref() == Some("RValueIdxAccess")
+                        && *main == indexed_main
+                        && args.as_slice() == [decoded]
+                )
+            })
+            .expect("RValueIdxAccess obligation");
+        assert!(
+            result
+                .obligation_evidence
+                .iter()
+                .any(|evidence| evidence.obligation == obligation),
+            "{name}: {:?}",
+            result.obligation_evidence
+        );
+    }
+}
+
+#[test]
+fn calldata_array_index_rejects_plain_and_compound_writes() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{*};
+
+function write(
+  xs:calldata(array(Encoded)),
+  i:uint256,
+  value:Decoded
+) -> () {
+  xs[i] = value;
+  return ();
+}
+
+function compound(
+  xs:calldata(array(Encoded)),
+  i:uint256,
+  value:Decoded
+) -> () {
+  xs[i] += value;
+  return ();
+}
+
+function annotatedWrite(
+  xs:calldata(array(Encoded)),
+  i:uint256,
+  value:Decoded
+) -> () {
+  (xs[i] : Decoded) : Decoded = value;
+  return ();
+}
+
+function annotatedCompound(
+  xs:calldata(array(Encoded)),
+  i:uint256,
+  value:Decoded
+) -> () {
+  xs[i] : Decoded += value;
+  return ();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+
+    for name in ["write", "compound", "annotatedWrite", "annotatedCompound"] {
+        let (_, result) = infer_module_function_with_solver(&db, module, name);
+        assert!(
+            result.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                TypeckDiagnostic::Mismatch { expected, .. }
+                    if expected == "assignable storage-backed index"
+            )),
+            "{name}: {:?}",
+            result.diagnostics
+        );
+    }
+}
+
+#[test]
+fn same_named_non_std_calldata_array_keeps_generic_index_typing() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{RValueIdxAccess};
+
+data calldata(t) = calldata(word);
+data array(t) = array(word);
+
+function read(xs:calldata(array(word)), i:word) -> word {
+  return xs[i];
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function_with_solver(&db, module, "read");
+
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        result.diagnostics
+    );
+    assert!(
+        !result.obligations.iter().any(|obligation| matches!(
+            obligation.pred.kind(&db),
+            PredKind::InClass {
+                class: ClassId::User(class),
+                ..
+            } if class.name(&db).as_deref() == Some("RValueIdxAccess")
+        )),
+        "{:?}",
+        result.obligations
+    );
+}
+
+#[test]
+fn direct_storage_array_handle_assignment_is_a_raw_rebind() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{storage, array, string, CanStore};
+
+function rebind(
+  lhs:storage(array(string)),
+  rhs:storage(array(string))
+) -> () {
+  lhs = rhs;
+  return ();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function_with_solver(&db, module, "rebind");
+    assert_no_typeck(&result);
+
+    let string = canonical_std_adt_ty(&db, "string", Vec::new());
+    let array = canonical_std_adt_ty(&db, "array", vec![string]);
+    let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
+    assert!(
+        !has_user_obligation(&db, &result, "CanStore", storage_array, &[storage_array],),
+        "{:?}",
+        result.obligations
+    );
+}
+
+#[test]
+fn importless_contract_field_assignment_keeps_the_declared_value_type() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+contract C {
+  value:word;
+
+  function write(flag:bool) -> () {
+    value = flag;
+    return ();
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function_with_solver(&db, module, "write");
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn storage_load_and_assign_use_can_store_result_improvement() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{memory, storage, CanStore};
+
+data Blob;
+
+instance storage(Blob):CanStore(memory(Blob)) {
+  function store(dst:storage(Blob), value:memory(Blob)) -> () { return (); }
+  function load(dst:storage(Blob)) -> memory(Blob) { return memory(0); }
+}
+
+contract C {
+  value:Blob;
+
+  function write(src:memory(Blob)) -> () {
+    value = src;
+    return ();
+  }
+
+  function read() -> memory(Blob) {
+    return value;
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    for name in ["write", "read"] {
+        let (_, result) = infer_module_function_with_solver(&db, module, name);
+        assert_no_typeck(&result);
+    }
+}
+
+#[test]
+fn contract_field_assignment_uses_specific_assign_evidence() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+pragma no-patterson-condition Assign;
+
+data storage(t) = storage(word);
+data mapping(k, v) = mapping(word);
+data Foo = Foo(word);
+
+forall dst value . class dst:CanStore(value) {
+  function store(dst:dst, value:value) -> ();
+  function load(dst:dst) -> value;
+}
+
+forall lhs rhs . class lhs:Assign(rhs) {
+  function assign(lhs:lhs, rhs:rhs) -> ();
+}
+
+instance storage(word):CanStore(word) {
+  function store(dst:storage(word), value:word) -> () { return (); }
+  function load(dst:storage(word)) -> word { return 0; }
+}
+
+forall a b . a:CanStore(b) => instance a:Assign(b) {
+  function assign(lhs:a, rhs:b) -> () { CanStore.store(lhs, rhs); }
+}
+
+instance storage(word):Assign(bool) {
+  function assign(lhs:storage(word), rhs:bool) -> () { return (); }
+}
+
+instance storage(mapping(word, word)):CanStore(storage(mapping(word, word))) {
+  function store(
+    dst:storage(mapping(word, word)),
+    value:storage(mapping(word, word))
+  ) -> () { return (); }
+  function load(
+    dst:storage(mapping(word, word))
+  ) -> storage(mapping(word, word)) { return storage(0); }
+}
+
+instance storage(mapping(word, word)):Assign(Foo) {
+  function assign(lhs:storage(mapping(word, word)), rhs:Foo) -> () { return (); }
+}
+
+contract C {
+  value:word;
+  values:mapping(word, word);
+
+  function write(flag:bool) -> () {
+    value = flag;
+    return ();
+  }
+
+  function writeAnnotated(flag:bool) -> () {
+    value : storage(word) = flag;
+    return ();
+  }
+
+  function writeMapping(value:Foo) -> () {
+    values = value;
+    return ();
+  }
+}
+"#,
+    );
+    let module_id = module_id_from_key(&db, &key);
+    let module = module_hir(&db, module_id).expect("module hir");
+    let storage_word = adt_ty(&db, module, "storage", vec![Ty::word(&db)]);
+    let bool_ty = Ty::named(&db, TyCtor::Builtin(BuiltinTyCtor::Bool), Vec::new());
+    let mapping = adt_ty(&db, module, "mapping", vec![Ty::word(&db), Ty::word(&db)]);
+    let storage_mapping = adt_ty(&db, module, "storage", vec![mapping]);
+    let foo = adt_ty(&db, module, "Foo", Vec::new());
+
+    for (name, storage_ty, value_ty) in [
+        ("write", storage_word, bool_ty),
+        ("writeAnnotated", storage_word, bool_ty),
+        ("writeMapping", storage_mapping, foo),
+    ] {
+        let (_, result) = infer_module_function_with_solver(&db, module_id, name);
+        assert_no_typeck(&result);
+        assert!(
+            has_user_obligation(&db, &result, "Assign", storage_ty, &[value_ty]),
+            "{name}: {:?}",
+            result.obligations
+        );
+        assert!(
+            !has_user_obligation(&db, &result, "CanStore", storage_ty, &[value_ty]),
+            "{name}: {:?}",
+            result.obligations
+        );
+    }
+}
+
+#[test]
+fn compound_storage_array_index_recognizes_parameter_handles() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{*};
+
+function bump(
+  values:storage(array(uint256)),
+  index:uint256,
+  delta:uint256
+) -> () {
+  values[index] += delta;
+  return ();
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let (_, result) = infer_module_function_with_solver(&db, module, "bump");
+    assert_no_typeck(&result);
+
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let storage_uint256 = canonical_std_adt_ty(&db, "storage", vec![uint256]);
+    assert!(
+        has_user_obligation(&db, &result, "CanStore", storage_uint256, &[uint256],),
+        "{:?}",
+        result.obligations
+    );
+}
+
+#[test]
+fn storage_index_numeric_guard_rejects_shadowed_uint_names() {
+    let (db, key) = db_with_array_std(
+        r#"
+data uint;
+data uint256;
+"#,
+    );
+    let module_id = module_id_from_key(&db, &key);
+    let module = module_hir(&db, module_id).expect("module hir");
+
+    assert!(super::expr::is_storage_index_word_numeric_shape(
+        &db,
+        TyCtor::Builtin(BuiltinTyCtor::Word),
+        0,
+    ));
+    let canonical_uint256 =
+        crate::support::canonical_std_adt_def(&db, "uint256").expect("std uint256");
+    assert!(super::expr::is_storage_index_word_numeric_shape(
+        &db,
+        TyCtor::User(UserTyCtor {
+            def: canonical_uint256,
+            kind: UserTyCtorKind::Adt,
+        }),
+        0,
+    ));
+
+    for name in ["uint", "uint256"] {
+        let shadow = adt_def(&db, module, name);
+        assert!(
+            !super::expr::is_storage_index_word_numeric_shape(
+                &db,
+                TyCtor::User(UserTyCtor {
+                    def: shadow,
+                    kind: UserTyCtorKind::Adt,
+                }),
+                0,
+            ),
+            "shadowed {name} must not be treated as a storage index numeric type"
+        );
+    }
+}
+
+#[test]
+fn storage_ref_annotations_are_checked_without_widening_array_literal_routing() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{*};
+
+contract C {
+  xs:array(uint256);
+
+  function good(i:uint256, value:uint256) -> () {
+    (xs : storage(array(uint256)))[i] = value;
+    return ();
+  }
+
+  function bad(i:uint256) -> () {
+    (xs : storage(array(address)))[i] = uint256(1);
+    return ();
+  }
+
+  function annotatedLiteral() -> () {
+    xs = ([uint256(1)] : memory(DynArray(uint256)));
+    return ();
+  }
+}
+"#,
+    );
+    let module_id = module_id_from_key(&db, &key);
+
+    let (body, good) = infer_module_function_with_solver(&db, module_id, "good");
+    assert_no_typeck(&good);
+    let annotation = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(id, expr)| matches!(expr.kind, ExprKind::TypeAnnot { .. }).then_some(id))
+        .expect("storage array annotation");
+    let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
+    let array = canonical_std_adt_ty(&db, "array", vec![uint256]);
+    let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
+    assert_eq!(good.expr_ty(body, annotation), Some(storage_array));
+
+    let (body, bad) = infer_module_function_with_solver(&db, module_id, "bad");
+    assert!(
+        bad.diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        bad.diagnostics
+    );
+    let annotation = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(id, expr)| matches!(expr.kind, ExprKind::TypeAnnot { .. }).then_some(id))
+        .expect("mismatched storage array annotation");
+    assert_eq!(bad.expr_ty(body, annotation), Some(Ty::error(&db)));
+
+    let (_, annotated_literal) =
+        infer_module_function_with_solver(&db, module_id, "annotatedLiteral");
+    assert!(
+        annotated_literal
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        annotated_literal.diagnostics
+    );
+
+    let module = module_hir(&db, module_id).expect("module hir");
+    let plan = crate::frontend_desugar_plan(&db, module);
+    let annotated_literal = plan
+        .bodies
+        .iter()
+        .find(|body| body.function_name == "annotatedLiteral")
+        .expect("annotatedLiteral desugar plan");
+    assert!(
+        annotated_literal
+            .transforms
+            .iter()
+            .any(|transform| matches!(
+                transform,
+                crate::FrontendTransform::FieldWrite { hook, .. }
+                    if hook.starts_with("Assign.assign(")
+            )),
+        "{:?}",
+        annotated_literal.transforms
+    );
+}
+
+#[test]
+fn storage_array_index_alias_and_literal_assignment_preserve_reference_types() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{storage, array, uint256, Typedef, CanStore};
+
+contract C {
+  xs:array(word);
+  n:word;
+
+  function read(i:uint256) -> word { return xs[i]; }
+
+  function aliasRead(i:uint256) -> word {
+    let ys = xs;
+    return ys[i];
+  }
+
+  function aliasWrite(i:uint256, value:word) -> () {
+    let ys = xs;
+    ys[i] = value;
+    return ();
+  }
+
+  function set(x:word) -> () {
+    xs = [x, x];
+    return ();
+  }
+
+  function bad(x:word) -> () {
+    n = [x];
+    return ();
+  }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+
+    for name in ["read", "aliasRead"] {
+        let (body, result) = infer_module_function(&db, module, name);
+        assert_no_typeck(&result);
+        let indexed = body
+            .exprs(&db)
+            .iter()
+            .find_map(|(id, expr)| matches!(expr.kind, ExprKind::Index { .. }).then_some(id))
+            .expect("indexed expression");
+        assert_eq!(result.expr_ty(body, indexed), Some(Ty::word(&db)), "{name}");
+    }
+
+    let (_, alias_write) = infer_module_function_with_solver(&db, module, "aliasWrite");
+    assert_no_typeck(&alias_write);
+    let storage_word = canonical_std_adt_ty(&db, "storage", vec![Ty::word(&db)]);
+    let word = Ty::word(&db);
+    assert!(
+        has_user_obligation(&db, &alias_write, "CanStore", storage_word, &[word],),
+        "{:?}",
+        alias_write.obligations
+    );
+
+    let (body, result) = infer_module_function(&db, module, "set");
+    assert_no_typeck(&result);
+    let lhs = body
+        .top_level_stmts(&db)
+        .iter()
+        .find_map(|stmt| match body.stmts(&db).get(*stmt).kind {
+            StmtKind::Assign { lhs, .. } => Some(lhs),
+            _ => None,
+        })
+        .expect("field assignment");
+    let array = canonical_std_adt_ty(&db, "array", vec![Ty::word(&db)]);
+    let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
+    assert_eq!(result.expr_ty(body, lhs), Some(storage_array));
+    let storage_word = canonical_std_adt_ty(&db, "storage", vec![Ty::word(&db)]);
+    let word = Ty::word(&db);
+    assert!(
+        has_user_obligation(&db, &result, "CanStore", storage_word, &[word]),
+        "{:?}",
+        result.obligations
+    );
+    assert!(
+        has_user_obligation(&db, &result, "Typedef", word, &[word]),
+        "{:?}",
+        result.obligations
+    );
+
+    let (_, bad) = infer_module_function(&db, module, "bad");
+    assert!(
+        bad.diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
+        "{:?}",
+        bad.diagnostics
+    );
+}
+
+#[test]
+fn array_literal_contract_field_write_plan_uses_store_array_lit() {
+    let (db, key) = db_with_array_std(
+        r#"
+import std.{storage, array};
+
+contract C {
+  xs:array(word);
+
+  function set(x:word) -> () {
+    xs = [x];
+    return ();
+  }
+}
+"#,
+    );
+    let module_id = module_id_from_key(&db, &key);
+    let module = module_hir(&db, module_id).expect("module hir");
+    let plan = crate::frontend_desugar_plan(&db, module);
+    let set = plan
+        .bodies
+        .iter()
+        .find(|body| body.function_name == "set")
+        .expect("set desugar plan");
+    assert!(
+        set.transforms.iter().any(|transform| matches!(
+            transform,
+            crate::FrontendTransform::FieldWrite { hook, .. }
+                if hook.starts_with("storeArrayLit(")
+        )),
+        "{:?}",
+        set.transforms
+    );
+}
+
+#[test]
+fn module_local_string_and_integer_adts_remain_runtime_types() {
+    let diagnostics = lowered_module_typeck_diagnostics(
+        r#"
+data string = RuntimeString(word);
+data integer = RuntimeInteger(word);
+
+function takesString(value: string) -> () {
+  return ();
+}
+
+function takesInteger(value: integer) -> () {
+  return ();
+}
+
+function exercise(value: word) -> () {
+  takesString(string.RuntimeString(value));
+  takesInteger(integer.RuntimeInteger(value));
+  return ();
+}
+"#,
+    );
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn module_local_string_adt_rejects_primitive_string_patterns() {
+    let diagnostics = lowered_module_typeck_diagnostics(
+        r#"
+data string = RuntimeString(word);
+
+function inspect(value: string) -> word {
+  match value {
+  | "a" => return 1;
+  | _ => return 0;
+  }
+}
+"#,
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("SC0201")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn contract_local_string_and_integer_adts_remain_runtime_types() {
+    let diagnostics = lowered_module_typeck_diagnostics(
+        r#"
+contract RuntimeNames {
+  data string = RuntimeString(word);
+  data integer = RuntimeInteger(word);
+
+  function takesString(value: string) -> () {
+    return ();
+  }
+
+  function takesInteger(value: integer) -> () {
+    return ();
+  }
+
+  function exercise(value: word) -> () {
+    takesString(string.RuntimeString(value));
+    takesInteger(integer.RuntimeInteger(value));
+    return ();
+  }
+}
+"#,
+    );
+
+    // The bare test module has no standard contract-default classes; those
+    // unrelated resolution errors must not hide an identity-based SC0240.
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("SC0240")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn inferred_string_let_records_comptime_obligation() {
+    let db = TestDb::default();
+    let module = parse_module(
+        &db,
+        r#"
+function f() -> word {
+  let message = "hello";
+  return 0;
+}
+"#,
+    );
+    let (_, result) = infer_function(&db, module, "f");
+
+    assert!(
+        result
+            .comptime_obligations
+            .iter()
+            .any(|obligation| matches!(
+                &obligation.kind,
+                ComptimeObligationKind::LetInit { name, .. } if name == "message"
             )),
         "{:?}",
         result.comptime_obligations
@@ -868,6 +2605,128 @@ instance word:IsA {
     );
 
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn builtin_str_instance_requires_from_string() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+data Wrapped = Wrapped(word);
+instance Wrapped:Str {}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let diagnostics = crate::solver::instance_soundness_diagnostics(&db, module);
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            TypeckDiagnostic::IncompleteInstance { class, missing, .. }
+                if class == "Str" && missing == &["fromString".to_owned()]
+        )),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn builtin_str_instance_rejects_unknown_methods() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+data Wrapped = Wrapped(word);
+instance Wrapped:Str {
+  function unexpected(x:word) -> word { return x; }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let diagnostics = crate::solver::instance_soundness_diagnostics(&db, module);
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            TypeckDiagnostic::UnknownInstanceMethod { name, .. }
+                if name == "Str.unexpected"
+        )),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn builtin_str_instance_rejects_wrong_from_string_signature() {
+    let (db, key) = db_with_main_typeck(
+        r#"
+data Wrapped = Wrapped(word);
+instance Wrapped:Str {
+  function fromString(s:word) -> Wrapped { return Wrapped(s); }
+}
+"#,
+    );
+    let module = module_id_from_key(&db, &key);
+    let diagnostics = crate::solver::instance_soundness_diagnostics(&db, module);
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            TypeckDiagnostic::InvalidInstanceMethodSignature { method, .. }
+                if method == "fromString"
+        )),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn builtin_str_ground_instance_rejects_overlapping_source_instance() {
+    let mut db = TestDb::default();
+    let std_path = PathBuf::from("/std/std.solc");
+    let main_path = PathBuf::from("/main/main.solc");
+    let std_file = source_file_at_path(
+        &db,
+        &std_path,
+        r#"
+export { memory(*), string };
+data memory(a) = memory(word);
+data string;
+"#,
+    );
+    let main_file = source_file_at_path(
+        &db,
+        &main_path,
+        r#"
+import std.{*};
+
+instance string:Str {
+  function fromString(comptime value:string) -> string { return value; }
+}
+
+instance memory(string):Str {
+  function fromString(comptime value:string) -> memory(string) {
+    return Str.fromString(value);
+  }
+}
+"#,
+    );
+    let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
+    let main_key =
+        module_key_for_path(LibraryId::Main, &PathBuf::from("/main"), &main_path).unwrap();
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key.clone(), main_file);
+    let module = module_id_from_key(&db, &main_key);
+    let diagnostics = crate::solver::instance_soundness_diagnostics(&db, module);
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| matches!(
+                diagnostic,
+                TypeckDiagnostic::OverlappingInstance {
+                    overlaps_span: None,
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
 }
 
 #[test]

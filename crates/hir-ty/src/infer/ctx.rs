@@ -124,6 +124,9 @@ impl<'db> InferCtx<'db> {
     }
 
     fn finish(mut self) -> InferenceResult<'db> {
+        if self.trait_env.is_none() {
+            self.default_open_string_coercions_without_solver();
+        }
         let solved = if let Some(trait_env) = self.trait_env {
             self.solve_pending_obligations(trait_env)
         } else {
@@ -140,6 +143,21 @@ impl<'db> InferCtx<'db> {
         let poisoned_exprs = self.poisoned_exprs.clone();
         let poisoned_pats = self.poisoned_pats.clone();
         let root_scheme = self.inferred_root_scheme();
+        let mut comptime_obligations = std::mem::take(&mut self.comptime_obligations);
+        for pending in std::mem::take(&mut self.pending_comptime_lets) {
+            let normalized_ty = self.normalize_aliases(pending.ty);
+            let ty = self.engine.ground_ty(normalized_ty);
+            if pending.declared || ty_requires_comptime(self.db, ty) {
+                comptime_obligations.push(ComptimeObligation {
+                    body: pending.body,
+                    expr: pending.expr,
+                    kind: ComptimeObligationKind::LetInit {
+                        stmt: pending.stmt,
+                        name: pending.name,
+                    },
+                });
+            }
+        }
         let expr_tys = self
             .expr_tys
             .into_iter()
@@ -195,20 +213,6 @@ impl<'db> InferCtx<'db> {
                 }
             })
             .collect();
-        let mut comptime_obligations = self.comptime_obligations;
-        for pending in self.pending_comptime_lets {
-            let ty = self.engine.ground_ty(pending.ty);
-            if pending.declared || ty_requires_comptime(self.db, ty) {
-                comptime_obligations.push(ComptimeObligation {
-                    body: pending.body,
-                    expr: pending.expr,
-                    kind: ComptimeObligationKind::LetInit {
-                        stmt: pending.stmt,
-                        name: pending.name,
-                    },
-                });
-            }
-        }
         let mut result = InferenceResult {
             root_scheme,
             expr_tys,
@@ -412,6 +416,14 @@ impl<'db> InferCtx<'db> {
         self.engine.from_ty(Ty::string(self.db))
     }
 
+    pub(super) fn source_string(&mut self) -> InferTy<'db> {
+        self.engine
+            .from_ty(crate::support::source_string_ty_for_module(
+                self.db,
+                self.module,
+            ))
+    }
+
     pub(super) fn poison_expr(&mut self, body: FuncBody<'db>, expr: Id<Expr<'db>>) {
         self.poisoned_exprs.insert((body, expr));
     }
@@ -466,6 +478,7 @@ impl<'db> InferCtx<'db> {
     pub(super) fn obligation_source_label_span(&self, source: &ObligationSource<'db>) -> LabelSpan {
         match source {
             ObligationSource::IntegerLiteral { body, expr }
+            | ObligationSource::StringCoercion { body, expr }
             | ObligationSource::ClassMethod { body, expr } => self.expr_label_span(*body, *expr),
             ObligationSource::CallSite {
                 body, call_expr, ..

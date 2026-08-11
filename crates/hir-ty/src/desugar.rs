@@ -998,6 +998,11 @@ impl<'db> BodyCollector<'db> {
                     self.expr(*elem);
                 }
             }
+            ExprKind::Array(elems) => {
+                for elem in elems {
+                    self.expr(*elem);
+                }
+            }
             ExprKind::Proxy { ty, .. } => self.type_ref(*ty),
             ExprKind::Lit(_) | ExprKind::Error => {}
         }
@@ -1150,6 +1155,11 @@ impl<'a, 'db> FieldInitCollector<'a, 'db> {
                         origin: SourceOrigin::new(expr.span, SourceOriginKind::TupleExpr),
                         product: ProductShape::from_slice(elems),
                     });
+                for elem in elems {
+                    self.expr(*elem);
+                }
+            }
+            ExprKind::Array(elems) => {
                 for elem in elems {
                     self.expr(*elem);
                 }

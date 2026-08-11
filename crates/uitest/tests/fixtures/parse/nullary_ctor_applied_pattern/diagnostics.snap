@@ -11,7 +11,7 @@ error[SC0001]: parse error: unexpected `match`
   |   ^^^^^ unexpected token
 5 |   | C() => return 1;
   |
-  = note: expecting `!`, `(`, `.`, `@`, `if`, or `lam`
+  = note: expecting `!`, `(`, `.`, `@`, `[`, `if`, `lam`, or `~`
 ---
 
 error[SC0001]: parse error: unexpected `=>`
@@ -22,4 +22,4 @@ error[SC0001]: parse error: unexpected `=>`
   |         ^^ unexpected token
 6 |   }
   |
-  = note: expecting `%=`, `&&`, `&=`, `&`, `(`, `+=`, `-=`, `.`, `:`, `;`, `=`, `?`, `[`, `^=`, `^`, `|=`, `|`, `||`, end of input, or statement
+  = note: expecting `%=`, `&&`, `&=`, `&`, `(`, `*=`, `+=`, `-=`, `.`, `/=`, `:`, `;`, `=`, `?`, `[`, `^=`, `^`, `|=`, `|`, `||`, `~=`, end of input, or statement

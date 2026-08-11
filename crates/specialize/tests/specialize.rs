@@ -7,13 +7,13 @@ use std::{
 use hir::{
     anchor::DefLocationTable,
     ast::{
-        function::{YulExprKind, YulStmtKind},
+        function::{YulExprKind, YulLitKind, YulStmtKind},
         item::Module,
     },
     input::SourceFile,
     nameres::ident_text,
 };
-use hir_ty::{BuiltinTyCtor, Ty, prepare_module};
+use hir_ty::{BuiltinTyCtor, Ty, TyKind, prepare_module};
 use nameres::{
     LibraryId, ModuleFileSnapshot, ModuleFsSnapshot, ModuleId, ModuleKey, ModuleTree,
     module_id_from_key, module_key_for_path, module_path_display, resolve_module_path_candidate,
@@ -22,9 +22,10 @@ use parser::parse_file_to_hir;
 use rustc_hash::{FxHashMap, FxHashSet};
 use salsa::Setter;
 use solcore_specialize::{
-    MonoComptimeObligationKind, MonoEntry, MonoExpr, MonoExprKind, MonoItem, MonoPatKind,
-    MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, SpecializeDiagnosticKind, SpecializeOptions,
-    SpecializeOutput, specialize_module, specialize_name, specialize_prepared_module,
+    MonoComptimeObligationKind, MonoEntry, MonoExpr, MonoExprKind, MonoFunctionOrigin, MonoItem,
+    MonoPatKind, MonoRuntimeMainOrigin, MonoStmt, MonoStmtKind, MonoStorageIndexKind,
+    SpecializeDiagnosticKind, SpecializeOptions, SpecializeOutput, specialize_module,
+    specialize_name, specialize_prepared_module,
 };
 
 #[salsa::db]
@@ -133,6 +134,20 @@ fn specialize_src_with_std(src: &str) -> SpecializeOutput<'static> {
 fn specialize_src_with_std_and_db(
     src: &str,
 ) -> (&'static TestDb, SourceFile, SpecializeOutput<'static>) {
+    specialize_src_with_std_and_db_options(src, SpecializeOptions::default())
+}
+
+fn specialize_src_with_std_options(
+    src: &str,
+    options: SpecializeOptions,
+) -> SpecializeOutput<'static> {
+    specialize_src_with_std_and_db_options(src, options).2
+}
+
+fn specialize_src_with_std_and_db_options(
+    src: &str,
+    options: SpecializeOptions,
+) -> (&'static TestDb, SourceFile, SpecializeOutput<'static>) {
     let db = Box::leak(Box::new(TestDb::default()));
     let main_root = PathBuf::from("/main");
     let repo = repo_root();
@@ -155,8 +170,77 @@ fn specialize_src_with_std_and_db(
     let unresolved = load_reachable_modules(db, key);
     assert!(unresolved.is_empty(), "{unresolved:?}");
     let module = parse_file_to_hir(db, file).module(db);
-    let output = specialize_module(db, module, SpecializeOptions::default());
+    let output = specialize_module(db, module, options);
     (db, file, output)
+}
+
+fn specialize_src_with_fake_calldata_array_std(
+    src: &str,
+) -> (&'static TestDb, SpecializeOutput<'static>) {
+    let db = Box::leak(Box::new(TestDb::default()));
+    let main_root = PathBuf::from("/main");
+    let std_root = PathBuf::from("/std");
+    db.module_tree = Some(ModuleTree::new(
+        db,
+        main_root.clone(),
+        std_root.clone(),
+        BTreeMap::new(),
+    ));
+
+    let std_path = std_root.join("std.solc");
+    let main_path = main_root.join("main.solc");
+    let std_file = source_file_at_path(
+        db,
+        &std_path,
+        r#"
+export { calldata(*), array(*), uint256(*), Encoded(*), Decoded(*), Typedef, RValueIdxAccess };
+
+data calldata(t) = calldata(word);
+data array(t) = array(word);
+data uint256 = uint256(word);
+data Encoded = Encoded(word);
+data Decoded = Decoded(word);
+
+forall abs rep . class abs:Typedef(rep) {
+  function abs(x:rep) -> abs;
+  function rep(x:abs) -> rep;
+}
+
+forall t . default instance t:Typedef(t) {
+  function abs(x:t) -> t { return x; }
+  function rep(x:t) -> t { return x; }
+}
+
+instance uint256:Typedef(word) {
+  function abs(x:word) -> uint256 { return uint256(x); }
+  function rep(x:uint256) -> word { return 0; }
+}
+
+forall col_idx val . class col_idx:RValueIdxAccess(val) {
+  function lookup(xi:col_idx) -> val;
+}
+
+forall i . i:Typedef(word) =>
+instance (calldata(array(Encoded)), i):RValueIdxAccess(Decoded) {
+  function lookup(xi:(calldata(array(Encoded)), i)) -> Decoded {
+    let value:word;
+    assembly { value := calldataload(0) }
+    return Decoded(value);
+  }
+}
+"#,
+    );
+    let main_file = source_file_at_path(db, &main_path, src);
+    let std_key =
+        module_key_for_path(LibraryId::Std, &std_root, &std_path).expect("std module key");
+    let main_key =
+        module_key_for_path(LibraryId::Main, &main_root, &main_path).expect("main module key");
+    db.insert_module_file(std_key, std_file);
+    db.insert_module_file(main_key, main_file);
+
+    let module = parse_file_to_hir(db, main_file).module(db);
+    let output = specialize_module(db, module, SpecializeOptions::default());
+    (db, output)
 }
 
 fn function_names(output: &SpecializeOutput<'_>) -> Vec<String> {
@@ -192,6 +276,51 @@ fn specializes_large_linear_body_with_indexed_frontend_lookups() {
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(!function_names(&output).is_empty());
+}
+
+#[test]
+fn calldata_array_index_specializes_to_rvalue_lookup_call() {
+    let (db, output) = specialize_src_with_fake_calldata_array_std(
+        r#"
+import std.{*};
+
+function main(xs:calldata(array(Encoded)), i:uint256) -> Decoded {
+  return xs[i];
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let result = main_return_expr(&output).expect("specialized main return");
+    assert!(matches!(
+        result.ty.ty().kind(db),
+        TyKind::Named {
+            ctor: hir_ty::TyCtor::User(decoded),
+            args,
+        } if args.is_empty() && decoded.def.name(db).as_deref() == Some("Decoded")
+    ));
+    let MonoExprKind::Call { callee, args, .. } = &result.kind else {
+        panic!("expected resolved RValueIdxAccess.lookup call: {result:#?}");
+    };
+    assert!(
+        callee.name.starts_with("RValueIdxAccess_lookup_"),
+        "{}",
+        callee.name
+    );
+    assert!(matches!(
+        args.as_slice(),
+        [MonoExpr {
+            ty,
+            kind: MonoExprKind::Con { ctor, args: pair },
+            ..
+        }] if matches!(
+            ty.ty().kind(db),
+            TyKind::Named {
+                ctor: hir_ty::TyCtor::Builtin(BuiltinTyCtor::Pair),
+                args,
+            } if args.len() == 2
+        ) && ctor.name == "pair" && pair.len() == 2
+    ));
 }
 
 fn specialize_source_at_root(root: &Path, rel_path: &str, src: &str) -> SpecializeOutput<'static> {
@@ -385,6 +514,191 @@ contract C {
             .any(|name| name.contains("ais") && name.contains("$word")),
         "{names:?}"
     );
+}
+
+#[test]
+fn field_ufcs_prepends_receiver_and_resolves_instance_method() {
+    let (db, _, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+forall a . class a:Combiner {
+  function combine(x:a, y:uint256) -> uint256;
+}
+
+instance storage(array(uint256)):Combiner {
+  function combine(x:storage(array(uint256)), y:uint256) -> uint256 { return y; }
+}
+
+contract C {
+  value:array(uint256);
+
+  constructor() {}
+
+  public function viaUfcs(y:uint256) -> uint256 {
+    return value.combine(y);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let functions = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let instance_method = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                    if class == "Combiner" && method == "combine"
+            )
+        })
+        .expect("specialized Combiner.combine instance method");
+    let caller = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(function.origin, MonoFunctionOrigin::Source)
+                && function
+                    .source
+                    .is_some_and(|source| source.name(db).as_deref() == Some("viaUfcs"))
+        })
+        .expect("specialized UFCS caller");
+    let [
+        MonoStmt {
+            kind:
+                MonoStmtKind::Return(Some(MonoExpr {
+                    kind: MonoExprKind::Call { callee, args, .. },
+                    ..
+                })),
+            ..
+        },
+    ] = caller.body.as_slice()
+    else {
+        panic!("expected a direct instance-method return call: {caller:#?}");
+    };
+    assert_eq!(callee.name, instance_method.name);
+    assert!(
+        matches!(
+            args.as_slice(),
+            [
+                MonoExpr {
+                    kind:
+                        MonoExprKind::Lit(hir::ast::function::LitKind::Number(storage_slot)),
+                    ..
+                },
+                MonoExpr {
+                    kind: MonoExprKind::Var(explicit),
+                    ..
+                }
+            ] if storage_slot == "0" && explicit.name == "y"
+        ),
+        "{args:#?}"
+    );
+}
+
+#[test]
+fn local_and_parameter_ufcs_prepend_receivers_and_share_instance_method() {
+    let (db, output) = specialize_src(
+        r#"
+forall a . class a:Combiner {
+  function combine(x:a, y:word) -> word;
+}
+
+instance word:Combiner {
+  function combine(x:word, y:word) -> word { return y; }
+}
+
+function viaParam(paramReceiver:word, paramArg:word) -> word {
+  return paramReceiver.combine(paramArg);
+}
+
+function viaLocal(seed:word, localArg:word) -> word {
+  let localReceiver:word = seed;
+  return localReceiver.combine(localArg);
+}
+
+function main(x:word, y:word) -> word {
+  return viaParam(viaLocal(x, y), y);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let functions = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let instance_method = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                    if class == "Combiner" && method == "combine"
+            )
+        })
+        .expect("specialized Combiner.combine instance method");
+
+    for (source_name, receiver_name, explicit_name) in [
+        ("viaParam", "paramReceiver", "paramArg"),
+        ("viaLocal", "localReceiver", "localArg"),
+    ] {
+        let caller = functions
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(function.origin, MonoFunctionOrigin::Source)
+                    && function
+                        .source
+                        .is_some_and(|source| source.name(db).as_deref() == Some(source_name))
+            })
+            .unwrap_or_else(|| panic!("specialized UFCS caller {source_name}"));
+        let (callee, args) = caller
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                MonoStmtKind::Return(Some(MonoExpr {
+                    kind: MonoExprKind::Call { callee, args, .. },
+                    ..
+                })) => Some((callee, args)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a direct instance-method call: {caller:#?}"));
+        assert_eq!(callee.name, instance_method.name);
+        assert!(
+            matches!(
+                args.as_slice(),
+                [
+                    MonoExpr {
+                        kind: MonoExprKind::Var(receiver),
+                        ..
+                    },
+                    MonoExpr {
+                        kind: MonoExprKind::Var(explicit),
+                        ..
+                    }
+                ] if receiver.name == receiver_name && explicit.name == explicit_name
+            ),
+            "{source_name}: {args:#?}"
+        );
+    }
 }
 
 #[test]
@@ -1238,6 +1552,120 @@ contract TupleSelector {
 }
 
 #[test]
+fn dispatch_selector_patch_uses_identity_safe_method_markers() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
+data XDispatchNameTy_D_veryLongX = Wrapped(uint256);
+
+contract C {
+  public function putOpt(k: uint256, v: uint256) -> () { return (); }
+  public function putOptPair(k: uint256, a: uint256, b: uint256) -> () { return (); }
+  public function clearOpt(k: uint256) -> () { return (); }
+  public function clearOptPair(k: uint256) -> () { return (); }
+  public function foo(k: uint256) -> () { return (); }
+  public function foo_bar(k: uint256, v: uint256) -> () { return (); }
+  public function f(x: XDispatchNameTy_D_veryLongX) -> uint256 { return 7; }
+}
+
+contract D {
+  public function veryLong(k: uint256) -> uint256 { return k; }
+}
+
+contract A {
+  public function B_C(k: uint256) -> uint256 { return k; }
+}
+
+contract A_B {
+  public function C(k: uint256) -> uint256 { return k; }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let selector_helper = |contract: &str, method: &str| {
+        let marker = format!(
+            "{}_d",
+            hir_ty::contract_dispatch_name_type_name(contract, method)
+        );
+        output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Function(function)
+                    if function.name.starts_with("dispatch_selector_matches")
+                        && function.name.contains(&marker) =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("selector helper for {marker}"))
+    };
+
+    let put_opt = selector_helper("C", "putOpt");
+    assert!(stmts_have_number_literal(&put_opt.body, "489078201"));
+    assert!(!stmts_have_number_literal(&put_opt.body, "3768177169"));
+
+    let put_opt_pair = selector_helper("C", "putOptPair");
+    assert!(stmts_have_number_literal(&put_opt_pair.body, "3768177169"));
+    assert!(!stmts_have_number_literal(&put_opt_pair.body, "489078201"));
+
+    let clear_opt = selector_helper("C", "clearOpt");
+    assert!(stmts_have_number_literal(&clear_opt.body, "986064138"));
+    assert!(!stmts_have_number_literal(&clear_opt.body, "3508849225"));
+
+    let clear_opt_pair = selector_helper("C", "clearOptPair");
+    assert!(stmts_have_number_literal(
+        &clear_opt_pair.body,
+        "3508849225"
+    ));
+    assert!(!stmts_have_number_literal(
+        &clear_opt_pair.body,
+        "986064138"
+    ));
+
+    let foo = selector_helper("C", "foo");
+    assert!(stmts_have_number_literal(&foo.body, "801029432"));
+    assert!(!stmts_have_number_literal(&foo.body, "3185083862"));
+
+    let foo_bar = selector_helper("C", "foo_bar");
+    assert!(stmts_have_number_literal(&foo_bar.body, "3185083862"));
+    assert!(!stmts_have_number_literal(&foo_bar.body, "801029432"));
+
+    let f = selector_helper("C", "f");
+    assert!(
+        f.name
+            .contains(&hir_ty::contract_dispatch_name_type_name("D", "veryLong")),
+        "the direct ADT argument must exercise a later marker match: {}",
+        f.name
+    );
+    assert!(stmts_have_number_literal(&f.body, "3017696395"));
+    assert!(!stmts_have_number_literal(&f.body, "1127644546"));
+
+    let very_long = selector_helper("D", "veryLong");
+    assert!(stmts_have_number_literal(&very_long.body, "1127644546"));
+    assert!(!stmts_have_number_literal(&very_long.body, "3017696395"));
+
+    let a_method = hir_ty::contract_dispatch_name_type_name("A", "B_C");
+    let ab_method = hir_ty::contract_dispatch_name_type_name("A_B", "C");
+    assert_ne!(a_method, ab_method);
+
+    let b_c = selector_helper("A", "B_C");
+    assert!(stmts_have_number_literal(&b_c.body, "2749070498"));
+    assert!(!stmts_have_number_literal(&b_c.body, "1855903951"));
+
+    let c = selector_helper("A_B", "C");
+    assert!(stmts_have_number_literal(&c.body, "1855903951"));
+    assert!(!stmts_have_number_literal(&c.body, "2749070498"));
+}
+
+#[test]
 fn constructor_overlay_roots_three_argument_deployment_main() {
     let output = specialize_src_with_std(
         r#"
@@ -1399,78 +1827,80 @@ contract C {
 
 #[test]
 fn specializes_p7_cited_regression_corpus() {
-    let repo = repo_root();
-    let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples");
-    for fixture in [
-        "cases/app.solc",
-        "cases/mptc-chain-phantom.solc",
-        "cases/mptc-both-templates.solc",
-        "dispatch/nonpayable_ctor.solc",
-        "dispatch/storage.solc",
-        "cases/SimpleLambda.solc",
-        "dispatch/specialise_sum_of_product.solc",
-    ] {
-        let output = specialize_fixture(&corpus.join(fixture));
-        assert_eq!(output.diagnostics, Vec::new(), "{fixture}");
-    }
-    let basic = specialize_fixture(&corpus.join("dispatch/basic.solc"));
-    assert_eq!(basic.diagnostics, Vec::new(), "dispatch/basic.solc");
-    assert!(
-        !basic.module.items.iter().any(|item| match item {
-            MonoItem::Function(function) => function.body.iter().any(stmt_has_closure_dispatch),
-            _ => false,
-        }),
-        "dispatch/basic.solc retained closure dispatch"
-    );
-    let basic_contract = basic
-        .module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            MonoItem::Contract(contract) => Some(contract),
-            _ => None,
-        })
-        .expect("basic contract metadata");
-    assert!(
-        basic_contract.entries.iter().any(|entry| {
-            matches!(
-                entry,
-                MonoEntry::RuntimeMain {
-                    specialized,
-                    origin: MonoRuntimeMainOrigin::StdDispatch,
-                    ..
-                } if specialized.contains("_C_main_")
-            )
-        }),
-        "{:?}",
-        basic_contract.entries
-    );
-    let payable = specialize_fixture(&corpus.join("dispatch/payable.solc"));
-    let payable_contract = payable
-        .module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            MonoItem::Contract(contract) => Some(contract),
-            _ => None,
-        })
-        .expect("payable contract metadata");
-    assert!(
-        payable_contract.entries.iter().any(|entry| {
-            matches!(
-                entry,
-                MonoEntry::RuntimeMain {
-                    specialized,
-                    origin: MonoRuntimeMainOrigin::StdDispatch,
-                    ..
-                } if specialized.contains("_main_")
-            )
-        }),
-        "{:?}",
-        payable_contract.entries
-    );
-    assert!(payable_contract.fallback.explicit);
-    assert!(payable_contract.fallback.payable);
+    solcore_test_utils::run_in_large_stack(|| {
+        let repo = repo_root();
+        let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples");
+        for fixture in [
+            "cases/app.solc",
+            "cases/mptc-chain-phantom.solc",
+            "cases/mptc-both-templates.solc",
+            "dispatch/nonpayable_ctor.solc",
+            "dispatch/storage.solc",
+            "cases/SimpleLambda.solc",
+            "dispatch/specialise_sum_of_product.solc",
+        ] {
+            let output = specialize_fixture(&corpus.join(fixture));
+            assert_eq!(output.diagnostics, Vec::new(), "{fixture}");
+        }
+        let basic = specialize_fixture(&corpus.join("dispatch/basic.solc"));
+        assert_eq!(basic.diagnostics, Vec::new(), "dispatch/basic.solc");
+        assert!(
+            !basic.module.items.iter().any(|item| match item {
+                MonoItem::Function(function) => function.body.iter().any(stmt_has_closure_dispatch),
+                _ => false,
+            }),
+            "dispatch/basic.solc retained closure dispatch"
+        );
+        let basic_contract = basic
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Contract(contract) => Some(contract),
+                _ => None,
+            })
+            .expect("basic contract metadata");
+        assert!(
+            basic_contract.entries.iter().any(|entry| {
+                matches!(
+                    entry,
+                    MonoEntry::RuntimeMain {
+                        specialized,
+                        origin: MonoRuntimeMainOrigin::StdDispatch,
+                        ..
+                    } if specialized.contains("_C_main_")
+                )
+            }),
+            "{:?}",
+            basic_contract.entries
+        );
+        let payable = specialize_fixture(&corpus.join("dispatch/payable.solc"));
+        let payable_contract = payable
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Contract(contract) => Some(contract),
+                _ => None,
+            })
+            .expect("payable contract metadata");
+        assert!(
+            payable_contract.entries.iter().any(|entry| {
+                matches!(
+                    entry,
+                    MonoEntry::RuntimeMain {
+                        specialized,
+                        origin: MonoRuntimeMainOrigin::StdDispatch,
+                        ..
+                    } if specialized.contains("_main_")
+                )
+            }),
+            "{:?}",
+            payable_contract.entries
+        );
+        assert!(payable_contract.fallback.explicit);
+        assert!(payable_contract.fallback.payable);
+    });
 }
 
 #[test]
@@ -1818,6 +2248,712 @@ contract C {
 }
 
 #[test]
+fn derived_class_wrapper_converts_exact_self_arguments_and_returns() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+#[derive(CloneLike)]
+data Box = Box(word);
+
+function main(x:Box) -> Box {
+  return CloneLike.clone(x);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrapper = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedClass { method, .. } if method == "clone"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("derived CloneLike.clone wrapper");
+    assert_eq!(wrapper.params.len(), 1);
+    assert_eq!(wrapper.params[0].ty.ty().display(db).to_string(), "adt:Box");
+    assert_eq!(wrapper.ret.ty().display(db).to_string(), "adt:Box");
+    let MonoStmtKind::Return(Some(MonoExpr {
+        kind:
+            MonoExprKind::Call {
+                callee: to,
+                args: to_args,
+                ..
+            },
+        ..
+    })) = &wrapper.body[0].kind
+    else {
+        panic!("expected Generic.to return: {wrapper:#?}");
+    };
+    assert!(to.name.starts_with("Generic_to_"), "{}", to.name);
+    let MonoExprKind::Call {
+        args: delegated_args,
+        ..
+    } = &to_args[0].kind
+    else {
+        panic!("expected delegated class call: {wrapper:#?}");
+    };
+    assert!(matches!(
+        delegated_args.as_slice(),
+        [MonoExpr {
+            kind: MonoExprKind::Call { callee, .. },
+            ..
+        }] if callee.name.starts_with("Generic_from_")
+    ));
+}
+
+#[test]
+fn derived_class_wrapper_keeps_method_binders_distinct_from_self() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall self . class self:Choose {
+  forall x . function choose(value:x, witness:self) -> x;
+}
+
+instance word:Choose {
+  forall x . function choose(value:x, witness:word) -> x { return value; }
+}
+
+#[derive(Choose)]
+data Box = Box(word);
+
+function main(value:Box, witness:Box) -> Box {
+  return Choose.choose(value, witness);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrapper = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedClass { method, .. } if method == "choose"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("derived Choose.choose wrapper");
+    assert_eq!(wrapper.params.len(), 2);
+    assert!(
+        wrapper
+            .params
+            .iter()
+            .all(|param| param.ty.ty().display(db) == "adt:Box")
+    );
+    assert_eq!(wrapper.ret.ty().display(db).to_string(), "adt:Box");
+    let MonoStmtKind::Return(Some(MonoExpr {
+        kind: MonoExprKind::Call { args, .. },
+        ..
+    })) = &wrapper.body[0].kind
+    else {
+        panic!("expected direct delegated return: {wrapper:#?}");
+    };
+    assert!(matches!(
+        args.as_slice(),
+        [
+            MonoExpr {
+                kind: MonoExprKind::Var(value),
+                ..
+            },
+            MonoExpr {
+                kind: MonoExprKind::Call { callee, .. },
+                ..
+            }
+        ] if value.name == "value" && callee.name.starts_with("Generic_from_")
+    ));
+}
+
+#[test]
+fn derived_class_wrapper_respects_a_manual_generic_instance() {
+    let (_db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+pragma no-generic-instance-for Box;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+#[derive(CloneLike)]
+data Box = Box(bool);
+
+instance Box:Generic(word) {
+  function from(x:Box) -> word { return 7; }
+  function to(x:word) -> Box { return Box(false); }
+}
+
+function main(x:Box) -> Box {
+  return CloneLike.clone(x);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    assert!(
+        matches!(
+            main_return_expr(&output),
+            Some(MonoExpr {
+                kind: MonoExprKind::Con { args, .. },
+                ..
+            }) if matches!(
+                args.as_slice(),
+                [MonoExpr {
+                    kind: MonoExprKind::Con { ctor, args },
+                    ..
+                }] if ctor.name == "false" && args.is_empty()
+            )
+        ),
+        "{:#?}",
+        output.module
+    );
+}
+
+#[test]
+fn derived_class_wrapper_uses_the_imported_definition_environment() {
+    let db = Box::leak(Box::new(TestDb::default()));
+    let main_root = PathBuf::from("/main");
+    db.module_tree = Some(ModuleTree::new(
+        db,
+        main_root.clone(),
+        PathBuf::from("/std"),
+        BTreeMap::new(),
+    ));
+    db.module_fs_snapshot = Some(module_fs_snapshot_for_roots(db, [main_root.as_path()]));
+    let lib_path = main_root.join("lib.solc");
+    let main_path = main_root.join("main.solc");
+    let lib_file = source_file_at_path(
+        db,
+        &lib_path,
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+export { Box(*), cloneBox };
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+#[derive(CloneLike)]
+data Box = Box(word);
+
+function cloneBox(x:Box) -> Box {
+  return CloneLike.clone(x);
+}
+"#,
+    );
+    let main_file = source_file_at_path(
+        db,
+        &main_path,
+        r#"
+import lib;
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+contract C {
+  function main(x:lib.Box) -> lib.Box {
+    return lib.cloneBox(x);
+  }
+}
+"#,
+    );
+    let lib_key = module_key_for_path(LibraryId::Main, &main_root, &lib_path).unwrap();
+    let main_key = module_key_for_path(LibraryId::Main, &main_root, &main_path).unwrap();
+    db.insert_module_file(lib_key, lib_file);
+    db.insert_module_file(main_key, main_file);
+
+    let module = parse_file_to_hir(db, main_file).module(db);
+    let output = specialize_module(db, module, SpecializeOptions::default());
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let (adt, class) = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function) => match function.origin {
+                MonoFunctionOrigin::DerivedClass { adt, class, .. } => Some((adt, class)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("imported derived-class wrapper: {:#?}", output.module));
+    assert_eq!(adt.file(db), lib_file);
+    assert_eq!(class.file(db), lib_file);
+}
+
+#[test]
+fn derived_class_and_instance_specializations_are_proof_aware_across_modules() {
+    let db = Box::leak(Box::new(TestDb::default()));
+    let main_root = PathBuf::from("/main");
+    db.module_tree = Some(ModuleTree::new(
+        db,
+        main_root.clone(),
+        PathBuf::from("/std"),
+        BTreeMap::new(),
+    ));
+    db.module_fs_snapshot = Some(module_fs_snapshot_for_roots(db, [main_root.as_path()]));
+
+    let modules = [
+        (
+            "lib.solc",
+            r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+export { Pick, Wrap(*) };
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:Pick {
+  function pick(x:a) -> word;
+}
+
+forall a b . a:Pick, b:Pick =>
+instance (a,b):Pick {
+  function pick(x:(a,b)) -> word {
+    match x {
+    | (left, right) =>
+        let left_value = Pick.pick(left);
+        let right_value = Pick.pick(right);
+        let result : word;
+        assembly { result := add(mul(left_value, 10), right_value) }
+        return result;
+    }
+  }
+}
+
+#[derive(Pick)]
+data Wrap(a) = Wrap(a, a);
+"#,
+        ),
+        (
+            "left.solc",
+            r#"
+import lib.{*};
+export { left };
+
+instance word:Pick {
+  function pick(x:word) -> word {
+    let result : word;
+    assembly { result := sload(x) }
+    return result;
+  }
+}
+
+function left(x:Wrap(word)) -> word {
+  return Pick.pick(x);
+}
+"#,
+        ),
+        (
+            "right.solc",
+            r#"
+import lib.{*};
+export { right };
+
+instance word:Pick {
+  function pick(x:word) -> word {
+    let result : word;
+    assembly { result := sload(add(x, 1)) }
+    return result;
+  }
+}
+
+function right(x:Wrap(word)) -> word {
+  return Pick.pick(x);
+}
+"#,
+        ),
+        (
+            "main.solc",
+            r#"
+import lib.{*};
+import left.{left};
+import right.{right};
+
+contract C {
+  function main(x:Wrap(word), y:Wrap(word)) -> (word, word) {
+    return (left(x), right(y));
+  }
+}
+"#,
+        ),
+    ];
+
+    let mut files = BTreeMap::new();
+    for (name, src) in modules {
+        let path = main_root.join(name);
+        let file = source_file_at_path(db, &path, src);
+        let key = module_key_for_path(LibraryId::Main, &main_root, &path).unwrap();
+        db.insert_module_file(key, file);
+        files.insert(name, file);
+    }
+
+    let main_file = files["main.solc"];
+    let lib_file = files["lib.solc"];
+    let left_file = files["left.solc"];
+    let right_file = files["right.solc"];
+    let module = parse_file_to_hir(db, main_file).module(db);
+    let output = specialize_module(db, module, SpecializeOptions::default());
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let functions = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let wrappers = functions
+        .iter()
+        .copied()
+        .filter(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedClass { method, .. } if method == "pick"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(wrappers.len(), 2, "{wrappers:#?}");
+    assert_ne!(wrappers[0].name, wrappers[1].name);
+    assert!(wrappers.iter().all(|function| function.name.contains("_p")));
+
+    let pair_methods = functions
+        .iter()
+        .copied()
+        .filter(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::InstanceMethod { instance, method, .. }
+                    if instance.file(db) == lib_file && method == "pick"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(pair_methods.len(), 2, "{pair_methods:#?}");
+    assert_ne!(pair_methods[0].name, pair_methods[1].name);
+    assert!(
+        pair_methods
+            .iter()
+            .all(|function| function.name.contains("_p"))
+    );
+
+    let word_method_name = |file| {
+        functions
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { instance, method, .. }
+                        if instance.file(db) == file && method == "pick"
+                )
+            })
+            .map(|function| function.name.clone())
+            .unwrap_or_else(|| panic!("word Pick.pick specialization for {file:?}"))
+    };
+    let left_word = word_method_name(left_file);
+    let right_word = word_method_name(right_file);
+
+    let source_function = |file, name: &str| {
+        functions
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(function.origin, MonoFunctionOrigin::Source)
+                    && function.source.is_some_and(|def| {
+                        def.file(db) == file && def.name(db).as_deref() == Some(name)
+                    })
+            })
+            .unwrap_or_else(|| panic!("source specialization for {name}"))
+    };
+    let assert_proof_chain =
+        |source_file, source_name: &str, expected_word: &str, other_word: &str| {
+            let source_calls = function_call_names(source_function(source_file, source_name));
+            let wrapper = wrappers
+                .iter()
+                .copied()
+                .find(|function| source_calls.contains(&function.name))
+                .unwrap_or_else(|| panic!("{source_name} does not call a derived wrapper"));
+            let wrapper_calls = function_call_names(wrapper);
+            let pair = pair_methods
+                .iter()
+                .copied()
+                .find(|function| wrapper_calls.contains(&function.name))
+                .unwrap_or_else(|| panic!("{} does not call a pair instance", wrapper.name));
+            let pair_calls = function_call_names(pair);
+            assert!(pair_calls.contains(expected_word), "{pair:#?}");
+            assert!(!pair_calls.contains(other_word), "{pair:#?}");
+        };
+    assert_proof_chain(left_file, "left", &left_word, &right_word);
+    assert_proof_chain(right_file, "right", &right_word, &left_word);
+}
+
+#[test]
+fn derived_class_wrapper_preserves_adt_arguments_and_reuses_proofs() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:CloneLike {
+  function clone(x:a) -> a;
+}
+
+instance word:CloneLike {
+  function clone(x:word) -> word { return x; }
+}
+
+#[derive(CloneLike)]
+data Wrap(a) = Wrap(a);
+
+function main(x:Wrap(word)) -> Wrap(word) {
+  let first = CloneLike.clone(x);
+  return CloneLike.clone(first);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrappers = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedClass { method, .. } if method == "clone"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(wrappers.len(), 1, "{wrappers:#?}");
+    let wrapper = wrappers[0];
+    assert_eq!(wrapper.params.len(), 1);
+    assert!(
+        wrapper.params[0]
+            .ty
+            .ty()
+            .display(db)
+            .to_string()
+            .contains("Wrap")
+    );
+    assert!(wrapper.ret.ty().display(db).to_string().contains("Wrap"));
+    let MonoStmtKind::Return(Some(MonoExpr {
+        kind: MonoExprKind::Call { args, .. },
+        ..
+    })) = &wrapper.body[0].kind
+    else {
+        panic!("expected Generic.to return: {wrapper:#?}");
+    };
+    assert_eq!(args.len(), 1);
+}
+
+#[test]
+fn derived_class_wrapper_reuses_its_reservation_for_recursive_adts() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+import std.Generic.{*};
+
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+#[derive(Eq)]
+data List = Nil | Cons(word, List);
+
+function main(x:List) -> bool {
+  return Eq.eq(x, x);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrappers = output
+        .module
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                MonoItem::Function(function)
+                    if matches!(
+                        &function.origin,
+                        MonoFunctionOrigin::DerivedClass { method, .. } if method == "eq"
+                    )
+            )
+        })
+        .count();
+    assert_eq!(wrappers, 1, "{:#?}", output.module);
+}
+
+#[test]
+fn derived_class_wrapper_rejects_nested_self_without_emitting_unchecked_ir() {
+    let (_db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+
+forall a . class a:NestedSelf {
+  function inspect(x:a, nested:(a, word)) -> bool;
+}
+
+instance word:NestedSelf {
+  function inspect(x:word, nested:(word, word)) -> bool { return true; }
+}
+
+#[derive(NestedSelf)]
+data Box = Box(word);
+
+function main(x:Box) -> bool {
+  return NestedSelf.inspect(x, (x, 0));
+}
+"#,
+    );
+
+    assert!(output.diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SpecializeDiagnosticKind::UnsupportedEvidence { context }
+            if context == "cannot generate NestedSelf.inspect"
+    )));
+    assert!(!output.module.items.iter().any(|item| matches!(
+        item,
+        MonoItem::Function(function)
+            if matches!(function.origin, MonoFunctionOrigin::DerivedClass { .. })
+    )));
+}
+
+#[test]
+fn derived_class_wrapper_uses_absurd_for_an_empty_adt() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+forall a . class a:Make {
+  function make() -> a;
+}
+
+#[derive(Make)]
+data Never;
+
+function main() -> Never {
+  return Make.make();
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let wrapper = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedClass { method, .. } if method == "make"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("derived Make.make wrapper");
+    assert!(matches!(
+        wrapper.body.as_slice(),
+        [MonoStmt {
+            kind: MonoStmtKind::Return(Some(MonoExpr {
+                kind: MonoExprKind::Call { callee, args, .. },
+                ..
+            })),
+            ..
+        }] if callee.name.contains("absurd") && args.is_empty()
+    ));
+}
+
+#[test]
 fn generic_abi_decoder_evidence_specializes_for_internal_sum_adt() {
     let output = specialize_src_with_std(
         r#"
@@ -2039,6 +3175,74 @@ contract C {
 }
 
 #[test]
+fn assembly_substitution_does_not_capture_same_named_function_parameters() {
+    let (db, output) = specialize_src(
+        r#"
+contract C {
+  public function main() -> word {
+    let x : word = 1;
+    let observed : word = 0;
+    assembly {
+      function f(x) -> y { y := x }
+      observed := add(f(7), x)
+    }
+    return x;
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    let function = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function) if function.name.contains("_main_") => Some(function),
+            _ => None,
+        })
+        .expect("specialized main");
+    let assembly = function
+        .body
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            MonoStmtKind::Assembly(body) => Some(body),
+            _ => None,
+        })
+        .expect("residual assembly");
+    let (params, body) = assembly
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            YulStmtKind::FunctionDef { params, body, .. } => Some((params, body)),
+            _ => None,
+        })
+        .expect("inline Yul function");
+    assert_eq!(params.len(), 1);
+    assert_eq!(ident_text(db, &params[0]), "x");
+    let YulStmtKind::Assign { value, .. } = &body[0].kind else {
+        panic!("expected return assignment: {:?}", body[0].kind);
+    };
+    assert!(
+        matches!(&value.kind, YulExprKind::Ident(name) if ident_text(db, name) == "x"),
+        "{value:?}"
+    );
+    let outer_value = assembly
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            YulStmtKind::Assign { value, .. } => Some(value),
+            _ => None,
+        })
+        .expect("outer assignment");
+    let YulExprKind::Call { args, .. } = &outer_value.kind else {
+        panic!("expected outer add: {outer_value:?}");
+    };
+    assert!(
+        matches!(&args[1].kind, YulExprKind::Lit(YulLitKind::Number(value)) if value == "1"),
+        "{outer_value:?}"
+    );
+}
+
+#[test]
 fn does_not_fold_user_function_shadowing_std_literal_intrinsic() {
     let (_db, output) = specialize_src(
         r#"
@@ -2074,6 +3278,779 @@ fn folds_resolved_std_string_keccak_literal_intrinsic() {
                 .to_owned()
         )
     );
+}
+
+#[test]
+fn clones_and_deduplicates_folded_comptime_string_arguments() {
+    let (db, _, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+
+function consume(s:string, x:word) -> word {
+  return addWord(strlenLit(s), x);
+}
+
+contract C {
+  public function main(x:word) -> word {
+    return addWord(consume("abcd", x), consume(concatLit("ab", "cd"), x));
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let clones = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) if function.name.contains("$ct") => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(clones.len(), 1, "{:?}", function_names(&output));
+    assert_eq!(clones[0].params.len(), 1, "{:?}", clones[0].params);
+    assert_eq!(clones[0].params[0].ty.ty().display(db).to_string(), "word");
+
+    let main_calls = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MonoItem::Function(function)
+                if function_call_names(function).contains(&clones[0].name) =>
+            {
+                Some(function_call_names(function))
+            }
+            _ => None,
+        })
+        .expect("caller of the string clone");
+    assert!(main_calls.contains(&clones[0].name), "{main_calls:?}");
+}
+
+#[test]
+fn user_str_instance_clone_leaves_only_a_literal_materializer_call() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+data Wrapped = Wrapped(memory(string));
+
+instance Wrapped:Str {
+  function fromString(s:string) -> Wrapped {
+    return Wrapped(Str.fromString(s));
+  }
+}
+
+contract C {
+  public function main(x:word) -> word {
+    let wrapped:Wrapped = "abcd";
+    let source = "abcd";
+    let explicit:Wrapped = Str.fromString(source);
+    return x;
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let clones = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) if function.name.contains("$ct") => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(clones.len(), 1, "{:?}", function_names(&output));
+    assert!(clones[0].params.is_empty(), "{:?}", clones[0].params);
+    assert!(
+        function_call_names(clones[0]).contains("memStringFromLit"),
+        "{:?}",
+        clones[0].body
+    );
+}
+
+#[test]
+fn require_accepts_a_string_literal_via_the_std_error_str_instance() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract C {
+  public function main(cond:bool) -> () {
+    require(cond, "boom");
+    return ();
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| {
+            matches!(
+                item,
+                MonoItem::Function(function)
+                    if function_call_names(function).contains("memStringFromLit")
+            )
+        }),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn materializes_a_string_literal_through_a_memory_string_alias() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+type Text = memory(string);
+type Source = string;
+
+contract C {
+  public function main() -> word {
+    let implicit:Text = "x";
+    let source:Source = "y";
+    let explicit:Text = Str.fromString(source);
+    return addWord(strlen(implicit), strlen(explicit));
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| {
+            matches!(
+                item,
+                MonoItem::Function(function)
+                    if function_call_names(function).contains("memStringFromLit")
+            )
+        }),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn string_clone_worklist_evaluates_clones_that_spawn_clones() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+function inner(s:string, x:word) -> word {
+  return addWord(strlenLit(s), x);
+}
+
+function touch(x:word) -> () {
+  assembly { sstore(0, x) }
+}
+
+function outer(s:string, x:word) -> word {
+  let result:word = inner(s, x);
+  touch(x);
+  return result;
+}
+
+contract C {
+  public function main(x:word) -> word {
+    return outer("abcd", x);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let clones = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) if function.name.contains("$ct") => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(clones.len(), 2, "{:?}", function_names(&output));
+    assert!(
+        clones.iter().all(|function| function.params.len() == 1),
+        "{clones:?}"
+    );
+    assert!(
+        clones.iter().any(|function| {
+            function_call_names(function)
+                .iter()
+                .any(|name| name.contains("$ct"))
+        }),
+        "{clones:?}"
+    );
+}
+
+#[test]
+fn recursive_string_clone_creation_consumes_global_fuel() {
+    let output = specialize_src_with_std_options(
+        r#"
+import std.{*};
+
+function grow(s:string, x:word) -> word {
+  let result:word = grow(concatLit(s, "x"), x);
+  assembly { sstore(0, x) }
+  return result;
+}
+
+contract C {
+  public function main(x:word) -> word {
+    return grow("", x);
+  }
+}
+"#,
+        SpecializeOptions {
+            eval_fuel: 3,
+            ..SpecializeOptions::default()
+        },
+    );
+
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            SpecializeDiagnosticKind::ComptimeFuelExhausted { limit: 3, .. }
+        )),
+        "{:?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        output
+            .module
+            .items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                MonoItem::Function(function) if function.name.contains("$ct")
+            ))
+            .count(),
+        3,
+        "names={:?}, diagnostics={:?}",
+        function_names(&output),
+        output.diagnostics
+    );
+}
+
+#[test]
+fn desugars_memory_and_storage_array_literals_to_runtime_builders() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract ArrayLit {
+  xs : array(uint256);
+
+  function main() -> uint256 {
+    let m : memory(DynArray(uint256)) = [1, 2, 3];
+    xs = [10, 20, 30];
+    return m[uint256(1)] + xs[uint256(2)];
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let calls = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function_call_names(function)),
+            _ => None,
+        })
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    assert!(
+        calls.iter().any(|name| name.contains("arrayLitNew")),
+        "{calls:?}"
+    );
+    assert!(
+        calls.iter().any(|name| name.contains("arrayLitInit")),
+        "{calls:?}"
+    );
+    assert!(
+        calls.iter().any(|name| name.contains("storeArrayLit")),
+        "{calls:?}"
+    );
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if stmts_have_storage_array_index(&function.body)
+        )),
+        "{:?}",
+        output.module
+    );
+}
+
+#[test]
+fn routes_whole_storage_array_assignment_through_assign_instance() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract ArrayCopy {
+  dst : array(uint256);
+  src : array(uint256);
+
+  function main() -> () {
+    dst = src;
+    return ();
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "Assign" && method == "assign"
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn contract_fields_lower_through_storage_classes_and_prefix_offsets() {
+    let (db, main_file, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+
+contract FieldAccess {
+  first : uint256;
+  second : uint256;
+  third : uint256;
+  values : array(uint256);
+  balances : mapping(uint256, uint256);
+
+  function readFirst() -> uint256 { return first; }
+  function writeSecond(v:uint256) -> () { second = v; return (); }
+  function bumpThird(v:uint256) -> () { third += v; return (); }
+  function replaceValues() -> () { values = [uint256(4), uint256(5)]; return (); }
+  function readValue(k:uint256) -> uint256 { return values[k]; }
+  function readBalance(k:uint256) -> uint256 { return balances[k]; }
+
+  function main() -> uint256 {
+    writeSecond(uint256(1));
+    bumpThird(uint256(2));
+    replaceValues();
+    balances[uint256(0)] = third;
+    values[uint256(0)] = second;
+    return readFirst() + readValue(uint256(0)) + readBalance(uint256(0));
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let source_function = |name: &str| {
+        output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Function(function)
+                    if function.source.is_some_and(|def| {
+                        def.file(db) == main_file && def.name(db).as_deref() == Some(name)
+                    }) =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing source specialization for {name}"))
+    };
+    let read_first = source_function("readFirst");
+    let read_first_calls = function_call_names(read_first);
+    assert!(
+        read_first_calls
+            .iter()
+            .any(|candidate| candidate.starts_with("CanStore_load_")),
+        "{read_first:#?}"
+    );
+    assert!(
+        stmts_have_number_literal(&read_first.body, "0"),
+        "first field must use StorageSize(Unit) = 0: {read_first:#?}"
+    );
+
+    let write_second = source_function("writeSecond");
+    let write_second_calls = function_call_names(write_second);
+    assert!(
+        write_second_calls
+            .iter()
+            .any(|candidate| candidate.starts_with("Assign_assign_")),
+        "{write_second:#?}"
+    );
+    assert!(
+        stmts_have_number_literal(&write_second.body, "1"),
+        "second field must use StorageSize(Pair(uint256, Unit)) = 1: {write_second:#?}"
+    );
+
+    let bump_third = source_function("bumpThird");
+    let bump_third_calls = function_call_names(bump_third);
+    assert!(
+        bump_third_calls
+            .iter()
+            .any(|candidate| candidate.starts_with("Assign_assign_")),
+        "{bump_third:#?}"
+    );
+    assert!(
+        bump_third_calls
+            .iter()
+            .any(|candidate| candidate.starts_with("CanStore_load_")),
+        "{bump_third:#?}"
+    );
+    assert!(
+        stmts_have_number_literal(&bump_third.body, "2"),
+        "third field must use StorageSize(Pair(uint256, Pair(uint256, Unit))) = 2: {bump_third:#?}"
+    );
+
+    let replace_values = source_function("replaceValues");
+    let replace_values_calls = function_call_names(replace_values);
+    assert!(
+        replace_values_calls
+            .iter()
+            .any(|candidate| candidate.contains("storeArrayLit")),
+        "{replace_values:#?}"
+    );
+
+    for (name, expected_kind, expected_offset) in [
+        ("readValue", MonoStorageIndexKind::Array, "3"),
+        ("readBalance", MonoStorageIndexKind::Mapping, "4"),
+    ] {
+        let function = source_function(name);
+        let mut indexes = Vec::new();
+        collect_storage_indexes_in_stmts(&function.body, &mut indexes);
+        let [(kind, base)] = indexes.as_slice() else {
+            panic!("expected one storage index in {name}: {function:#?}");
+        };
+        assert_eq!(*kind, expected_kind, "{function:#?}");
+        assert!(
+            expr_has_number_literal(base, expected_offset),
+            "collection field base must use its StorageSize prefix offset {expected_offset}: {function:#?}"
+        );
+        let mut base_calls = BTreeSet::new();
+        collect_expr_call_names(base, &mut base_calls);
+        assert!(
+            !base_calls
+                .iter()
+                .any(|candidate| candidate.starts_with("CanStore_load_")),
+            "collection field base must remain a raw slot and not be loaded before indexing: {function:#?}"
+        );
+    }
+}
+
+#[test]
+fn partial_contract_field_support_does_not_fall_back_to_legacy_slots() {
+    let read = specialize_src_with_std(
+        r#"
+import std.{Proxy, storage, StorageSize};
+
+contract C {
+  value : word;
+  function main() -> word { return value; }
+}
+"#,
+    );
+    assert!(
+        read.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SpecializeDiagnosticKind::MissingEvidence { context }
+                if context == "canonical contract field read support"
+        )),
+        "{:#?}",
+        read.diagnostics
+    );
+
+    let write = specialize_src_with_std(
+        r#"
+import std.{Proxy, storage, StorageSize, CanStore};
+
+contract C {
+  value : word;
+  function main() -> word {
+    value = value;
+    return value;
+  }
+}
+"#,
+    );
+    assert!(
+        write.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SpecializeDiagnosticKind::MissingEvidence { context }
+                if context == "canonical contract field write support"
+        )),
+        "{:#?}",
+        write.diagnostics
+    );
+}
+
+#[test]
+fn array_indexes_preserve_non_identity_typedef_representations() {
+    let (db, main_file, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+
+data Shifted = Shifted(word);
+instance Shifted:Typedef(word) {
+  function rep(x:Shifted) -> word {
+    match x { | Shifted(w) => return w + 100; }
+  }
+  function abs(w:word) -> Shifted { return Shifted(w - 100); }
+}
+
+data Second = Second(word);
+instance Second:Typedef(word) {
+  function rep(x:Second) -> word {
+    match x { | Second(w) => return w + 1; }
+  }
+  function abs(w:word) -> Second { return Second(w - 1); }
+}
+
+contract ReprArray {
+  xs : array(uint256);
+  seed : word;
+
+  function main() -> word {
+    let m : memory(DynArray(Shifted)) = [Shifted(3), Shifted(4)];
+    xs = [10, 20];
+    let idx : Second = Second(seed);
+    let picked : Shifted = m[idx];
+    return Typedef.rep(picked) + Typedef.rep(xs[idx]);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    let local_typedef_methods = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { instance, class, .. }
+                        if instance.file(db) == main_file && class == "Typedef"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        local_typedef_methods.iter().any(|function| matches!(
+            &function.origin,
+            MonoFunctionOrigin::InstanceMethod { method, .. } if method == "abs"
+        )),
+        "{local_typedef_methods:#?}"
+    );
+    assert!(
+        local_typedef_methods
+            .iter()
+            .filter(|function| matches!(
+                &function.origin,
+                MonoFunctionOrigin::InstanceMethod { method, .. } if method == "rep"
+            ))
+            .count()
+            >= 2,
+        "{local_typedef_methods:#?}"
+    );
+}
+
+#[test]
+fn public_dynamic_array_return_reaches_abi_encoder() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+
+contract PublicArray {
+  constructor() {}
+
+  public function values() -> memory(DynArray(uint256)) {
+    return [1, 2, 3];
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "ABIEncode" && method == "encodeInto"
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn bool_and_nested_dynamic_storage_arrays_resolve_storage_conversions() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract CollectionArray {
+  flags : array(bool);
+  grid : array(array(uint256));
+  names : array(string);
+
+  function main() -> uint256 {
+    Array.setLength(flags, uint256(0));
+    ArrayPush.push(flags, true);
+    let flag : bool = flags[uint256(0)];
+
+    Array.setLength(grid, uint256(1));
+    ArrayPush.push(grid[uint256(0)], uint256(7));
+    grid[uint256(0)][uint256(0)] = uint256(9);
+    let row : storage(array(uint256)) = grid[uint256(0)];
+    ArrayPush.push(row, uint256(11));
+
+    let s : memory(string) = "hello";
+    ArrayPush.push(names, s);
+    names[uint256(0)] = s;
+    let loaded : memory(string) = names[uint256(0)];
+
+    if flag { return row[uint256(1)] + Length.length(names); }
+    return uint256(0);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "CanStore" && (method == "load" || method == "store")
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn nested_bool_array_write_composes_storage_refs_without_intermediate_copy() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract NestedBool {
+  grid : array(array(bool));
+
+  function main(v:bool) -> () {
+    grid[uint256(0)][uint256(0)] = v;
+    return ();
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "CanStore" && method == "store"
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+    assert!(
+        !output.module.items.iter().any(|item| matches!(
+            item,
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, .. }
+                        if class == "StorageCopy"
+                )
+        )),
+        "{:?}",
+        function_names(&output)
+    );
+}
+
+#[test]
+fn folds_resolved_std_word_keccak_literal_intrinsic() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract C {
+  public function main() -> word {
+    return keccakWordLit(0);
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    assert_eq!(
+        main_return_number(&output),
+        Some(
+            "18569430475105882587588266137607568536673111973893317399460219858819262702947"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn folds_erc7201_namespace_to_a_single_constant() {
+    let output = specialize_src_with_std(
+        r#"
+import std.{*};
+
+contract C {
+  public function main() -> bytes32 {
+    return erc7201("example.main");
+  }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new());
+    assert_eq!(
+        main_return_number(&output),
+        Some(
+            "10958655983261152271848436692291137275443024275653522991983264966744321209600"
+                .to_owned()
+        )
+    );
+    let returned = main_return_expr(&output).expect("specialized main return");
+    assert!(!expr_has_call(returned), "{returned:#?}");
 }
 
 #[test]
@@ -2318,7 +4295,7 @@ fn folds_qualified_constructor_matches_before_wildcard_defaults() {
     }
 }
 
-fn main_return_number(output: &SpecializeOutput<'_>) -> Option<String> {
+fn main_return_expr<'a, 'db>(output: &'a SpecializeOutput<'db>) -> Option<&'a MonoExpr<'db>> {
     let mut main_names = output
         .module
         .items
@@ -2353,16 +4330,398 @@ fn main_return_number(output: &SpecializeOutput<'_>) -> Option<String> {
         };
         main_names.contains(&function.name).then(|| {
             function.body.iter().find_map(|stmt| match &stmt.kind {
-                MonoStmtKind::Return(Some(expr)) => match &expr.kind {
-                    MonoExprKind::Lit(hir::ast::function::LitKind::Number(value)) => {
-                        Some(value.clone())
-                    }
-                    _ => None,
-                },
+                MonoStmtKind::Return(Some(expr)) => Some(expr),
                 _ => None,
             })
         })?
     })
+}
+
+fn main_return_number(output: &SpecializeOutput<'_>) -> Option<String> {
+    constant_value_number(main_return_expr(output)?)
+}
+
+fn constant_value_number(expr: &MonoExpr<'_>) -> Option<String> {
+    match &expr.kind {
+        MonoExprKind::Lit(hir::ast::function::LitKind::Number(value)) => Some(value.clone()),
+        MonoExprKind::Con { args, .. } | MonoExprKind::Tuple(args) if args.len() == 1 => {
+            constant_value_number(&args[0])
+        }
+        MonoExprKind::TypeAnnot { expr, .. } => constant_value_number(expr),
+        _ => None,
+    }
+}
+
+fn function_call_names(function: &solcore_specialize::MonoFunction<'_>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    collect_stmt_call_names(&function.body, &mut names);
+    names
+}
+
+fn collect_stmt_call_names(stmts: &[MonoStmt<'_>], names: &mut BTreeSet<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            MonoStmtKind::Let { init, .. } => {
+                if let Some(init) = init {
+                    collect_expr_call_names(init, names);
+                }
+            }
+            MonoStmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    collect_expr_call_names(expr, names);
+                }
+            }
+            MonoStmtKind::Expr(expr) => collect_expr_call_names(expr, names),
+            MonoStmtKind::Assign { lhs, rhs, .. } => {
+                collect_expr_call_names(lhs, names);
+                collect_expr_call_names(rhs, names);
+            }
+            MonoStmtKind::Match { scrutinees, arms } => {
+                for scrutinee in scrutinees {
+                    collect_expr_call_names(scrutinee, names);
+                }
+                for arm in arms {
+                    collect_stmt_call_names(&arm.body, names);
+                }
+            }
+            MonoStmtKind::For {
+                init,
+                cond,
+                post,
+                body,
+            } => {
+                collect_stmt_call_names(init, names);
+                collect_expr_call_names(cond, names);
+                collect_stmt_call_names(post, names);
+                collect_stmt_call_names(body, names);
+            }
+            MonoStmtKind::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                collect_expr_call_names(cond, names);
+                collect_stmt_call_names(then_body, names);
+                if let Some(else_body) = else_body {
+                    collect_stmt_call_names(else_body, names);
+                }
+            }
+            MonoStmtKind::Block(body) => collect_stmt_call_names(body, names),
+            MonoStmtKind::Assembly(_)
+            | MonoStmtKind::Break
+            | MonoStmtKind::Continue
+            | MonoStmtKind::Error => {}
+        }
+    }
+}
+
+fn stmts_have_storage_array_index(stmts: &[MonoStmt<'_>]) -> bool {
+    stmts.iter().any(|stmt| match &stmt.kind {
+        MonoStmtKind::Let { init, .. } => init.as_ref().is_some_and(expr_has_storage_array_index),
+        MonoStmtKind::Return(expr) => expr.as_ref().is_some_and(expr_has_storage_array_index),
+        MonoStmtKind::Expr(expr) => expr_has_storage_array_index(expr),
+        MonoStmtKind::Assign { lhs, rhs, .. } => {
+            expr_has_storage_array_index(lhs) || expr_has_storage_array_index(rhs)
+        }
+        MonoStmtKind::Match { scrutinees, arms } => {
+            scrutinees.iter().any(expr_has_storage_array_index)
+                || arms
+                    .iter()
+                    .any(|arm| stmts_have_storage_array_index(&arm.body))
+        }
+        MonoStmtKind::For {
+            init,
+            cond,
+            post,
+            body,
+        } => {
+            stmts_have_storage_array_index(init)
+                || expr_has_storage_array_index(cond)
+                || stmts_have_storage_array_index(post)
+                || stmts_have_storage_array_index(body)
+        }
+        MonoStmtKind::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
+            expr_has_storage_array_index(cond)
+                || stmts_have_storage_array_index(then_body)
+                || else_body
+                    .as_deref()
+                    .is_some_and(stmts_have_storage_array_index)
+        }
+        MonoStmtKind::Block(body) => stmts_have_storage_array_index(body),
+        MonoStmtKind::Assembly(_)
+        | MonoStmtKind::Break
+        | MonoStmtKind::Continue
+        | MonoStmtKind::Error => false,
+    })
+}
+
+fn expr_has_storage_array_index(expr: &MonoExpr<'_>) -> bool {
+    match &expr.kind {
+        MonoExprKind::StorageIndex {
+            storage_kind: MonoStorageIndexKind::Array,
+            ..
+        } => true,
+        MonoExprKind::Call { args, .. }
+        | MonoExprKind::Con { args, .. }
+        | MonoExprKind::Tuple(args) => args.iter().any(expr_has_storage_array_index),
+        MonoExprKind::ClosureDispatch { callee, args } => {
+            expr_has_storage_array_index(callee) || args.iter().any(expr_has_storage_array_index)
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. }
+        | MonoExprKind::Index {
+            base: lhs,
+            index: rhs,
+        }
+        | MonoExprKind::MemoryArrayIndex {
+            base: lhs,
+            index: rhs,
+        }
+        | MonoExprKind::StorageIndex {
+            base: lhs,
+            index: rhs,
+            ..
+        } => expr_has_storage_array_index(lhs) || expr_has_storage_array_index(rhs),
+        MonoExprKind::UnaryOp { expr, .. }
+        | MonoExprKind::TypeAnnot { expr, .. }
+        | MonoExprKind::Field { base: expr, .. } => expr_has_storage_array_index(expr),
+        MonoExprKind::Match { scrutinee, arms } => {
+            expr_has_storage_array_index(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expr_has_storage_array_index(&arm.expr))
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            expr_has_storage_array_index(cond)
+                || expr_has_storage_array_index(then_expr)
+                || expr_has_storage_array_index(else_expr)
+        }
+        MonoExprKind::Lambda { body, .. } => stmts_have_storage_array_index(body),
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Error => false,
+    }
+}
+
+fn collect_storage_indexes_in_stmts<'a, 'db>(
+    stmts: &'a [MonoStmt<'db>],
+    indexes: &mut Vec<(MonoStorageIndexKind, &'a MonoExpr<'db>)>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            MonoStmtKind::Let { init, .. } => {
+                if let Some(init) = init {
+                    collect_storage_indexes(init, indexes);
+                }
+            }
+            MonoStmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    collect_storage_indexes(expr, indexes);
+                }
+            }
+            MonoStmtKind::Expr(expr) => collect_storage_indexes(expr, indexes),
+            MonoStmtKind::Assign { lhs, rhs, .. } => {
+                collect_storage_indexes(lhs, indexes);
+                collect_storage_indexes(rhs, indexes);
+            }
+            MonoStmtKind::Match { scrutinees, arms } => {
+                for scrutinee in scrutinees {
+                    collect_storage_indexes(scrutinee, indexes);
+                }
+                for arm in arms {
+                    collect_storage_indexes_in_stmts(&arm.body, indexes);
+                }
+            }
+            MonoStmtKind::For {
+                init,
+                cond,
+                post,
+                body,
+            } => {
+                collect_storage_indexes_in_stmts(init, indexes);
+                collect_storage_indexes(cond, indexes);
+                collect_storage_indexes_in_stmts(post, indexes);
+                collect_storage_indexes_in_stmts(body, indexes);
+            }
+            MonoStmtKind::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                collect_storage_indexes(cond, indexes);
+                collect_storage_indexes_in_stmts(then_body, indexes);
+                if let Some(else_body) = else_body {
+                    collect_storage_indexes_in_stmts(else_body, indexes);
+                }
+            }
+            MonoStmtKind::Block(body) => collect_storage_indexes_in_stmts(body, indexes),
+            MonoStmtKind::Assembly(_)
+            | MonoStmtKind::Break
+            | MonoStmtKind::Continue
+            | MonoStmtKind::Error => {}
+        }
+    }
+}
+
+fn collect_storage_indexes<'a, 'db>(
+    expr: &'a MonoExpr<'db>,
+    indexes: &mut Vec<(MonoStorageIndexKind, &'a MonoExpr<'db>)>,
+) {
+    match &expr.kind {
+        MonoExprKind::StorageIndex {
+            storage_kind,
+            base,
+            index,
+        } => {
+            indexes.push((*storage_kind, base));
+            collect_storage_indexes(base, indexes);
+            collect_storage_indexes(index, indexes);
+        }
+        MonoExprKind::Call { args, .. }
+        | MonoExprKind::Con { args, .. }
+        | MonoExprKind::Tuple(args) => {
+            for arg in args {
+                collect_storage_indexes(arg, indexes);
+            }
+        }
+        MonoExprKind::ClosureDispatch { callee, args } => {
+            collect_storage_indexes(callee, indexes);
+            for arg in args {
+                collect_storage_indexes(arg, indexes);
+            }
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. }
+        | MonoExprKind::Index {
+            base: lhs,
+            index: rhs,
+        }
+        | MonoExprKind::MemoryArrayIndex {
+            base: lhs,
+            index: rhs,
+        } => {
+            collect_storage_indexes(lhs, indexes);
+            collect_storage_indexes(rhs, indexes);
+        }
+        MonoExprKind::UnaryOp { expr, .. }
+        | MonoExprKind::TypeAnnot { expr, .. }
+        | MonoExprKind::Field { base: expr, .. } => collect_storage_indexes(expr, indexes),
+        MonoExprKind::Match { scrutinee, arms } => {
+            collect_storage_indexes(scrutinee, indexes);
+            for arm in arms {
+                collect_storage_indexes(&arm.expr, indexes);
+            }
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_storage_indexes(cond, indexes);
+            collect_storage_indexes(then_expr, indexes);
+            collect_storage_indexes(else_expr, indexes);
+        }
+        MonoExprKind::Lambda { body, .. } => collect_storage_indexes_in_stmts(body, indexes),
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Error => {}
+    }
+}
+
+fn collect_expr_call_names(expr: &MonoExpr<'_>, names: &mut BTreeSet<String>) {
+    match &expr.kind {
+        MonoExprKind::Call { callee, args, .. } => {
+            names.insert(callee.name.clone());
+            for arg in args {
+                collect_expr_call_names(arg, names);
+            }
+        }
+        MonoExprKind::ClosureDispatch { callee, args } => {
+            collect_expr_call_names(callee, names);
+            for arg in args {
+                collect_expr_call_names(arg, names);
+            }
+        }
+        MonoExprKind::Tuple(elems) | MonoExprKind::Con { args: elems, .. } => {
+            for elem in elems {
+                collect_expr_call_names(elem, names);
+            }
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. } => {
+            collect_expr_call_names(lhs, names);
+            collect_expr_call_names(rhs, names);
+        }
+        MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
+            collect_expr_call_names(expr, names);
+        }
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
+            collect_expr_call_names(base, names);
+            collect_expr_call_names(index, names);
+        }
+        MonoExprKind::Field { base, .. } => collect_expr_call_names(base, names),
+        MonoExprKind::Match { scrutinee, arms } => {
+            collect_expr_call_names(scrutinee, names);
+            for arm in arms {
+                collect_expr_call_names(&arm.expr, names);
+            }
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_call_names(cond, names);
+            collect_expr_call_names(then_expr, names);
+            collect_expr_call_names(else_expr, names);
+        }
+        MonoExprKind::Lambda { body, .. } => collect_stmt_call_names(body, names),
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Error => {}
+    }
+}
+
+fn expr_has_call(expr: &MonoExpr<'_>) -> bool {
+    match &expr.kind {
+        MonoExprKind::Call { .. } | MonoExprKind::ClosureDispatch { .. } => true,
+        MonoExprKind::Tuple(elems) | MonoExprKind::Con { args: elems, .. } => {
+            elems.iter().any(expr_has_call)
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. } => expr_has_call(lhs) || expr_has_call(rhs),
+        MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
+            expr_has_call(expr)
+        }
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
+            expr_has_call(base) || expr_has_call(index)
+        }
+        MonoExprKind::Field { base, .. } => expr_has_call(base),
+        MonoExprKind::Match { scrutinee, arms } => {
+            expr_has_call(scrutinee) || arms.iter().any(|arm| expr_has_call(&arm.expr))
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => expr_has_call(cond) || expr_has_call(then_expr) || expr_has_call(else_expr),
+        MonoExprKind::Lambda { .. } => true,
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Error => false,
+    }
 }
 
 fn function_return_ctor(output: &SpecializeOutput<'_>, name: &str) -> Option<String> {
@@ -2453,7 +4812,9 @@ fn expr_has_number_literal(expr: &MonoExpr<'_>, expected: &str) -> bool {
         MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
             expr_has_number_literal(expr, expected)
         }
-        MonoExprKind::Index { base, index } | MonoExprKind::StorageIndex { base, index } => {
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
             expr_has_number_literal(base, expected) || expr_has_number_literal(index, expected)
         }
         MonoExprKind::Field { base, .. } => expr_has_number_literal(base, expected),
@@ -2538,7 +4899,9 @@ fn expr_has_closure_dispatch(expr: &MonoExpr<'_>) -> bool {
         MonoExprKind::UnaryOp { expr, .. } | MonoExprKind::TypeAnnot { expr, .. } => {
             expr_has_closure_dispatch(expr)
         }
-        MonoExprKind::Index { base, index } | MonoExprKind::StorageIndex { base, index } => {
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
             expr_has_closure_dispatch(base) || expr_has_closure_dispatch(index)
         }
         MonoExprKind::Field { base, .. } => expr_has_closure_dispatch(base),
@@ -2627,6 +4990,39 @@ fn return_numbers_in_stmts(stmts: &[solcore_specialize::MonoStmt<'_>]) -> Vec<St
         }
     }
     out
+}
+
+fn count_returns_in_stmts(stmts: &[MonoStmt<'_>]) -> usize {
+    stmts
+        .iter()
+        .map(|stmt| match &stmt.kind {
+            MonoStmtKind::Return(_) => 1,
+            MonoStmtKind::Match { arms, .. } => arms
+                .iter()
+                .map(|arm| count_returns_in_stmts(&arm.body))
+                .sum(),
+            MonoStmtKind::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count_returns_in_stmts(then_body)
+                    + else_body
+                        .as_deref()
+                        .map(count_returns_in_stmts)
+                        .unwrap_or_default()
+            }
+            MonoStmtKind::For {
+                init, post, body, ..
+            } => {
+                count_returns_in_stmts(init)
+                    + count_returns_in_stmts(post)
+                    + count_returns_in_stmts(body)
+            }
+            MonoStmtKind::Block(body) => count_returns_in_stmts(body),
+            _ => 0,
+        })
+        .sum()
 }
 
 fn specialize_fixture(path: &Path) -> SpecializeOutput<'static> {
@@ -2917,6 +5313,49 @@ contract C {
 }
 
 #[test]
+fn default_fuel_handles_the_e136_basic_dispatch_surface() {
+    solcore_test_utils::run_in_large_stack(|| {
+        let source =
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.solc");
+        let output = specialize_src_with_std(source);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+        let runtime_main = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| {
+                let MonoItem::Contract(contract) = item else {
+                    return None;
+                };
+                contract.entries.iter().find_map(|entry| match entry {
+                    MonoEntry::RuntimeMain {
+                        specialized,
+                        origin: MonoRuntimeMainOrigin::StdDispatch,
+                        ..
+                    } => Some(specialized),
+                    _ => None,
+                })
+            })
+            .expect("generated runtime main");
+        let runtime_main = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MonoItem::Function(function) if &function.name == runtime_main => Some(function),
+                _ => None,
+            })
+            .expect("specialized runtime main");
+        assert_eq!(
+            count_returns_in_stmts(&runtime_main.body),
+            1,
+            "inlined dispatch helpers must not return past the default fallback"
+        );
+    });
+}
+
+#[test]
 fn dead_function_elimination_traces_calls_inside_residual_lambdas() {
     let (_db, output) = specialize_src(
         r#"
@@ -3124,5 +5563,677 @@ function main(x : word) -> word {
         )),
         "{:?}",
         output.module
+    );
+}
+
+#[test]
+fn derived_abi_wrappers_delegate_to_the_generic_representation_once() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+pragma no-coverage-condition;
+
+data Proxy(t) = Proxy;
+data ABIDecoder(ty, reader) = ABIDecoder(reader);
+data Reader = Reader;
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+forall self . class self:ABIDeriving {}
+forall self . class self:ABIAttribs {
+  function headSize(ty:Proxy(self)) -> word;
+  function isStatic(ty:Proxy(self)) -> bool;
+}
+forall decoder decoded . class decoder:ABIDecode(decoded) {
+  function decode(ptr:decoder, headOffset:word) -> decoded;
+}
+forall reader . class reader:WordReader {}
+
+instance word:ABIAttribs {
+  function headSize(ty:Proxy(word)) -> word {
+    assembly { sstore(0, 32) }
+    return 32;
+  }
+  function isStatic(ty:Proxy(word)) -> bool {
+    assembly { sstore(1, 1) }
+    return true;
+  }
+}
+instance Reader:WordReader {}
+instance ABIDecoder(word, Reader):ABIDecode(word) {
+  function decode(ptr:ABIDecoder(word, Reader), headOffset:word) -> word {
+    return headOffset;
+  }
+}
+
+data Box(a) = Box(a);
+
+function main(ptr:ABIDecoder(Box(word), Reader), headOffset:word) -> Box(word) {
+  let p:Proxy(Box(word));
+  let first = ABIAttribs.headSize(p);
+  let second = ABIAttribs.headSize(p);
+  let static = ABIAttribs.isStatic(p);
+  return ABIDecode.decode(ptr, headOffset);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let derived = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(&function.origin, MonoFunctionOrigin::DerivedGeneric { .. }) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for method in [
+        "ABIAttribs.headSize",
+        "ABIAttribs.isStatic",
+        "ABIDecode.decode",
+    ] {
+        assert_eq!(
+            derived
+                .iter()
+                .filter(|function| matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                        if candidate == method
+                ))
+                .count(),
+            1,
+            "derived ABI wrapper was missing or duplicated: {method}: {derived:#?}",
+        );
+    }
+
+    for method in ["ABIAttribs.headSize", "ABIAttribs.isStatic"] {
+        let wrapper = derived
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                        if candidate == method
+                )
+            })
+            .expect("derived ABIAttribs wrapper");
+        let [
+            MonoStmt {
+                kind:
+                    MonoStmtKind::Return(Some(MonoExpr {
+                        kind: MonoExprKind::Call { args, .. },
+                        ..
+                    })),
+                ..
+            },
+        ] = wrapper.body.as_slice()
+        else {
+            panic!("expected ABIAttribs delegation: {wrapper:#?}");
+        };
+        assert!(matches!(
+            args.as_slice(),
+            [MonoExpr {
+                kind: MonoExprKind::Proxy(rep),
+                ..
+            }] if rep.ty().display(db) == "word"
+        ));
+    }
+
+    let decode = derived
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { method, .. } if method == "ABIDecode.decode"
+            )
+        })
+        .expect("derived ABIDecode wrapper");
+    let [
+        MonoStmt {
+            kind: MonoStmtKind::Match { arms, .. },
+            ..
+        },
+    ] = decode.body.as_slice()
+    else {
+        panic!("expected decoder destructuring match: {decode:#?}");
+    };
+    assert!(matches!(
+        arms.as_slice(),
+        [solcore_specialize::MonoArm {
+            body,
+            ..
+        }] if matches!(
+            body.as_slice(),
+            [MonoStmt {
+                kind: MonoStmtKind::Return(Some(MonoExpr {
+                    kind: MonoExprKind::Call { callee, args, .. },
+                    ..
+                })),
+                ..
+            }] if callee.name.starts_with("Generic_to_")
+                && matches!(
+                    args.as_slice(),
+                    [MonoExpr {
+                        kind: MonoExprKind::Call { args, .. },
+                        ..
+                    }] if matches!(
+                        args.as_slice(),
+                        [MonoExpr {
+                            kind: MonoExprKind::Con { ctor, .. },
+                            ..
+                        }, MonoExpr {
+                            kind: MonoExprKind::Var(offset),
+                            ..
+                        }] if ctor.name == "ABIDecoder_ABIDecoder"
+                            && offset.name == "_headOffset"
+                    )
+                )
+        )
+    ));
+}
+
+#[test]
+fn derived_abi_wrappers_replay_definition_side_evidence() {
+    let fixture =
+        repo_root().join("crates/specialize/tests/fixtures/derived_abi_evidence_replay/main.solc");
+    let output = specialize_fixture(&fixture);
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    assert!(output.module.items.iter().any(|item| matches!(
+        item,
+        MonoItem::Function(function)
+            if matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { method, .. }
+                    if method == "ABIAttribs.headSize"
+            )
+    )));
+}
+
+#[test]
+fn direct_adt_abi_specializations_keep_sum_representations_separate() {
+    let (db, _, output) = specialize_src_with_std_and_db(
+        r#"
+import std.{*};
+import std.dispatch.{*};
+import std.Generic.{*};
+import std.ABIGeneric.{*};
+
+data D2 = L(uint256) | R(memory(bytes));
+data D3 = X(uint256) | Y(uint256) | Z(memory(bytes));
+data S2 = P(uint256) | Q(uint256);
+
+contract Sums {
+  constructor() {}
+  public function makeD2(b:memory(bytes)) -> D2 { return D2.R(b); }
+  public function makeD3(b:memory(bytes)) -> D3 { return D3.Z(b); }
+  public function makeS2(n:uint256) -> S2 { return S2.P(n); }
+  public function roundtripD3(value:D3) -> D3 { return value; }
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let functions = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut functions_by_name = BTreeMap::<&str, Vec<&solcore_specialize::MonoFunction<'_>>>::new();
+    for function in &functions {
+        functions_by_name
+            .entry(function.name.as_str())
+            .or_default()
+            .push(function);
+    }
+    let duplicate_names = functions_by_name
+        .iter()
+        .filter(|(_, candidates)| candidates.len() > 1)
+        .map(|(name, candidates)| (*name, candidates.clone()))
+        .collect::<Vec<_>>();
+    assert!(
+        duplicate_names.is_empty(),
+        "specialized function names must be globally unique: {duplicate_names:#?}"
+    );
+
+    let mut bridge_names = BTreeSet::new();
+    let mut generic_from_names = BTreeSet::new();
+    let mut representation_returns = BTreeSet::new();
+    let encode_into_candidates = functions
+        .iter()
+        .copied()
+        .filter_map(|function| match &function.origin {
+            MonoFunctionOrigin::InstanceMethod { class, method, .. } if method == "encodeInto" => {
+                Some((
+                    class.clone(),
+                    function.name.clone(),
+                    function
+                        .params
+                        .iter()
+                        .map(|param| param.ty.ty().display(db))
+                        .collect::<Vec<_>>(),
+                    function.ret.ty().display(db),
+                    function_call_names(function),
+                ))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for adt_name in ["D2", "D3", "S2"] {
+        let displayed_adt = format!("adt:{adt_name}");
+        let bridge = functions
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "ABIEncode" && method == "encodeInto"
+                ) && function
+                    .params
+                    .first()
+                    .is_some_and(|param| param.ty.ty().display(db) == displayed_adt)
+            })
+            .unwrap_or_else(|| {
+                panic!("missing ABIEncode bridge for {adt_name}: {encode_into_candidates:#?}")
+            });
+        assert!(
+            bridge_names.insert(bridge.name.clone()),
+            "shared ABIEncode bridge: {bridge:#?}"
+        );
+
+        let generic_from = function_call_names(bridge)
+            .into_iter()
+            .find(|name| name.starts_with("Generic_from_"))
+            .unwrap_or_else(|| panic!("missing Generic.from call in {bridge:#?}"));
+        assert!(
+            generic_from_names.insert(generic_from.clone()),
+            "shared Generic.from specialization: {bridge:#?}"
+        );
+        let generic_from_function = functions_by_name
+            .get(generic_from.as_str())
+            .and_then(|candidates| candidates.first())
+            .expect("Generic.from specialization is emitted");
+        representation_returns.insert(generic_from_function.ret.ty().display(db));
+    }
+    assert_eq!(
+        representation_returns.len(),
+        3,
+        "D2, D3, and S2 must retain distinct Generic representations: {representation_returns:?}"
+    );
+
+    fn unary_expr_arg<'a, 'db>(expr: &'a MonoExpr<'db>, expected_ctor: &str) -> &'a MonoExpr<'db> {
+        let MonoExprKind::Con { ctor, args } = &expr.kind else {
+            panic!("expected {expected_ctor} expression: {expr:#?}");
+        };
+        assert_eq!(ctor.name, expected_ctor, "{expr:#?}");
+        assert_eq!(ctor.ty, expr.ty, "constructor/result annotation mismatch");
+        let [arg] = args.as_slice() else {
+            panic!("expected unary {expected_ctor}: {expr:#?}");
+        };
+        arg
+    }
+
+    fn unary_pat_arg<'a, 'db>(
+        pat: &'a solcore_specialize::MonoPat<'db>,
+        expected_ctor: &str,
+    ) -> &'a solcore_specialize::MonoPat<'db> {
+        let MonoPatKind::Con { ctor, args } = &pat.kind else {
+            panic!("expected {expected_ctor} pattern: {pat:#?}");
+        };
+        assert_eq!(ctor.name, expected_ctor, "{pat:#?}");
+        assert_eq!(ctor.ty, pat.ty, "constructor/pattern annotation mismatch");
+        let [arg] = args.as_slice() else {
+            panic!("expected unary {expected_ctor}: {pat:#?}");
+        };
+        arg
+    }
+
+    let d3_from = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { adt, method }
+                    if method == "from" && adt.name(db).as_deref() == Some("D3")
+            )
+        })
+        .expect("D3 Generic.from");
+    let TyKind::Named {
+        ctor: hir_ty::TyCtor::Builtin(BuiltinTyCtor::Sum),
+        args: d3_rep_args,
+    } = d3_from.ret.ty().kind(db)
+    else {
+        panic!("D3 representation is not a sum: {d3_from:#?}");
+    };
+    let d3_right_suffix = d3_rep_args[1];
+    let [
+        MonoStmt {
+            kind: MonoStmtKind::Match {
+                arms: from_arms, ..
+            },
+            ..
+        },
+    ] = d3_from.body.as_slice()
+    else {
+        panic!("D3 Generic.from body: {d3_from:#?}");
+    };
+    for (arm, inner_ctor) in [(&from_arms[1], "inl"), (&from_arms[2], "inr")] {
+        let [
+            MonoStmt {
+                kind: MonoStmtKind::Return(Some(expr)),
+                ..
+            },
+        ] = arm.body.as_slice()
+        else {
+            panic!("D3 Generic.from arm: {arm:#?}");
+        };
+        assert_eq!(expr.ty, d3_from.ret, "outer inr must retain full D3 rep");
+        let inner = unary_expr_arg(expr, "inr");
+        assert_eq!(
+            inner.ty.ty(),
+            d3_right_suffix,
+            "inner sum expression must use the right-hand suffix"
+        );
+        unary_expr_arg(inner, inner_ctor);
+    }
+
+    let d3_to = functions
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { adt, method }
+                    if method == "to" && adt.name(db).as_deref() == Some("D3")
+            )
+        })
+        .expect("D3 Generic.to");
+    let [
+        MonoStmt {
+            kind: MonoStmtKind::Match { arms: to_arms, .. },
+            ..
+        },
+    ] = d3_to.body.as_slice()
+    else {
+        panic!("D3 Generic.to body: {d3_to:#?}");
+    };
+    for (arm, inner_ctor) in [(&to_arms[1], "inl"), (&to_arms[2], "inr")] {
+        let [pat] = arm.pats.as_slice() else {
+            panic!("D3 Generic.to arm pattern: {arm:#?}");
+        };
+        assert_eq!(
+            pat.ty, d3_to.params[0].ty,
+            "outer inr must retain full D3 rep"
+        );
+        let inner = unary_pat_arg(pat, "inr");
+        assert_eq!(
+            inner.ty.ty(),
+            d3_right_suffix,
+            "inner sum pattern must use the right-hand suffix"
+        );
+        unary_pat_arg(inner, inner_ctor);
+    }
+}
+
+#[test]
+fn derived_storage_wrappers_delegate_to_the_generic_representation_once() {
+    let (db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+pragma no-coverage-condition;
+
+data Proxy(t) = Proxy;
+data storage(t) = storage(word);
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+forall self . class self:StorageDeriving {}
+forall self . class self:StorageSize {
+  function size(x:Proxy(self)) -> word;
+}
+forall slot value . class slot:CanStore(value) {
+  function store(r:slot, v:value) -> ();
+  function load(r:slot) -> value;
+}
+
+instance word:StorageSize {
+  function size(x:Proxy(word)) -> word {
+    assembly { sstore(0, 1) }
+    return 1;
+  }
+}
+instance storage(word):CanStore(word) {
+  function store(r:storage(word), v:word) -> () {
+    match r {
+    | storage(slot) => assembly { sstore(slot, v) }
+    }
+  }
+  function load(r:storage(word)) -> word {
+    match r {
+    | storage(slot) =>
+      let result:word;
+      assembly { result := sload(slot) }
+      return result;
+    }
+  }
+}
+
+data Box(a) = Box(a);
+
+function main(r:storage(Box(word)), v:Box(word)) -> Box(word) {
+  let first = StorageSize.size(Proxy:Proxy(Box(word)));
+  let second = StorageSize.size(Proxy:Proxy(Box(word)));
+  CanStore.store(r, v);
+  return CanStore.load(r);
+}
+"#,
+    );
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let derived = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(&function.origin, MonoFunctionOrigin::DerivedGeneric { .. }) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for method in ["StorageSize.size", "CanStore.store", "CanStore.load"] {
+        assert_eq!(
+            derived
+                .iter()
+                .filter(|function| matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                        if candidate == method
+                ))
+                .count(),
+            1,
+            "derived storage wrapper was missing or duplicated: {method}: {derived:#?}",
+        );
+    }
+
+    let size = derived
+        .iter()
+        .copied()
+        .find(|function| {
+            matches!(
+                &function.origin,
+                MonoFunctionOrigin::DerivedGeneric { method, .. } if method == "StorageSize.size"
+            )
+        })
+        .expect("derived StorageSize wrapper");
+    assert!(matches!(
+        size.body.as_slice(),
+        [MonoStmt {
+            kind: MonoStmtKind::Return(Some(MonoExpr {
+                kind: MonoExprKind::Call { args, .. },
+                ..
+            })),
+            ..
+        }] if matches!(
+            args.as_slice(),
+            [MonoExpr {
+                kind: MonoExprKind::Proxy(rep),
+                ..
+            }] if rep.ty().display(db) == "word"
+        )
+    ));
+
+    for method in ["CanStore.store", "CanStore.load"] {
+        let wrapper = derived
+            .iter()
+            .copied()
+            .find(|function| {
+                matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                        if candidate == method
+                )
+            })
+            .expect("derived CanStore wrapper");
+        assert!(matches!(
+            wrapper.body.as_slice(),
+            [MonoStmt {
+                kind: MonoStmtKind::Match { arms, .. },
+                ..
+            }] if matches!(
+                arms.as_slice(),
+                [solcore_specialize::MonoArm { body, .. }]
+                    if matches!(
+                        body.as_slice(),
+                        [MonoStmt {
+                            kind: MonoStmtKind::Return(Some(_)),
+                            ..
+                        }]
+                    )
+            )
+        ));
+    }
+}
+
+#[test]
+fn derived_can_store_rejects_a_mapping_value_leaf_during_specialization() {
+    let (_db, output) = specialize_src(
+        r#"
+pragma no-patterson-condition;
+pragma no-bounded-variable-condition;
+pragma no-coverage-condition;
+
+data storage(t) = storage(word);
+data mapping(k, v) = mapping(word);
+
+forall a rep . class a:Generic(rep) {
+  function from(x:a) -> rep;
+  function to(x:rep) -> a;
+}
+forall self . class self:StorageDeriving {}
+forall self . class self:StorageSize {}
+forall slot value . class slot:CanStore(value) {
+  function store(r:slot, v:value) -> ();
+  function load(r:slot) -> value;
+}
+
+instance word:StorageSize {}
+forall k v . instance mapping(k, v):StorageSize {}
+forall k v . instance storage(mapping(k, v)):CanStore(storage(mapping(k, v))) {}
+
+data Wrapper = Wrapper(mapping(word, word));
+
+function main(r:storage(Wrapper)) -> Wrapper {
+  return CanStore.load(r);
+}
+"#,
+    );
+
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SpecializeDiagnosticKind::UnsupportedEvidence { context }
+                if context == "cannot generate CanStore.load"
+        )),
+        "{:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn derived_storage_wrappers_replay_definition_side_evidence() {
+    let fixture = repo_root()
+        .join("crates/specialize/tests/fixtures/derived_storage_evidence_replay/main.solc");
+    let output = specialize_fixture(&fixture);
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    for method in ["StorageSize.size", "CanStore.store", "CanStore.load"] {
+        assert!(
+            output.module.items.iter().any(|item| matches!(
+                item,
+                MonoItem::Function(function)
+                    if matches!(
+                        &function.origin,
+                        MonoFunctionOrigin::DerivedGeneric { method: candidate, .. }
+                            if candidate == method
+                    )
+            )),
+            "missing {method}: {:#?}",
+            output.module
+        );
+    }
+}
+
+#[test]
+fn contract_field_calls_use_definition_module_evidence() {
+    let fixture = repo_root()
+        .join("crates/specialize/tests/fixtures/storage_field_definition_evidence/main.solc");
+    let output = specialize_fixture(&fixture);
+
+    assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
+    let loads = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MonoItem::Function(function)
+                if matches!(
+                    &function.origin,
+                    MonoFunctionOrigin::InstanceMethod { class, method, .. }
+                        if class == "CanStore" && method == "load"
+                ) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(loads.len(), 1, "{:#?}", output.module);
+    assert!(
+        !stmts_have_number_literal(&loads[0].body, "99"),
+        "consumer-only competing evidence leaked into the contract field read: {:#?}",
+        loads[0]
     );
 }

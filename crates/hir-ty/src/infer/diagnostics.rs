@@ -352,6 +352,17 @@ pub enum TypeckDiagnostic {
         /// Type name with the conflicting manual instance.
         ty: String,
     },
+    /// `SC0230`: a resolved class cannot be derived for this data declaration.
+    InvalidDerive {
+        /// Source span for the rejected class target.
+        span: LabelSpan,
+        /// Data type carrying the derive attribute.
+        ty: String,
+        /// Requested class name.
+        class: String,
+        /// Reason the synthesized instance would be invalid.
+        reason: String,
+    },
     /// `SC0240`: a runtime expression was supplied to a comptime parameter.
     RuntimeToComptimeParam {
         /// Source span for the runtime argument.
@@ -802,6 +813,16 @@ impl TypeckDiagnostic {
             ))
             .with_code(DiagnosticCode::TYPECK_GENERIC_DERIVE_CONFLICT)
             .with_primary_label_span(span.clone(), Some("manual Generic instance conflicts with auto-derivation")),
+            TypeckDiagnostic::InvalidDerive {
+                span,
+                ty,
+                class,
+                reason,
+            } => Diagnostic::error(format!(
+                "cannot derive '{class}' for type '{ty}': {reason}"
+            ))
+            .with_code(DiagnosticCode::TYPECK_INVALID_DERIVE)
+            .with_primary_label_span(span.clone(), Some("invalid derive target")),
             TypeckDiagnostic::RuntimeToComptimeParam {
                 span,
                 function,
@@ -1297,6 +1318,9 @@ fn builtin_name(kind: hir_nameres::BuiltinKind) -> Option<&'static str> {
         hir_nameres::BuiltinKind::ClassMethod(hir_nameres::BuiltinClassMethod::IntFromInteger) => {
             "fromInteger"
         }
+        hir_nameres::BuiltinKind::ClassMethod(hir_nameres::BuiltinClassMethod::StrFromString) => {
+            "fromString"
+        }
         hir_nameres::BuiltinKind::Type(_) | hir_nameres::BuiltinKind::Class(_) => return None,
     })
 }
@@ -1463,7 +1487,7 @@ fn collect_uninitialized_let_type_refs_from_expr<'db>(
         } => {
             collect_uninitialized_let_type_refs(db, *lambda_body, out);
         }
-        ExprKind::Tuple(exprs) | ExprKind::DotCtor { args: exprs, .. } => {
+        ExprKind::Tuple(exprs) | ExprKind::Array(exprs) | ExprKind::DotCtor { args: exprs, .. } => {
             for expr in exprs {
                 collect_uninitialized_let_type_refs_from_expr(db, body, *expr, out);
             }
@@ -1814,7 +1838,10 @@ fn dispatch_reserved_type_names<'db>(
                 continue;
             }
             reserved
-                .entry(dispatch_name_type_name(&contract_name, &method_name))
+                .entry(crate::contract_dispatch_name_type_name(
+                    &contract_name,
+                    &method_name,
+                ))
                 .or_insert_with(|| LabelSpan::from_span(db, sig.name.span(db)));
         }
     }
@@ -1893,10 +1920,6 @@ fn collect_dispatch_name_collisions<'db>(
         | Item::Pragma(_)
         | Item::Error { .. } => {}
     }
-}
-
-fn dispatch_name_type_name(contract: &str, method: &str) -> String {
-    format!("DispatchNameTy_{contract}_{method}")
 }
 
 fn local_data_cycle_nodes<'db>(db: &'db dyn HirDb, module: Module<'db>) -> Vec<DataCycleNode<'db>> {
@@ -2110,6 +2133,7 @@ pub(super) fn class_id_from_resolution<'db>(
             let class = match class {
                 hir_nameres::BuiltinClass::Invokable => BuiltinClassId::Invokable,
                 hir_nameres::BuiltinClass::Int => BuiltinClassId::Int,
+                hir_nameres::BuiltinClass::Str => BuiltinClassId::Str,
             };
             Some(ClassId::Builtin(class))
         }

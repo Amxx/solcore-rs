@@ -1997,7 +1997,8 @@ fn expr_reference_span<'db>(db: &'db dyn hir_ty::Db, expr: &Expr<'db>) -> Option
         | ExprKind::TypeAnnot { .. }
         | ExprKind::UnaryOp { .. }
         | ExprKind::If { .. }
-        | ExprKind::Tuple(_) => None,
+        | ExprKind::Tuple(_)
+        | ExprKind::Array(_) => None,
     }
 }
 

@@ -8,11 +8,12 @@ rust-version.workspace = true
 [dependencies]
 hir = { workspace = true }
 hir-ty = { workspace = true }
+nameres = { workspace = true }
 parser = { workspace = true }
 specialize = { path = "../specialize", package = "solcore-specialize" }
 
 [dev-dependencies]
-nameres = { workspace = true }
 rustc-hash = { workspace = true }
 salsa = { workspace = true }
+solcore-test-utils = { path = "../test-utils" }
 url = { workspace = true }

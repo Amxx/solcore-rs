@@ -744,6 +744,47 @@ fn ternary_expression_lowers_to_conditional_expression() {
 }
 
 #[test]
+fn array_literals_lower_with_empty_nested_and_postfix_index_forms() {
+    let db = TestDb::default();
+    let (file, module) = parse_module(
+        &db,
+        "array-literals",
+        r#"
+function f(a: word, b: word) -> word {
+  let empty = [];
+  let nested = [[a], [b]];
+  return [a, b][0];
+}
+"#,
+    );
+    assert!(diagnostics(&db, file).is_empty());
+
+    let body = top_function(&db, module, "f").body(&db).expect("body");
+    let mut lengths = body
+        .exprs(&db)
+        .iter()
+        .filter_map(|(_, expr)| match &expr.kind {
+            ExprKind::Array(elems) => Some(elems.len()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    lengths.sort_unstable();
+    assert_eq!(lengths, [0, 1, 1, 2, 2]);
+
+    let indexed_array = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(_, expr)| match &expr.kind {
+            ExprKind::Index { base, .. } => Some(body.exprs(&db).get(*base)),
+            _ => None,
+        });
+    assert!(matches!(
+        indexed_array.map(|expr| &expr.kind),
+        Some(ExprKind::Array(elems)) if elems.len() == 2
+    ));
+}
+
+#[test]
 fn compound_assignments_lower_through_binary_operator_calls() {
     let db = TestDb::default();
     let (_, module) = parse_module(
@@ -752,10 +793,13 @@ fn compound_assignments_lower_through_binary_operator_calls() {
         "function f(x: word, y: word) {\n\
            x += y;\n\
            x -= y;\n\
+           x *= y;\n\
+           x /= y;\n\
            x ^= y;\n\
            x &= y;\n\
            x |= y;\n\
            x %= y;\n\
+           x ~=;\n\
          }",
     );
     let function = top_function(&db, module, "f");
@@ -763,13 +807,16 @@ fn compound_assignments_lower_through_binary_operator_calls() {
     let expected = [
         BinOp::Add,
         BinOp::Sub,
+        BinOp::Mul,
+        BinOp::Div,
         BinOp::BitXor,
         BinOp::BitAnd,
         BinOp::BitOr,
         BinOp::Mod,
     ];
 
-    for (stmt_id, expected_op) in body.top_level_stmts(&db).iter().zip(expected) {
+    let stmts = body.top_level_stmts(&db);
+    for (stmt_id, expected_op) in stmts.iter().zip(expected) {
         let stmt = body.stmts(&db).get(*stmt_id);
         let StmtKind::Assign {
             op: AssignOp::Plain,
@@ -784,4 +831,300 @@ fn compound_assignments_lower_through_binary_operator_calls() {
             ExprKind::BinOp { op, .. } if *op.atom() == expected_op
         ));
     }
+
+    let stmt = body
+        .stmts(&db)
+        .get(*stmts.last().expect("bit-not assignment"));
+    let StmtKind::Assign {
+        op: AssignOp::Plain,
+        rhs,
+        ..
+    } = &stmt.kind
+    else {
+        panic!("bit-not assignment should lower to plain assignment");
+    };
+    assert!(matches!(
+        &body.exprs(&db).get(*rhs).kind,
+        ExprKind::UnaryOp { op, .. } if *op.atom() == hir::ast::function::UnOp::BitNot
+    ));
+}
+
+#[test]
+fn derive_attributes_lower_qualified_targets_and_precise_spans() {
+    let db = TestDb::default();
+    let src = "#[derive(Eq, core.Show)] data Top(a) = Top(a);\n\
+contract C { #[derive(pkg.codec.Encode)] data Local; }";
+    let (file, module) = parse_module(&db, "derive-attributes", src);
+    let diagnostics = diagnostics(&db, file);
+    assert!(
+        diagnostics.is_empty(),
+        "unexpected diagnostics: {diagnostics:#?}"
+    );
+
+    let top = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::AdtDef(adt) => Some(*adt),
+            _ => None,
+        })
+        .expect("top-level derived ADT");
+    let contract = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ContractDef(contract) => Some(*contract),
+            _ => None,
+        })
+        .expect("contract");
+    let local = contract
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            ContractItem::AdtDef(adt) => Some(*adt),
+            _ => None,
+        })
+        .expect("contract-local derived ADT");
+
+    let top_targets = top
+        .derives(&db)
+        .iter()
+        .map(|target| (*target.atom()).text(&db))
+        .collect::<Vec<_>>();
+    assert_eq!(top_targets, ["Eq", "core.Show"]);
+    assert_eq!(
+        local
+            .derives(&db)
+            .iter()
+            .map(|target| (*target.atom()).text(&db))
+            .collect::<Vec<_>>(),
+        ["pkg.codec.Encode"]
+    );
+
+    let assert_span = |span: hir::span::Span<'_>, expected: &str| {
+        let absolute = span.resolve_to_absolute(&db);
+        let start = src.find(expected).expect("expected source fragment") as u32;
+        assert_eq!(absolute.start().as_u32(), start);
+        assert_eq!(absolute.end().as_u32(), start + expected.len() as u32);
+    };
+    assert_span(
+        top.derive_attr_span(&db)
+            .expect("top derive attribute span"),
+        "#[derive(Eq, core.Show)]",
+    );
+    assert_span(top.derives(&db)[0].span(&db), "Eq");
+    assert_span(top.derives(&db)[1].span(&db), "core.Show");
+    assert_span(
+        local
+            .derive_attr_span(&db)
+            .expect("local derive attribute span"),
+        "#[derive(pkg.codec.Encode)]",
+    );
+    assert_span(local.derives(&db)[0].span(&db), "pkg.codec.Encode");
+}
+
+#[test]
+fn invalid_derive_attributes_diagnose_and_keep_following_declarations() {
+    let db = TestDb::default();
+    let src = r#"
+#[derive()] data Empty;
+#[derive(Eq,)] data Malformed;
+#[derive(Eq)] function kept() {}
+data After;
+contract C {
+  #[derive(Eq)] field: word;
+  #[derive(Eq)] function nested() {}
+  #[derive()] data EmptyLocal;
+  data AfterLocal;
+}
+"#;
+    let (file, module) = parse_module(&db, "invalid-derive-attributes", src);
+    let messages = diagnostics(&db, file)
+        .into_iter()
+        .map(|diagnostic| diagnostic.message)
+        .collect::<Vec<_>>();
+    assert_eq!(messages.len(), 6, "unexpected diagnostics: {messages:#?}");
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                message.as_str() == "derive attribute requires at least one class path"
+            })
+            .count(),
+        2
+    );
+    assert!(messages.iter().any(|message| {
+        message == "malformed derive attribute; expected `#[derive(Class, ...)]`"
+    }));
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                message.as_str() == "derive attribute is only allowed on data declarations"
+            })
+            .count(),
+        3
+    );
+
+    assert!(top_function(&db, module, "kept").body(&db).is_some());
+    let contract = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ContractDef(contract) => Some(*contract),
+            _ => None,
+        })
+        .expect("contract");
+    assert_eq!(contract.fields(&db).len(), 1);
+    assert!(contract_function(&db, module, "nested").body(&db).is_some());
+    assert_eq!(
+        module
+            .items(&db)
+            .iter()
+            .filter(|item| matches!(item, Item::AdtDef(_)))
+            .count(),
+        3
+    );
+    assert_eq!(
+        contract
+            .items(&db)
+            .iter()
+            .filter(|item| matches!(item, ContractItem::AdtDef(_)))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn unclosed_derive_attribute_recovers_at_the_next_declaration() {
+    let db = TestDb::default();
+    let src = "#[derive(Eq)\ndata Recovered;\nfunction after() {}";
+    let (file, module) = parse_module(&db, "unclosed-derive-attribute", src);
+    assert!(!diagnostics(&db, file).is_empty());
+    assert_eq!(
+        module
+            .items(&db)
+            .iter()
+            .filter(|item| matches!(item, Item::AdtDef(_)))
+            .count(),
+        1
+    );
+    assert!(top_function(&db, module, "after").body(&db).is_some());
+}
+
+#[test]
+fn recovery_before_derive_preserves_top_level_and_contract_local_attributes() {
+    let db = TestDb::default();
+    let src = r#"
+@ stray
+#[derive(Eq)] data Top;
+contract C {
+  @ stray
+  #[derive(Ord)] data Local;
+}
+"#;
+    let (file, module) = parse_module(&db, "recovery-before-derive", src);
+    assert!(!diagnostics(&db, file).is_empty());
+
+    let top = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::AdtDef(adt) => Some(*adt),
+            _ => None,
+        })
+        .expect("top-level derived ADT after recovery");
+    assert_eq!(
+        top.derives(&db)
+            .iter()
+            .map(|target| (*target.atom()).text(&db))
+            .collect::<Vec<_>>(),
+        ["Eq"]
+    );
+
+    let contract = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ContractDef(contract) => Some(*contract),
+            _ => None,
+        })
+        .expect("contract");
+    let local = contract
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            ContractItem::AdtDef(adt) => Some(*adt),
+            _ => None,
+        })
+        .expect("contract-local derived ADT after recovery");
+    assert_eq!(
+        local
+            .derives(&db)
+            .iter()
+            .map(|target| (*target.atom()).text(&db))
+            .collect::<Vec<_>>(),
+        ["Ord"]
+    );
+}
+
+#[test]
+fn derive_remains_an_ordinary_identifier_outside_attributes() {
+    let db = TestDb::default();
+    let src = "data derive; function derive() -> derive { return derive; }";
+    let (file, module) = parse_module(&db, "derive-soft-keyword", src);
+    assert!(diagnostics(&db, file).is_empty());
+    assert!(module.items(&db).iter().any(|item| {
+        matches!(item, Item::AdtDef(adt) if (*adt.name(&db).atom()).text(&db) == "derive")
+    }));
+    assert!(top_function(&db, module, "derive").body(&db).is_some());
+}
+
+#[test]
+fn unclosed_derive_does_not_consume_later_declarations_or_contract_fields() {
+    let db = TestDb::default();
+    let src = r#"
+#[derive(Eq)
+function kept() {}
+]
+data After;
+contract C {
+  #[derive(Eq)
+  slot: word;
+  function nested() {}
+}
+"#;
+    let (file, module) = parse_module(&db, "derive-unclosed-boundaries", src);
+    assert!(!diagnostics(&db, file).is_empty());
+    assert!(top_function(&db, module, "kept").body(&db).is_some());
+    assert!(module.items(&db).iter().any(|item| {
+        matches!(item, Item::AdtDef(adt) if (*adt.name(&db).atom()).text(&db) == "After")
+    }));
+
+    let contract = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ContractDef(contract) => Some(*contract),
+            _ => None,
+        })
+        .expect("contract");
+    assert_eq!(contract.fields(&db).len(), 1);
+    assert!(contract_function(&db, module, "nested").body(&db).is_some());
+}
+
+#[test]
+fn derive_targets_reject_reserved_identifiers() {
+    let db = TestDb::default();
+    let src = "#[derive(fallback)] data Kept;";
+    let (file, module) = parse_module(&db, "derive-reserved-target", src);
+    assert!(!diagnostics(&db, file).is_empty());
+    module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::AdtDef(adt) => Some(*adt),
+            _ => None,
+        })
+        .expect("data declaration survives malformed attribute");
 }

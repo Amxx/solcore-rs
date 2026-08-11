@@ -1,22 +1,43 @@
 use hir::span::Span;
-use hir_ty::{BuiltinTyCtor, Db, Ty, TyCtor, TyKind};
+use hir_ty::{BuiltinTyCtor, Db, Ty, TyCtor, TyKind, UserTyCtorKind, is_canonical_std_def_named};
 
-use super::core::Evaluator;
+use super::{core::Evaluator, known::known_string};
 use crate::{
     ir::{
-        MonoCallOrigin, MonoExpr, MonoExprKind, MonoFunction, MonoItem, MonoModule, MonoParam,
-        MonoPat, MonoPatKind, MonoStmt, MonoStmtKind,
+        MonoCallOrigin, MonoExpr, MonoExprKind, MonoFunction, MonoIntrinsic, MonoItem, MonoModule,
+        MonoParam, MonoPat, MonoPatKind, MonoStmt, MonoStmtKind,
         visit::{Visitor, walk_expr, walk_pat, walk_stmt},
     },
     specialize::{SpecializeDiagnostic, SpecializeDiagnosticKind, display_backend_ty},
 };
 
 pub(super) fn param_is_comptime<'db>(db: &'db dyn Db, param: &MonoParam<'db>) -> bool {
-    param.mode.is_comptime() || ty_is_comptime(db, param.ty.ty())
+    param.mode.is_comptime()
+        || ty_is_comptime(db, param.ty.ty())
+        || ty_is_comptime_string(db, param.ty.ty())
 }
 
 pub(super) fn ty_is_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
     matches!(ty.kind(db), TyKind::Comptime(_))
+}
+
+pub(super) fn ty_is_comptime_string<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let ty = strip_comptime(db, ty);
+    match ty.kind(db) {
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::String),
+            args,
+        } => args.is_empty(),
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } => {
+            args.is_empty()
+                && matches!(user.kind, UserTyCtorKind::Adt)
+                && is_canonical_std_def_named(db, user.def, "string")
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn display_mono_function_name<'db>(
@@ -79,12 +100,31 @@ pub(super) fn ty_is_builtin<'db>(db: &'db dyn Db, ty: Ty<'db>, builtin: BuiltinT
 }
 
 fn ty_needs_erasure<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    if ty_is_comptime_string(db, ty) {
+        return true;
+    }
     match ty.kind(db) {
         TyKind::Comptime(_) => true,
         TyKind::Named {
             ctor: TyCtor::Builtin(BuiltinTyCtor::Integer),
             args,
         } if args.is_empty() => true,
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } if matches!(user.kind, UserTyCtorKind::Adt)
+            && args.len() == 1
+            && is_canonical_std_def_named(db, user.def, "Proxy") =>
+        {
+            // Proxy is a zero-slot, type-only witness. Its payload is never a
+            // runtime value, so source-only types nested below it do not need
+            // integer/comptime-string erasure.
+            false
+        }
+        TyKind::Named {
+            ctor: TyCtor::User(user),
+            args,
+        } if is_runtime_string_location(db, user.def, args) => false,
         TyKind::Named { args, .. } => args.iter().any(|arg| ty_needs_erasure(db, *arg)),
         TyKind::Function { params, ret } => {
             params.iter().any(|param| ty_needs_erasure(db, *param)) || ty_needs_erasure(db, *ret)
@@ -94,10 +134,60 @@ fn ty_needs_erasure<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
     }
 }
 
-fn strip_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
+fn is_runtime_string_location<'db>(
+    db: &'db dyn Db,
+    def: hir::anchor::DefId<'db>,
+    args: &[Ty<'db>],
+) -> bool {
+    if args.len() != 1 {
+        return false;
+    }
+    let Some(name) = def.name(db) else {
+        return false;
+    };
+    if name == "storage" && is_canonical_std_def_named(db, def, "storage") {
+        // Every storage reference has a one-word runtime representation. Its
+        // payload is a layout tag and may recursively contain the source-only
+        // `string` tag (for example storage(array(string))). Do not treat that
+        // nested tag as a runtime comptime-string value.
+        return true;
+    }
+    ty_is_comptime_string(db, args[0])
+        && matches!(name.as_str(), "memory" | "calldata" | "returndata")
+        && is_canonical_std_def_named(db, def, &name)
+}
+
+pub(super) fn strip_comptime<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
     match ty.kind(db) {
         TyKind::Comptime(inner) => strip_comptime(db, *inner),
         _ => ty,
+    }
+}
+
+pub(super) fn erase_comptime_ty<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Ty<'db> {
+    match ty.kind(db) {
+        TyKind::Comptime(inner) => erase_comptime_ty(db, *inner),
+        TyKind::Named { ctor, args } => Ty::named(
+            db,
+            *ctor,
+            args.iter().map(|arg| erase_comptime_ty(db, *arg)).collect(),
+        ),
+        TyKind::Function { params, ret } => Ty::function(
+            db,
+            params
+                .iter()
+                .map(|param| erase_comptime_ty(db, *param))
+                .collect(),
+            erase_comptime_ty(db, *ret),
+        ),
+        TyKind::Tuple(elems) => Ty::tuple(
+            db,
+            elems
+                .iter()
+                .map(|elem| erase_comptime_ty(db, *elem))
+                .collect(),
+        ),
+        TyKind::Error | TyKind::Unknown | TyKind::BoundVar(_) => ty,
     }
 }
 
@@ -193,7 +283,20 @@ impl<'db> Visitor<'db> for Evaluator<'db> {
                     Some(expr.span),
                 );
             }
-            MonoExprKind::Call { callee, origin, .. } => {
+            MonoExprKind::Call {
+                callee,
+                args,
+                origin,
+            } => {
+                if matches!(
+                    origin,
+                    MonoCallOrigin::Builtin(
+                        MonoIntrinsic::MemStringFromLit | MonoIntrinsic::RevertLit
+                    )
+                ) && matches!(args.as_slice(), [arg] if known_string(arg).is_some())
+                {
+                    return;
+                }
                 if self.check_erasure_ty(
                     format!(
                         "call to `{}`",
@@ -216,9 +319,7 @@ impl<'db> Visitor<'db> for Evaluator<'db> {
                 }
                 walk_expr(self, expr);
             }
-            MonoExprKind::Proxy(ty) => {
-                self.check_erasure_ty("proxy", ty.ty(), Some(expr.span));
-            }
+            MonoExprKind::Proxy(_) => {}
             MonoExprKind::TypeAnnot { expr: inner, ty } => {
                 self.visit_expr(inner);
                 self.check_erasure_ty("type annotation", ty.ty(), Some(expr.span));

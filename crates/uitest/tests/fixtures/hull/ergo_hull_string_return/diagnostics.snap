@@ -3,11 +3,15 @@ source: crates/test-utils/src/lib.rs
 expression: rendered
 input_file: crates/uitest/tests/fixtures/hull/ergo_hull_string_return/main.solc
 ---
-error[SC0421]: cannot lower literal `"42"` to Hull
- --> /main/main.solc:5:12
+error[SC0411]: runtime lowering cannot represent `string` in return type of `main`
+ --> /main/main.solc:4:3
   |
-4 |   public function main() {
-5 |     return "42";
-  |            ^^^^ unsupported literal
-6 |   }
+3 |   contract Answer {
+4 | /   public function main() {
+5 | |     return "42";
+6 | |   }
+  | |___^ not representable at runtime
+7 |   }
   |
+  = note: `integer`, `string`, and `comptime` values must be eliminated before runtime lowering
+  = note: help: evaluate the value at comptime or change it to a runtime-representable type

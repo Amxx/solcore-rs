@@ -20,6 +20,15 @@ pub(super) struct Driver<'db> {
     pub(super) synthetic: FxHashMap<SyntheticKey<'db>, String>,
     pub(super) synthetic_order: Vec<SyntheticKey<'db>>,
     pub(super) synthetic_funs: FxHashMap<SyntheticKey<'db>, MonoFunction<'db>>,
+    pub(super) derived_storages: FxHashMap<DerivedStorageKey<'db>, String>,
+    pub(super) derived_storage_order: Vec<DerivedStorageKey<'db>>,
+    pub(super) derived_storage_funs: FxHashMap<DerivedStorageKey<'db>, MonoFunction<'db>>,
+    pub(super) derived_abis: FxHashMap<DerivedAbiKey<'db>, String>,
+    pub(super) derived_abi_order: Vec<DerivedAbiKey<'db>>,
+    pub(super) derived_abi_funs: FxHashMap<DerivedAbiKey<'db>, MonoFunction<'db>>,
+    pub(super) derived_classes: FxHashMap<DerivedClassKey<'db>, String>,
+    pub(super) derived_class_order: Vec<DerivedClassKey<'db>>,
+    pub(super) derived_class_funs: FxHashMap<DerivedClassKey<'db>, MonoFunction<'db>>,
     pub(super) queue: VecDeque<PendingSpec<'db>>,
     pub(super) dispatch_selector_overrides: Vec<(String, String)>,
     pub(super) diagnostics: Vec<SpecializeDiagnostic<'db>>,
@@ -69,6 +78,7 @@ pub(super) struct SpecKey<'db> {
     pub(super) ty: Ty<'db>,
     pub(super) base_name: String,
     pub(super) origin: MonoFunctionOrigin<'db>,
+    pub(super) evidence_bindings: Vec<(Pred<'db>, Evidence<'db>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -77,6 +87,53 @@ pub(super) struct SyntheticKey<'db> {
     pub(super) method: String,
     pub(super) main: Ty<'db>,
     pub(super) rep: Ty<'db>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct DerivedClassKey<'db> {
+    pub(super) adt: DefId<'db>,
+    pub(super) class: DefId<'db>,
+    pub(super) target_index: u32,
+    pub(super) method: String,
+    pub(super) main: Ty<'db>,
+    pub(super) target_ty: Ty<'db>,
+    pub(super) sub_evidence: Vec<Evidence<'db>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum DerivedAbiFamily {
+    Attribs,
+    Decode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct DerivedAbiKey<'db> {
+    pub(super) adt: DefId<'db>,
+    pub(super) family: DerivedAbiFamily,
+    /// `WordReader` context class for ABIDecode; absent for ABIAttribs.
+    pub(super) word_reader: Option<DefId<'db>>,
+    pub(super) method: String,
+    pub(super) pred: Pred<'db>,
+    pub(super) target_ty: Ty<'db>,
+    pub(super) sub_evidence: Vec<Evidence<'db>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum DerivedStorageFamily {
+    Size,
+    CanStore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct DerivedStorageKey<'db> {
+    pub(super) adt: DefId<'db>,
+    pub(super) family: DerivedStorageFamily,
+    /// `StorageSize` context class for CanStore; absent for StorageSize itself.
+    pub(super) storage_size: Option<DefId<'db>>,
+    pub(super) method: String,
+    pub(super) pred: Pred<'db>,
+    pub(super) target_ty: Ty<'db>,
+    pub(super) sub_evidence: Vec<Evidence<'db>>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +179,15 @@ impl<'db> Driver<'db> {
             synthetic: FxHashMap::default(),
             synthetic_order: Vec::new(),
             synthetic_funs: FxHashMap::default(),
+            derived_storages: FxHashMap::default(),
+            derived_storage_order: Vec::new(),
+            derived_storage_funs: FxHashMap::default(),
+            derived_abis: FxHashMap::default(),
+            derived_abi_order: Vec::new(),
+            derived_abi_funs: FxHashMap::default(),
+            derived_classes: FxHashMap::default(),
+            derived_class_order: Vec::new(),
+            derived_class_funs: FxHashMap::default(),
             queue: VecDeque::new(),
             dispatch_selector_overrides: Vec::new(),
             diagnostics: Vec::new(),
@@ -158,6 +224,21 @@ impl<'db> Driver<'db> {
         }
         for key in &self.synthetic_order {
             if let Some(fun) = self.synthetic_funs.get(key) {
+                items.push(MonoItem::Function(fun.clone()));
+            }
+        }
+        for key in &self.derived_storage_order {
+            if let Some(fun) = self.derived_storage_funs.get(key) {
+                items.push(MonoItem::Function(fun.clone()));
+            }
+        }
+        for key in &self.derived_abi_order {
+            if let Some(fun) = self.derived_abi_funs.get(key) {
+                items.push(MonoItem::Function(fun.clone()));
+            }
+        }
+        for key in &self.derived_class_order {
+            if let Some(fun) = self.derived_class_funs.get(key) {
                 items.push(MonoItem::Function(fun.clone()));
             }
         }
@@ -431,10 +512,9 @@ impl<'db> Driver<'db> {
             {
                 for method in &surface.methods {
                     self.dispatch_selector_overrides.push((
-                        format!(
-                            "DispatchNameTy_{}_{}",
-                            ident_text(self.db, &contract.name_elem(self.db)),
-                            method.name
+                        contract_dispatch_name_type_name(
+                            &ident_text(self.db, &contract.name_elem(self.db)),
+                            &method.name,
                         ),
                         u32::from_be_bytes(method.selector.0).to_string(),
                     ));
@@ -592,6 +672,7 @@ impl<'db> Driver<'db> {
             ty,
             base_name: name,
             origin: MonoFunctionOrigin::Source,
+            evidence_bindings: Vec::new(),
         })
     }
 
@@ -709,6 +790,7 @@ impl<'db> Driver<'db> {
             body_map,
             pre_typeck_desugar,
             subst,
+            evidence_bindings: pending.key.evidence_bindings.clone(),
             depth: pending.depth,
             index,
             lowered_exprs: FxHashMap::default(),
@@ -863,10 +945,13 @@ impl<'db> Driver<'db> {
             "bxorWord" => Some(MonoIntrinsic::BxorWord),
             "bandWord" => Some(MonoIntrinsic::BandWord),
             "borWord" => Some(MonoIntrinsic::BorWord),
+            "bnotWord" => Some(MonoIntrinsic::BnotWord),
             "eqWord" => Some(MonoIntrinsic::PrimEqWord),
             "concatLit" => Some(MonoIntrinsic::ConcatLit),
             "strlenLit" => Some(MonoIntrinsic::StrlenLit),
             "keccakLit" => Some(MonoIntrinsic::KeccakLit),
+            "keccakWordLit" => Some(MonoIntrinsic::KeccakWordLit),
+            "revertLit" => Some(MonoIntrinsic::RevertLit),
             _ => None,
         }
     }
@@ -1085,9 +1170,15 @@ fn patch_runtime_dispatch_selectors(module: &mut MonoModule<'_>, selectors: &[(S
         if !function.name.starts_with("dispatch_selector_matches") {
             continue;
         }
-        let Some((_, selector)) = selectors
+        let Some((_, _, selector)) = selectors
             .iter()
-            .find(|(marker, _)| function.name.contains(marker))
+            .filter_map(|(marker, selector)| {
+                function
+                    .name
+                    .find(marker)
+                    .map(|position| (position, marker.len(), selector))
+            })
+            .min_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)))
         else {
             continue;
         };

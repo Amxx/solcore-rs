@@ -57,7 +57,10 @@ use crate::{
 const DEFAULT_SOLVER_FUEL: usize = 16_384;
 
 mod canonical;
+mod derived_abi;
+mod derived_class;
 mod derived_generic;
+mod derived_storage;
 mod display;
 mod engine;
 mod env;
@@ -70,12 +73,31 @@ mod soundness;
 use canonical::{
     GoalRenaming, RigidVar, TableKey, actualize_answer, canonicalize_goal, canonicalize_local_given,
 };
+use derived_abi::{
+    DerivedAbiClauseSource, push_derived_abi_clauses, resolved_abi_clause_source,
+    visible_abi_clause_source,
+};
+pub(crate) use derived_abi::{
+    definition_supports_derived_abi, ty_mentions_adt as derived_abi_rep_mentions_adt,
+};
+pub(crate) use derived_class::class_derivation_diagnostics;
+pub use derived_class::derived_class_plans;
+use derived_class::derived_class_plans_with_resolutions;
+use derived_class::derived_class_target_span;
 pub use derived_generic::{
     derived_generic_instance_plan, derived_generic_plan, generic_derivation_diagnostics,
 };
 use derived_generic::{
-    derived_generic_instance_plan_with_resolutions, imported_generic_class, local_adt_infos,
-    local_generic_class, visible_generic_class,
+    derived_generic_instance_plan_with_resolutions, derived_generic_plan_with_resolutions,
+    imported_generic_class, local_adt_infos, local_generic_class, visible_generic_class,
+};
+pub(crate) use derived_storage::{
+    DerivedCanStoreImplementationFailure, contract_field_storage_predicate,
+    derived_can_store_implementation_failure,
+};
+use derived_storage::{
+    DerivedStorageClauseSource, push_derived_storage_clauses, resolved_storage_clause_source,
+    visible_storage_clause_source,
 };
 use display::{display_scheme_source, display_vars};
 use engine::{Answer, TabledEngine};
@@ -124,6 +146,11 @@ pub struct ModuleTraitEnvSource<'db> {
     pub instance_origins: Vec<nameres::Origin<'db>>,
     /// Local source for derived `Generic` clauses, when `Generic` is visible.
     pub derived_generic: Option<DerivedGenericClauseSource<'db>>,
+    /// Consumer module whose instance-visible imported modules contribute
+    /// definition-side compiler-derived instances.
+    pub derived_generic_imports: ModuleId<'db>,
+    /// Instance-visible modules whose ADTs contribute derived class clauses.
+    pub derived_class_modules: Vec<ModuleId<'db>>,
 }
 
 /// Stable source of synthesized `Generic` clauses.
@@ -133,6 +160,10 @@ pub struct DerivedGenericClauseSource<'db> {
     pub module: ModuleId<'db>,
     /// Visible `Generic` class definition.
     pub generic: DefId<'db>,
+    /// ABI marker and support definitions visible beside `Generic`.
+    abi: Option<DerivedAbiClauseSource<'db>>,
+    /// Storage marker and support definitions visible beside `Generic`.
+    storage: Option<DerivedStorageClauseSource<'db>>,
 }
 
 /// Source layout for a base trait environment.
@@ -216,8 +247,60 @@ pub enum DerivedClauseKind<'db> {
         /// ADT whose `Generic` instance was synthesized.
         adt: DefId<'db>,
     },
+    /// Concrete `T:ABIAttribs` instance backed by `T`'s Generic representation.
+    AbiAttribs {
+        /// ADT whose ABI metadata instance was synthesized.
+        adt: DefId<'db>,
+    },
+    /// Concrete `ABIDecoder(T, reader):ABIDecode(T)` instance.
+    AbiDecode {
+        /// ADT whose decoder instance was synthesized.
+        adt: DefId<'db>,
+        /// `WordReader` class used by the synthesized instance context.
+        word_reader: DefId<'db>,
+    },
+    /// Concrete `T:StorageSize` instance backed by `T`'s Generic representation.
+    StorageSize {
+        /// ADT whose storage-size instance was synthesized.
+        adt: DefId<'db>,
+    },
+    /// Concrete `storage(T):CanStore(T)` instance.
+    CanStore {
+        /// ADT whose storage instance was synthesized.
+        adt: DefId<'db>,
+        /// `StorageSize` class used by the synthesized instance context.
+        storage_size: DefId<'db>,
+    },
+    /// Class instance requested by an ADT `derive` attribute.
+    Class {
+        /// ADT whose class instance was synthesized.
+        adt: DefId<'db>,
+        /// Derived class definition.
+        class: DefId<'db>,
+        /// Target index in the source attribute, preserving duplicates.
+        target_index: u32,
+    },
     /// Lambda closure `invokable` instance.
     Closure,
+}
+
+/// Solver-facing plan for one class requested by an ADT `derive` attribute.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
+pub struct DerivedClassPlan<'db> {
+    /// ADT whose instance is synthesized.
+    pub adt: DefId<'db>,
+    /// Derived class definition.
+    pub class: DefId<'db>,
+    /// Target index in source order.
+    pub target_index: u32,
+    /// Number of type binders in the synthesized clause.
+    pub binder_count: u32,
+    /// Synthesized instance head.
+    pub head: Pred<'db>,
+    /// Class constraints placed on every ADT type parameter.
+    pub conditions: Vec<Pred<'db>>,
+    /// Whether the ADT has no constructors and will use `absurd` methods.
+    pub empty: bool,
 }
 
 /// Queryable plan for an automatically derived `Generic` instance.

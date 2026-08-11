@@ -14,4 +14,5 @@ rustc-hash = { workspace = true }
 
 [dev-dependencies]
 salsa = { workspace = true }
+solcore-test-utils = { path = "../test-utils" }
 url = { workspace = true }

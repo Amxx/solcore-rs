@@ -179,6 +179,12 @@ pub enum Token<'a> {
     /// `-=`.
     #[token("-=")]
     MinusEq,
+    /// `*=`.
+    #[token("*=")]
+    StarEq,
+    /// `/=`.
+    #[token("/=")]
+    SlashEq,
     /// `^=`.
     #[token("^=")]
     CaretEq,
@@ -191,6 +197,9 @@ pub enum Token<'a> {
     /// `%=`.
     #[token("%=")]
     PercentEq,
+    /// `~=`.
+    #[token("~=")]
+    TildeEq,
 
     /// `+`.
     #[token("+")]
@@ -210,6 +219,9 @@ pub enum Token<'a> {
     /// `!`.
     #[token("!")]
     Bang,
+    /// `~`.
+    #[token("~")]
+    Tilde,
     /// `<`.
     #[token("<")]
     Less,
@@ -234,6 +246,9 @@ pub enum Token<'a> {
     /// `?`.
     #[token("?")]
     Question,
+    /// `#`.
+    #[token("#")]
+    Hash,
 
     /// `.`.
     #[token(".")]
@@ -382,6 +397,7 @@ mod tests {
         assert_eq!(tokenize("as"), vec![Token::As]);
         assert_eq!(tokenize("let"), vec![Token::Let]);
         assert_eq!(tokenize("data"), vec![Token::Data]);
+        assert_eq!(tokenize("derive"), vec![Token::Ident("derive")]);
         assert_eq!(tokenize("class"), vec![Token::Class]);
         assert_eq!(tokenize("forall"), vec![Token::Forall]);
         assert_eq!(tokenize("instance"), vec![Token::Instance]);
@@ -423,10 +439,13 @@ mod tests {
         assert_eq!(tokenize("||"), vec![Token::OrOr]);
         assert_eq!(tokenize("+="), vec![Token::PlusEq]);
         assert_eq!(tokenize("-="), vec![Token::MinusEq]);
+        assert_eq!(tokenize("*="), vec![Token::StarEq]);
+        assert_eq!(tokenize("/="), vec![Token::SlashEq]);
         assert_eq!(tokenize("^="), vec![Token::CaretEq]);
         assert_eq!(tokenize("&="), vec![Token::AmpEq]);
         assert_eq!(tokenize("|="), vec![Token::PipeEq]);
         assert_eq!(tokenize("%="), vec![Token::PercentEq]);
+        assert_eq!(tokenize("~="), vec![Token::TildeEq]);
     }
 
     #[test]
@@ -437,6 +456,7 @@ mod tests {
         assert_eq!(tokenize("/"), vec![Token::Slash]);
         assert_eq!(tokenize("%"), vec![Token::Percent]);
         assert_eq!(tokenize("!"), vec![Token::Bang]);
+        assert_eq!(tokenize("~"), vec![Token::Tilde]);
         assert_eq!(tokenize("<"), vec![Token::Less]);
         assert_eq!(tokenize(">"), vec![Token::Greater]);
         assert_eq!(tokenize("="), vec![Token::Eq]);
@@ -458,6 +478,7 @@ mod tests {
         assert_eq!(tokenize("}"), vec![Token::RBrace]);
         assert_eq!(tokenize("["), vec![Token::LBracket]);
         assert_eq!(tokenize("]"), vec![Token::RBracket]);
+        assert_eq!(tokenize("#"), vec![Token::Hash]);
         assert_eq!(tokenize("_"), vec![Token::Underscore]);
     }
 

@@ -8,6 +8,7 @@ pub(super) struct BodyCtx<'a, 'db> {
     pub(super) body_map: hir_nameres::BodyResolutionMap<'db>,
     pub(super) pre_typeck_desugar: Vec<BodyPreTypeckDesugarPlan<'db>>,
     pub(super) subst: TySubst<'db>,
+    pub(super) evidence_bindings: Vec<(Pred<'db>, Evidence<'db>)>,
     pub(super) depth: usize,
     pub(super) index: Arc<BodyIndex<'db>>,
     pub(super) lowered_exprs: FxHashMap<Id<Expr<'db>>, MonoExpr<'db>>,
@@ -23,6 +24,7 @@ pub(super) struct BodyIndex<'db> {
     call_evidence: FxHashMap<(FuncBody<'db>, Id<Expr<'db>>, Id<Expr<'db>>), CallSiteEvidence<'db>>,
     class_method_value_evidence:
         FxHashMap<(FuncBody<'db>, Id<Expr<'db>>, DefId<'db>), Evidence<'db>>,
+    string_coercion_evidence: FxHashMap<(FuncBody<'db>, Id<Expr<'db>>), Evidence<'db>>,
     first_builtin_int_evidence: Option<CallSiteEvidence<'db>>,
     comptime_let_stmts: FxHashSet<(FuncBody<'db>, Id<Stmt<'db>>)>,
     comptime_obligations: FxHashMap<FuncBody<'db>, Vec<ComptimeObligation<'db>>>,
@@ -42,6 +44,7 @@ impl<'db> BodyIndex<'db> {
             pat_resolutions: FxHashMap::default(),
             call_evidence: FxHashMap::default(),
             class_method_value_evidence: FxHashMap::default(),
+            string_coercion_evidence: FxHashMap::default(),
             first_builtin_int_evidence: None,
             comptime_let_stmts: FxHashSet::default(),
             comptime_obligations: FxHashMap::default(),
@@ -106,6 +109,13 @@ impl<'db> BodyIndex<'db> {
             let Some(obligation) = result.obligations.get(solved.obligation) else {
                 continue;
             };
+            if let hir_ty::ObligationSource::StringCoercion { body, expr } = obligation.source {
+                index
+                    .string_coercion_evidence
+                    .entry((body, expr))
+                    .or_insert_with(|| solved.evidence.clone());
+                continue;
+            }
             let hir_ty::ObligationSource::ClassMethod { body, expr } = obligation.source else {
                 continue;
             };
@@ -244,6 +254,11 @@ pub(super) struct BinOpExpr<'db> {
 }
 
 impl<'a, 'db> BodyCtx<'a, 'db> {
+    pub(super) fn specialize_evidence(&self, evidence: Evidence<'db>) -> Evidence<'db> {
+        let evidence = self.subst.apply_evidence(self.driver.db, evidence);
+        replay_evidence_bindings(evidence, &self.evidence_bindings)
+    }
+
     pub(super) fn stmt(&mut self, stmt_id: Id<Stmt<'db>>) -> Option<MonoStmt<'db>> {
         let stmt = self.body.stmts(self.driver.db).get(stmt_id);
         let span = stmt.span;
@@ -270,6 +285,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                     .or_else(|| init.and_then(|expr| self.expr_ty(expr)).or(annotation_ty))
                     .map(|ty| self.subst.apply_ty(self.driver.db, ty))
                     .unwrap_or_else(|| Ty::unknown(self.driver.db));
+                let sem_ty = self.normalize_body_ty(sem_ty);
                 let id = MonoId {
                     name: ident_text(self.driver.db, name),
                     ty: self.driver.mono_ty(sem_ty, "let binding", span)?,
@@ -300,6 +316,44 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                 None => None,
             }),
             StmtKind::Expr(expr) => MonoStmtKind::Expr(self.expr(*expr)?),
+            StmtKind::Assign { op, lhs, rhs }
+                if *op == hir::ast::function::AssignOp::Plain
+                    && self.is_storage_index_lhs(*lhs) =>
+            {
+                MonoStmtKind::Block(self.storage_index_store(*lhs, *rhs, span)?)
+            }
+            StmtKind::Assign { op, lhs, rhs } if self.is_storage_index_lhs(*lhs) => {
+                let ExprKind::Index { base, index } =
+                    &self.body.exprs(self.driver.db).get(*lhs).kind
+                else {
+                    unreachable!("storage index lhs was checked above")
+                };
+                let result_ty = self.expr_ty(*lhs)?;
+                MonoStmtKind::Assign {
+                    op: *op,
+                    // Compound storage assignments deliberately retain the
+                    // raw indexed-value form. Hull recognizes it as an
+                    // lvalue, evaluates the checked slot once, then performs
+                    // the load/operator/store sequence. Plain assignment is
+                    // routed through CanStore above so strings and nested
+                    // collections keep their storage representation.
+                    lhs: self.storage_index_value(*base, *index, result_ty, span)?,
+                    rhs: self.expr(*rhs)?,
+                }
+            }
+            StmtKind::Assign { op, lhs, rhs }
+                if *op == hir::ast::function::AssignOp::Plain
+                    && self.contract_field_resolution(*lhs).is_some()
+                    && self.has_any_canonical_contract_field_access_support() =>
+            {
+                MonoStmtKind::Block(self.contract_field_store(*lhs, *rhs, span)?)
+            }
+            StmtKind::Assign { op, lhs, rhs }
+                if *op == hir::ast::function::AssignOp::Plain
+                    && self.is_storage_array_field(*lhs) =>
+            {
+                MonoStmtKind::Expr(self.storage_array_field_assign(*lhs, *rhs, span)?)
+            }
             StmtKind::Assign { op, lhs, rhs } => MonoStmtKind::Assign {
                 op: *op,
                 lhs: self.expr(*lhs)?,
@@ -375,7 +429,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             .expr_ty(expr_id)
             .map(|ty| self.subst.apply_ty(self.driver.db, ty))
             .unwrap_or_else(|| Ty::unknown(self.driver.db));
-        if matches!(ty.kind(self.driver.db), TyKind::Unknown)
+        if matches!(ty.kind(self.driver.db), TyKind::Unknown | TyKind::Error)
             && let ExprKind::Ident(name) = &expr.kind
             && let Some(local_ty) = self.locals.get(ident_text(self.driver.db, name).as_str())
         {
@@ -409,7 +463,48 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         {
             ty = closed;
         }
+        ty = self.normalize_body_ty(ty);
         let mono_ty = self.driver.mono_ty(ty, "expression", expr.span)?;
+        if let Some(evidence) = self.string_coercion_evidence(expr_id) {
+            let source_ty = self.source_string_ty();
+            let source_mono_ty =
+                self.driver
+                    .mono_ty(source_ty, "string literal source", expr.span)?;
+            let source_kind = match &expr.kind {
+                ExprKind::Lit(LitKind::String(value)) => {
+                    MonoExprKind::Lit(LitKind::String(value.clone()))
+                }
+                ExprKind::Call { callee, args } => {
+                    self.call_expr(expr_id, *callee, args, source_ty, expr.span)?
+                }
+                _ => MonoExprKind::Error,
+            };
+            let source = MonoExpr {
+                span: expr.span,
+                ty: source_mono_ty,
+                kind: source_kind,
+            };
+            let evidence = self.specialize_evidence(evidence);
+            let kind = self.str_from_string_call(vec![source], ty, expr.span, Some(evidence))?;
+            let mono_expr = MonoExpr {
+                span: expr.span,
+                ty: mono_ty,
+                kind,
+            };
+            self.lowered_exprs.insert(expr_id, mono_expr.clone());
+            return Some(mono_expr);
+        }
+        if let Some(hir_nameres::Resolution::Field(field)) = self.expr_resolution(expr_id)
+            && self.has_any_canonical_contract_field_access_support()
+        {
+            if !self.has_canonical_contract_field_read_access() {
+                self.push_missing_contract_field_support("field read", expr.span);
+                return None;
+            }
+            let mono_expr = self.contract_field_load(field, ty, expr.span)?;
+            self.lowered_exprs.insert(expr_id, mono_expr.clone());
+            return Some(mono_expr);
+        }
         if let Some(kind) = self.bool_expr_kind(expr_id, mono_ty, expr.span) {
             let mono_expr = MonoExpr {
                 span: expr.span,
@@ -423,6 +518,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             ExprKind::Lit(lit) => MonoExprKind::Lit(lit.clone()),
             ExprKind::Ident(name) => self.ident_expr(expr_id, name, mono_ty, expr.span),
             ExprKind::Tuple(elems) => self.tuple_expr(expr_id, elems, ty, expr.span)?.kind,
+            ExprKind::Array(elems) => self.array_lit_expr(elems, ty, expr.span)?.kind,
             ExprKind::Call { callee, args } => {
                 self.call_expr(expr_id, *callee, args, ty, expr.span)?
             }
@@ -454,7 +550,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
                         hir_nameres::Resolution::ClassMethod { class, name } => {
                             let evidence = self
                                 .class_method_value_evidence(expr_id, class)
-                                .map(|evidence| self.subst.apply_evidence(self.driver.db, evidence))
+                                .map(|evidence| self.specialize_evidence(evidence))
                                 .or_else(|| {
                                     self.driver.solve_class_method_pred(
                                         class,
@@ -525,10 +621,16 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             }
             ExprKind::Index { base, index } => {
                 if self.is_storage_index_expr(*base) {
-                    MonoExprKind::StorageIndex {
-                        base: Box::new(self.expr(*base)?),
-                        index: Box::new(self.expr(*index)?),
+                    if ty_is_storage_collection(self.driver.db, ty) {
+                        self.storage_index_ref(*base, *index, expr.span)?.kind
+                    } else {
+                        self.storage_index_load(*base, *index, ty, expr.span)?.kind
                     }
+                } else if self.is_memory_array_expr(*base) {
+                    self.memory_array_index(*base, *index, ty, expr.span)?.kind
+                } else if self.is_calldata_array_expr(*base) {
+                    self.calldata_array_index(expr_id, *base, *index, ty, expr.span)?
+                        .kind
                 } else {
                     MonoExprKind::Index {
                         base: Box::new(self.expr(*base)?),
@@ -671,7 +773,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         let mut locals = self.locals.clone();
         let mut mono_params = Vec::new();
         for (param, param_ty) in params.iter().zip(param_tys) {
-            let param_ty = self.subst.apply_ty(self.driver.db, *param_ty);
+            let param_ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, *param_ty));
             let name = param_name(self.driver.db, param).unwrap_or("_").to_owned();
             let mono_ty = self.driver.mono_ty(param_ty, "lambda parameter", span)?;
             locals.insert(name.clone(), param_ty);
@@ -702,6 +804,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             body_map,
             pre_typeck_desugar: self.pre_typeck_desugar.clone(),
             subst,
+            evidence_bindings: self.evidence_bindings.clone(),
             depth,
             index: Arc::clone(&self.index),
             lowered_exprs: FxHashMap::default(),
@@ -728,6 +831,7 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             .copied()
             .map(|ty| self.subst.apply_ty(self.driver.db, ty))
             .unwrap_or_else(|| Ty::unknown(self.driver.db));
+        let ty = self.normalize_body_ty(ty);
         let mono_ty = self.driver.mono_ty(ty, "pattern", pat.span)?;
         if let Some(kind) = self.bool_pat_kind(pat_id, mono_ty, pat.span) {
             return Some(MonoPat {
@@ -1070,6 +1174,12 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
     }
 
     fn is_storage_index_expr(&self, expr: Id<Expr<'db>>) -> bool {
+        if let Some(ty) = self.expr_ty(expr) {
+            let ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty));
+            if ty_is_storage_collection(self.driver.db, ty) {
+                return true;
+            }
+        }
         if matches!(
             self.expr_resolution(expr),
             Some(hir_nameres::Resolution::Field(_))
@@ -1152,6 +1262,32 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             .cloned()
     }
 
+    fn string_coercion_evidence(&self, expr: Id<Expr<'db>>) -> Option<Evidence<'db>> {
+        self.index
+            .string_coercion_evidence
+            .get(&(self.body, expr))
+            .cloned()
+    }
+
+    fn source_string_ty(&self) -> Ty<'db> {
+        self.driver
+            .adts
+            .keys()
+            .copied()
+            .find(|def| is_canonical_std_def_named(self.driver.db, *def, "string"))
+            .map(|def| {
+                Ty::named(
+                    self.driver.db,
+                    TyCtor::User(UserTyCtor {
+                        def,
+                        kind: UserTyCtorKind::Adt,
+                    }),
+                    Vec::new(),
+                )
+            })
+            .unwrap_or_else(|| Ty::string(self.driver.db))
+    }
+
     pub(super) fn invokable_call_main_ty(
         &self,
         call_expr: Id<Expr<'db>>,
@@ -1227,6 +1363,860 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         Some(normalizer.normalize_ty(lowerer.lower_type(ty)))
     }
 
+    fn normalize_body_ty(&self, ty: Ty<'db>) -> Ty<'db> {
+        let Some(resolution) = self.driver.try_module_resolution(self.info.module) else {
+            return ty;
+        };
+        AliasNormalizer::new(
+            self.driver.db,
+            self.info.module,
+            &resolution.item_resolutions,
+        )
+        .normalize_ty(ty)
+    }
+
+    fn array_lit_expr(
+        &mut self,
+        elems: &[Id<Expr<'db>>],
+        array_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let uint_ty = self.canonical_std_adt_ty("uint256", Vec::new())?;
+        let length = self.mono_number(elems.len(), uint_ty, span)?;
+        let mut array = self.synthetic_std_call("arrayLitNew", vec![length], array_ty, span)?;
+        for (index, elem) in elems.iter().enumerate() {
+            let value = self.expr(*elem)?;
+            let index = self.mono_number(index, uint_ty, span)?;
+            array =
+                self.synthetic_std_call("arrayLitInit", vec![array, index, value], array_ty, span)?;
+        }
+        Some(array)
+    }
+
+    fn contract_field_store(
+        &mut self,
+        lhs: Id<Expr<'db>>,
+        rhs: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<Vec<MonoStmt<'db>>> {
+        let field = self.contract_field_resolution(lhs)?;
+        let lhs_span = self.body.exprs(self.driver.db).get(lhs).span;
+        if !self.has_canonical_contract_field_ref_access() {
+            self.push_missing_contract_field_support("field write", lhs_span);
+            return None;
+        }
+        let rhs_is_literal = matches!(
+            &self.body.exprs(self.driver.db).get(rhs).kind,
+            ExprKind::Array(_)
+        );
+        if rhs_is_literal {
+            if !self.has_visible_canonical_term_def("storeArrayLit") {
+                self.push_missing_contract_field_support("array-literal field write", span);
+                return None;
+            }
+        } else if !self
+            .has_visible_canonical_type_def("Assign", hir_nameres::DefResolutionKind::Class)
+        {
+            self.push_missing_contract_field_support("field write", span);
+            return None;
+        }
+        let slot = self.contract_field_ref(field, lhs_span)?;
+        let slot_id = MonoId {
+            name: format!("$contract_field_slot_{}", span.begin().as_u32()),
+            ty: slot.ty,
+            span: lhs_span,
+        };
+        let slot_var = MonoExpr {
+            span: lhs_span,
+            ty: slot.ty,
+            kind: MonoExprKind::Var(slot_id.clone()),
+        };
+        let rhs = self.expr(rhs)?;
+        let unit = Ty::unit(self.driver.db);
+        let store = if rhs_is_literal {
+            self.synthetic_std_call("storeArrayLit", vec![slot_var.clone(), rhs], unit, span)?
+        } else {
+            self.resolved_contract_field_class_call(
+                "Assign",
+                "assign",
+                vec![slot_var.clone(), rhs],
+                unit,
+                span,
+            )?
+        };
+        Some(vec![
+            MonoStmt {
+                span,
+                kind: MonoStmtKind::Let {
+                    mode: LetMode::Runtime,
+                    id: slot_id,
+                    ty: Some(slot.ty),
+                    init: Some(slot),
+                },
+            },
+            MonoStmt {
+                span,
+                kind: MonoStmtKind::Expr(store),
+            },
+        ])
+    }
+
+    fn storage_array_field_assign(
+        &mut self,
+        lhs: Id<Expr<'db>>,
+        rhs: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let lhs = self.expr(lhs)?;
+        let rhs_is_literal = matches!(
+            &self.body.exprs(self.driver.db).get(rhs).kind,
+            ExprKind::Array(_)
+        );
+        let rhs = self.expr(rhs)?;
+        let unit = Ty::unit(self.driver.db);
+        if rhs_is_literal {
+            return self.synthetic_std_call("storeArrayLit", vec![lhs, rhs], unit, span);
+        }
+
+        let callee_ty = Ty::function(self.driver.db, vec![lhs.ty.ty(), rhs.ty.ty()], unit);
+        let mono_callee_ty = self
+            .driver
+            .mono_ty(callee_ty, "array assignment callee", span)?;
+        let evidence =
+            self.driver
+                .solve_operator_method_pred("Assign", "assign", callee_ty, Some(span));
+        let Some(name) = evidence.and_then(|evidence| {
+            self.driver
+                .resolve_class_method_call("assign", evidence, callee_ty, span, self.depth)
+        }) else {
+            self.driver.diagnostics.push(SpecializeDiagnostic {
+                kind: SpecializeDiagnosticKind::MissingEvidence {
+                    context: "storage array assignment".to_owned(),
+                },
+                span: Some(span),
+            });
+            return None;
+        };
+        Some(MonoExpr {
+            span,
+            ty: self.driver.mono_ty(unit, "array assignment", span)?,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: mono_callee_ty,
+                    span,
+                },
+                args: vec![lhs, rhs],
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
+    fn contract_field_load(
+        &mut self,
+        field: hir_nameres::FieldId<'db>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let slot = self.contract_field_ref(field, span)?;
+        // A storage-array field is already an array handle. Loading it through
+        // CanStore would unnecessarily pull the element-copy evidence used by
+        // whole-array assignment into ordinary reads such as push or indexing.
+        if ty_is_storage_array(self.driver.db, slot.ty.ty()) && slot.ty.ty() == result_ty {
+            return Some(slot);
+        }
+        self.resolved_contract_field_class_call("CanStore", "load", vec![slot], result_ty, span)
+    }
+
+    fn contract_field_ref(
+        &mut self,
+        field: hir_nameres::FieldId<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let field_tys = self.contract_field_tys(field, span)?;
+        let field_ty = *field_tys.get(field.index.as_usize())?;
+        let offset_ty = field_tys[..field.index.as_usize()].iter().rev().fold(
+            Ty::unit(self.driver.db),
+            |tail, head| {
+                Ty::named(
+                    self.driver.db,
+                    TyCtor::Builtin(BuiltinTyCtor::Pair),
+                    vec![*head, tail],
+                )
+            },
+        );
+        let proxy_ty = self.canonical_std_adt_ty("Proxy", vec![offset_ty])?;
+        let proxy = MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(proxy_ty, "contract field offset proxy", span)?,
+            kind: MonoExprKind::Proxy(self.driver.mono_ty(
+                offset_ty,
+                "contract field offset type",
+                span,
+            )?),
+        };
+        let offset = self.resolved_contract_field_class_call(
+            "StorageSize",
+            "size",
+            vec![proxy],
+            Ty::word(self.driver.db),
+            span,
+        )?;
+        let storage_ty = self.canonical_std_adt_ty("storage", vec![field_ty])?;
+        let mono_storage_ty =
+            self.driver
+                .mono_ty(storage_ty, "contract field storage reference", span)?;
+        Some(MonoExpr {
+            span,
+            ty: mono_storage_ty,
+            kind: MonoExprKind::TypeAnnot {
+                expr: Box::new(offset),
+                ty: mono_storage_ty,
+            },
+        })
+    }
+
+    fn contract_field_tys(
+        &mut self,
+        field: hir_nameres::FieldId<'db>,
+        span: Span<'db>,
+    ) -> Option<Vec<Ty<'db>>> {
+        let (module, contract) = self.driver.modules.iter().find_map(|module| {
+            module
+                .items(self.driver.db)
+                .iter()
+                .find_map(|item| match item {
+                    Item::ContractDef(contract)
+                        if contract.def_id_value(self.driver.db) == field.contract =>
+                    {
+                        Some((*module, *contract))
+                    }
+                    _ => None,
+                })
+        })?;
+        let Some(resolution) = self.driver.try_module_resolution(module) else {
+            self.driver.push_missing_module_resolution(Some(span));
+            return None;
+        };
+        let type_vars = type_var_bindings(
+            contract.def_id_value(self.driver.db),
+            contract.ty_param_elems(self.driver.db),
+        );
+        let lowerer = TypeLowering::from_item_resolutions(
+            self.driver.db,
+            &resolution.item_resolutions,
+            BinderEnv::from_type_vars(&type_vars),
+        );
+        let mut normalizer =
+            AliasNormalizer::new(self.driver.db, module, &resolution.item_resolutions);
+        contract
+            .fields(self.driver.db)
+            .iter()
+            .map(|field| {
+                let ty = normalizer.normalize_ty(lowerer.lower_field(field).ty);
+                let ty = self.subst.apply_ty(self.driver.db, ty);
+                Some(normalizer.normalize_ty(ty))
+            })
+            .collect()
+    }
+
+    fn storage_index_load(
+        &mut self,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let slot = self.storage_index_ref(base, index, span)?;
+        self.resolved_class_call("CanStore", "load", vec![slot], result_ty, span)
+    }
+
+    fn storage_index_store(
+        &mut self,
+        lhs: Id<Expr<'db>>,
+        rhs: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<Vec<MonoStmt<'db>>> {
+        let ExprKind::Index { base, index } = &self.body.exprs(self.driver.db).get(lhs).kind else {
+            return None;
+        };
+        let lhs_span = self.body.exprs(self.driver.db).get(lhs).span;
+        let slot = self.storage_index_ref(*base, *index, lhs_span)?;
+        let slot_id = MonoId {
+            name: format!("$storage_index_slot_{}", span.begin().as_u32()),
+            ty: slot.ty,
+            span: lhs_span,
+        };
+        let slot_var = MonoExpr {
+            span: lhs_span,
+            ty: slot.ty,
+            kind: MonoExprKind::Var(slot_id.clone()),
+        };
+        let mut value = self.expr(rhs)?;
+        replace_storage_index_at_span(&mut value, lhs_span, slot.ty, &slot_var);
+        let store = self.resolved_class_call(
+            "CanStore",
+            "store",
+            vec![slot_var.clone(), value],
+            Ty::unit(self.driver.db),
+            span,
+        )?;
+        Some(vec![
+            MonoStmt {
+                span,
+                kind: MonoStmtKind::Let {
+                    mode: LetMode::Runtime,
+                    id: slot_id,
+                    ty: Some(slot.ty),
+                    init: Some(slot),
+                },
+            },
+            MonoStmt {
+                span,
+                kind: MonoStmtKind::Expr(store),
+            },
+        ])
+    }
+
+    fn storage_index_ref(
+        &mut self,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let base_ty = self.expr_ty(base)?;
+        let base_ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, base_ty));
+        let ref_ty = storage_collection_element_ref_ty(self.driver.db, base_ty)?;
+        let base = self.storage_collection_ref_expr(base, span)?;
+        let base = self.typedef_rep(base, span)?;
+        let index = self.expr(index)?;
+        let index = self.typedef_rep(index, span)?;
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(ref_ty, "storage element reference", span)?,
+            kind: MonoExprKind::StorageIndex {
+                storage_kind: if ty_is_storage_array(self.driver.db, base_ty) {
+                    MonoStorageIndexKind::Array
+                } else {
+                    MonoStorageIndexKind::Mapping
+                },
+                base: Box::new(base),
+                index: Box::new(index),
+            },
+        })
+    }
+
+    fn storage_collection_ref_expr(
+        &mut self,
+        expr: Id<Expr<'db>>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        if let Some(field) = self.contract_field_resolution(expr)
+            && self.has_any_canonical_contract_field_access_support()
+        {
+            if !self.has_canonical_contract_field_ref_access() {
+                self.push_missing_contract_field_support("collection field reference", span);
+                return None;
+            }
+            let field_span = self.body.exprs(self.driver.db).get(expr).span;
+            return self.contract_field_ref(field, field_span);
+        }
+        match &self.body.exprs(self.driver.db).get(expr).kind {
+            ExprKind::Index { base, index } if self.is_storage_index_expr(*base) => {
+                self.storage_index_ref(*base, *index, span)
+            }
+            ExprKind::TypeAnnot { expr: inner, .. } => {
+                self.storage_collection_ref_expr(*inner, span)
+            }
+            _ => self.expr(expr),
+        }
+    }
+
+    fn storage_index_value(
+        &mut self,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let base_ty = self.expr_ty(base)?;
+        let base_ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, base_ty));
+        let result_ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, result_ty));
+        let base = self.expr(base)?;
+        let base = self.typedef_rep(base, span)?;
+        let index = self.expr(index)?;
+        let index = self.typedef_rep(index, span)?;
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(result_ty, "storage indexed value", span)?,
+            kind: MonoExprKind::StorageIndex {
+                storage_kind: if ty_is_storage_array(self.driver.db, base_ty) {
+                    MonoStorageIndexKind::Array
+                } else {
+                    MonoStorageIndexKind::Mapping
+                },
+                base: Box::new(base),
+                index: Box::new(index),
+            },
+        })
+    }
+
+    fn memory_array_index(
+        &mut self,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        // The backend helper operates on raw words. Preserve arbitrary
+        // (including non-identity) Typedef representations at both edges,
+        // matching the reference IndexAccess implementation.
+        let base = self.expr(base)?;
+        let base = self.typedef_rep(base, span)?;
+        let index = self.expr(index)?;
+        let index = self.typedef_rep(index, span)?;
+        let word = Ty::word(self.driver.db);
+        let raw = MonoExpr {
+            span,
+            ty: self.driver.mono_ty(word, "memory array word", span)?,
+            kind: MonoExprKind::MemoryArrayIndex {
+                base: Box::new(base),
+                index: Box::new(index),
+            },
+        };
+        self.typedef_abs(raw, result_ty, span)
+    }
+
+    fn calldata_array_index(
+        &mut self,
+        expr: Id<Expr<'db>>,
+        base: Id<Expr<'db>>,
+        index: Id<Expr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let base = self.expr(base)?;
+        let index = self.expr(index)?;
+        let pair_ty = Ty::named(
+            self.driver.db,
+            TyCtor::Builtin(BuiltinTyCtor::Pair),
+            vec![base.ty.ty(), index.ty.ty()],
+        );
+        let pair = product_expr_from_elems(self.driver.db, &[base, index], pair_ty, span);
+        let callee_ty = Ty::function(self.driver.db, vec![pair_ty], result_ty);
+        let class =
+            self.driver.classes.keys().copied().find(|class| {
+                is_canonical_std_def_named(self.driver.db, *class, "RValueIdxAccess")
+            });
+        let evidence = class.and_then(|class| {
+            self.class_method_value_evidence(expr, class)
+                .map(|evidence| self.specialize_evidence(evidence))
+                .or_else(|| {
+                    self.driver
+                        .solve_class_method_pred(class, "lookup", callee_ty, Some(span))
+                })
+        });
+        let Some(name) = evidence.and_then(|evidence| {
+            self.driver
+                .resolve_class_method_call("lookup", evidence, callee_ty, span, self.depth)
+        }) else {
+            self.driver.diagnostics.push(SpecializeDiagnostic {
+                kind: SpecializeDiagnosticKind::MissingEvidence {
+                    context: "RValueIdxAccess.lookup".to_owned(),
+                },
+                span: Some(span),
+            });
+            return None;
+        };
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(result_ty, "calldata array index result", span)?,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: self
+                        .driver
+                        .mono_ty(callee_ty, "calldata array index callee", span)?,
+                    span,
+                },
+                args: vec![pair],
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
+    fn typedef_rep(&mut self, value: MonoExpr<'db>, span: Span<'db>) -> Option<MonoExpr<'db>> {
+        if ty_is_builtin_word(self.driver.db, value.ty.ty())
+            || ty_is_storage_ref(self.driver.db, value.ty.ty())
+        {
+            return Some(value);
+        }
+        self.resolved_class_call(
+            "Typedef",
+            "rep",
+            vec![value],
+            Ty::word(self.driver.db),
+            span,
+        )
+    }
+
+    fn typedef_abs(
+        &mut self,
+        value: MonoExpr<'db>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        if ty_is_builtin_word(self.driver.db, result_ty) {
+            return Some(value);
+        }
+        self.resolved_class_call("Typedef", "abs", vec![value], result_ty, span)
+    }
+
+    fn resolved_class_call(
+        &mut self,
+        class: &str,
+        method: &str,
+        args: Vec<MonoExpr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let callee_ty = Ty::function(
+            self.driver.db,
+            args.iter().map(|arg| arg.ty.ty()).collect(),
+            result_ty,
+        );
+        let evidence = self
+            .driver
+            .solve_operator_method_pred(class, method, callee_ty, Some(span));
+        let Some(name) = evidence.and_then(|evidence| {
+            self.driver
+                .resolve_class_method_call(method, evidence, callee_ty, span, self.depth)
+        }) else {
+            self.driver.diagnostics.push(SpecializeDiagnostic {
+                kind: SpecializeDiagnosticKind::MissingEvidence {
+                    context: format!("{class}.{method}"),
+                },
+                span: Some(span),
+            });
+            return None;
+        };
+        Some(MonoExpr {
+            span,
+            ty: self.driver.mono_ty(result_ty, "class call result", span)?,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: self.driver.mono_ty(callee_ty, "class call callee", span)?,
+                    span,
+                },
+                args,
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
+    /// Resolves a synthesized contract-field call against the canonical class
+    /// that is visible in the source module. Unlike operator lowering, these
+    /// calls come from the upstream-generated FieldAccess instances and must
+    /// not consider unrelated reachable classes that happen to share a name.
+    fn resolved_contract_field_class_call(
+        &mut self,
+        class: &str,
+        method: &str,
+        args: Vec<MonoExpr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let class_def =
+            self.visible_canonical_type_def(class, hir_nameres::DefResolutionKind::Class)?;
+        let callee_ty = Ty::function(
+            self.driver.db,
+            args.iter().map(|arg| arg.ty.ty()).collect(),
+            result_ty,
+        );
+        let evidence = self.driver.solve_class_method_pred_in_module(
+            class_def,
+            method,
+            callee_ty,
+            self.info.module,
+            Some(span),
+        );
+        let Some(name) = evidence.and_then(|evidence| {
+            self.driver
+                .resolve_class_method_call(method, evidence, callee_ty, span, self.depth)
+        }) else {
+            self.driver.diagnostics.push(SpecializeDiagnostic {
+                kind: SpecializeDiagnosticKind::MissingEvidence {
+                    context: format!("{class}.{method}"),
+                },
+                span: Some(span),
+            });
+            return None;
+        };
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(result_ty, "contract field class call result", span)?,
+            kind: MonoExprKind::Call {
+                callee: MonoId {
+                    name,
+                    ty: self
+                        .driver
+                        .mono_ty(callee_ty, "contract field class call callee", span)?,
+                    span,
+                },
+                args,
+                origin: MonoCallOrigin::ByName,
+            },
+        })
+    }
+
+    fn synthetic_std_call(
+        &mut self,
+        name: &str,
+        args: Vec<MonoExpr<'db>>,
+        result_ty: Ty<'db>,
+        span: Span<'db>,
+    ) -> Option<MonoExpr<'db>> {
+        let def = self
+            .driver
+            .functions
+            .keys()
+            .copied()
+            .find(|def| is_canonical_std_def_named(self.driver.db, *def, name))?;
+        let callee_ty = Ty::function(
+            self.driver.db,
+            args.iter().map(|arg| arg.ty.ty()).collect(),
+            result_ty,
+        );
+        let callee = MonoId {
+            name: self.specialize_direct_function(def, callee_ty, span),
+            ty: self
+                .driver
+                .mono_ty(callee_ty, "array helper callee", span)?,
+            span,
+        };
+        Some(MonoExpr {
+            span,
+            ty: self
+                .driver
+                .mono_ty(result_ty, "array helper result", span)?,
+            kind: MonoExprKind::Call {
+                callee,
+                args,
+                origin: MonoCallOrigin::Source(def),
+            },
+        })
+    }
+
+    fn canonical_std_adt_ty(&self, name: &str, args: Vec<Ty<'db>>) -> Option<Ty<'db>> {
+        self.driver.adts.keys().copied().find_map(|def| {
+            is_canonical_std_def_named(self.driver.db, def, name).then(|| {
+                Ty::named(
+                    self.driver.db,
+                    TyCtor::User(UserTyCtor {
+                        def,
+                        kind: UserTyCtorKind::Adt,
+                    }),
+                    args.clone(),
+                )
+            })
+        })
+    }
+
+    fn mono_number(&mut self, value: usize, ty: Ty<'db>, span: Span<'db>) -> Option<MonoExpr<'db>> {
+        Some(MonoExpr {
+            span,
+            ty: self.driver.mono_ty(ty, "array index", span)?,
+            kind: MonoExprKind::Lit(LitKind::Number(value.to_string())),
+        })
+    }
+
+    fn contract_field_resolution(&self, expr: Id<Expr<'db>>) -> Option<hir_nameres::FieldId<'db>> {
+        match self.expr_resolution(expr) {
+            Some(hir_nameres::Resolution::Field(field)) => Some(field),
+            _ => match &self.body.exprs(self.driver.db).get(expr).kind {
+                ExprKind::TypeAnnot { expr, .. } => self.contract_field_resolution(*expr),
+                _ => None,
+            },
+        }
+    }
+
+    fn has_canonical_contract_field_ref_access(&self) -> bool {
+        self.has_visible_canonical_type_def("Proxy", hir_nameres::DefResolutionKind::Adt)
+            && self.has_visible_canonical_type_def("storage", hir_nameres::DefResolutionKind::Adt)
+            && self.has_visible_canonical_type_def(
+                "StorageSize",
+                hir_nameres::DefResolutionKind::Class,
+            )
+            && self
+                .has_visible_canonical_type_def("CanStore", hir_nameres::DefResolutionKind::Class)
+    }
+
+    fn has_canonical_contract_field_read_access(&self) -> bool {
+        self.has_canonical_contract_field_ref_access()
+    }
+
+    fn has_any_canonical_contract_field_access_support(&self) -> bool {
+        self.has_visible_canonical_type_def("Proxy", hir_nameres::DefResolutionKind::Adt)
+            || self.has_visible_canonical_type_def("storage", hir_nameres::DefResolutionKind::Adt)
+            || self.has_visible_canonical_type_def(
+                "StorageSize",
+                hir_nameres::DefResolutionKind::Class,
+            )
+            || self
+                .has_visible_canonical_type_def("CanStore", hir_nameres::DefResolutionKind::Class)
+            || self.has_visible_canonical_type_def("Assign", hir_nameres::DefResolutionKind::Class)
+            || self.has_visible_canonical_term_def("storeArrayLit")
+    }
+
+    fn push_missing_contract_field_support(&mut self, operation: &str, span: Span<'db>) {
+        self.driver.diagnostics.push(SpecializeDiagnostic {
+            kind: SpecializeDiagnosticKind::MissingEvidence {
+                context: format!("canonical contract {operation} support"),
+            },
+            span: Some(span),
+        });
+    }
+
+    fn has_visible_canonical_type_def(
+        &self,
+        name: &str,
+        expected_kind: hir_nameres::DefResolutionKind,
+    ) -> bool {
+        self.visible_canonical_type_def(name, expected_kind)
+            .is_some()
+    }
+
+    fn has_visible_canonical_term_def(&self, name: &str) -> bool {
+        self.visible_canonical_term_def(name).is_some()
+    }
+
+    fn visible_type_resolution(&self, name: &str) -> Option<hir_nameres::Resolution<'db>> {
+        let file = self
+            .info
+            .module
+            .def_id_value(self.driver.db)
+            .file(self.driver.db);
+        if let Some(module_id) = module_id_for_source_file(self.driver.db, file) {
+            let surface = nameres::module_import_surface(self.driver.db, module_id);
+            if let Some(resolution) = surface
+                .item_scope
+                .as_ref()
+                .and_then(|scope| scope.type_resolution(name))
+            {
+                return Some(resolution);
+            }
+            if let Some(resolution) = surface.types.get(name) {
+                return Some(resolution.clone());
+            }
+        }
+        self.driver
+            .try_module_resolution(self.info.module)
+            .and_then(|resolution| resolution.item_scope.type_resolution(name))
+    }
+
+    fn visible_term_resolution(&self, name: &str) -> Option<hir_nameres::Resolution<'db>> {
+        let file = self
+            .info
+            .module
+            .def_id_value(self.driver.db)
+            .file(self.driver.db);
+        if let Some(module_id) = module_id_for_source_file(self.driver.db, file) {
+            let surface = nameres::module_import_surface(self.driver.db, module_id);
+            if let Some(resolution) = surface
+                .item_scope
+                .as_ref()
+                .and_then(|scope| scope.term_resolution(name))
+            {
+                return Some(resolution);
+            }
+            if let Some(resolution) = surface.terms.get(name) {
+                return Some(resolution.clone());
+            }
+        }
+        self.driver
+            .try_module_resolution(self.info.module)
+            .and_then(|resolution| resolution.item_scope.term_resolution(name))
+    }
+
+    fn visible_canonical_type_def(
+        &self,
+        name: &str,
+        expected_kind: hir_nameres::DefResolutionKind,
+    ) -> Option<DefId<'db>> {
+        let hir_nameres::Resolution::Def { def, kind } = self.visible_type_resolution(name)? else {
+            return None;
+        };
+        if kind != expected_kind || !is_canonical_std_def_named(self.driver.db, def, name) {
+            return None;
+        }
+        match expected_kind {
+            hir_nameres::DefResolutionKind::Adt if self.driver.adts.contains_key(&def) => Some(def),
+            hir_nameres::DefResolutionKind::Class if self.driver.classes.contains_key(&def) => {
+                Some(def)
+            }
+            _ => None,
+        }
+    }
+
+    fn visible_canonical_term_def(&self, name: &str) -> Option<DefId<'db>> {
+        let hir_nameres::Resolution::Def {
+            def,
+            kind: hir_nameres::DefResolutionKind::Function,
+        } = self.visible_term_resolution(name)?
+        else {
+            return None;
+        };
+        (is_canonical_std_def_named(self.driver.db, def, name)
+            && self.driver.functions.contains_key(&def))
+        .then_some(def)
+    }
+
+    fn is_storage_array_field(&self, expr: Id<Expr<'db>>) -> bool {
+        if !matches!(
+            self.expr_resolution(expr),
+            Some(hir_nameres::Resolution::Field(_))
+        ) {
+            return false;
+        }
+        self.expr_ty(expr)
+            .map(|ty| self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty)))
+            .is_some_and(|ty| ty_is_storage_array(self.driver.db, ty))
+    }
+
+    fn is_storage_index_lhs(&self, expr: Id<Expr<'db>>) -> bool {
+        matches!(
+            &self.body.exprs(self.driver.db).get(expr).kind,
+            ExprKind::Index { base, .. } if self.is_storage_index_expr(*base)
+        )
+    }
+
+    fn is_memory_array_expr(&self, expr: Id<Expr<'db>>) -> bool {
+        let Some(ty) = self.expr_ty(expr) else {
+            return false;
+        };
+        let ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty));
+        ty_is_memory_dyn_array(self.driver.db, ty)
+    }
+
+    fn is_calldata_array_expr(&self, expr: Id<Expr<'db>>) -> bool {
+        let Some(ty) = self.expr_ty(expr) else {
+            return false;
+        };
+        let ty = self.normalize_body_ty(self.subst.apply_ty(self.driver.db, ty));
+        ty_is_calldata_array(self.driver.db, ty)
+    }
+
     fn stmt_has_comptime_let_obligation(&self, stmt: Id<Stmt<'db>>) -> bool {
         self.index.comptime_let_stmts.contains(&(self.body, stmt))
     }
@@ -1268,10 +2258,214 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
     }
 }
 
+/// Reuses the slot materialized for a desugared compound assignment.
+///
+/// The parser represents `lhs op= rhs` as `lhs = lhs op rhs` and preserves the
+/// source span on the cloned `lhs`. Matching that span keeps the optimization
+/// specific to the synthetic read: an explicitly written `lhs = lhs op rhs`
+/// still evaluates both source expressions independently.
+fn replace_storage_index_at_span<'db>(
+    expr: &mut MonoExpr<'db>,
+    target_span: Span<'db>,
+    target_ty: MonoTy<'db>,
+    slot_ref: &MonoExpr<'db>,
+) {
+    if expr.span == target_span
+        && expr.ty == target_ty
+        && matches!(expr.kind, MonoExprKind::StorageIndex { .. })
+    {
+        *expr = slot_ref.clone();
+        return;
+    }
+
+    match &mut expr.kind {
+        MonoExprKind::Tuple(elems) => {
+            for elem in elems {
+                replace_storage_index_at_span(elem, target_span, target_ty, slot_ref);
+            }
+        }
+        MonoExprKind::Call { args, .. } | MonoExprKind::Con { args, .. } => {
+            for arg in args {
+                replace_storage_index_at_span(arg, target_span, target_ty, slot_ref);
+            }
+        }
+        MonoExprKind::ClosureDispatch { callee, args } => {
+            replace_storage_index_at_span(callee, target_span, target_ty, slot_ref);
+            for arg in args {
+                replace_storage_index_at_span(arg, target_span, target_ty, slot_ref);
+            }
+        }
+        MonoExprKind::BinOp { lhs, rhs, .. } => {
+            replace_storage_index_at_span(lhs, target_span, target_ty, slot_ref);
+            replace_storage_index_at_span(rhs, target_span, target_ty, slot_ref);
+        }
+        MonoExprKind::UnaryOp { expr, .. }
+        | MonoExprKind::Field { base: expr, .. }
+        | MonoExprKind::TypeAnnot { expr, .. } => {
+            replace_storage_index_at_span(expr, target_span, target_ty, slot_ref);
+        }
+        MonoExprKind::Index { base, index }
+        | MonoExprKind::MemoryArrayIndex { base, index }
+        | MonoExprKind::StorageIndex { base, index, .. } => {
+            replace_storage_index_at_span(base, target_span, target_ty, slot_ref);
+            replace_storage_index_at_span(index, target_span, target_ty, slot_ref);
+        }
+        MonoExprKind::Match { scrutinee, arms } => {
+            replace_storage_index_at_span(scrutinee, target_span, target_ty, slot_ref);
+            for arm in arms {
+                replace_storage_index_at_span(&mut arm.expr, target_span, target_ty, slot_ref);
+            }
+        }
+        MonoExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            replace_storage_index_at_span(cond, target_span, target_ty, slot_ref);
+            replace_storage_index_at_span(then_expr, target_span, target_ty, slot_ref);
+            replace_storage_index_at_span(else_expr, target_span, target_ty, slot_ref);
+        }
+        MonoExprKind::Var(_)
+        | MonoExprKind::Lit(_)
+        | MonoExprKind::Proxy(_)
+        | MonoExprKind::Lambda { .. }
+        | MonoExprKind::Error => {}
+    }
+}
+
 fn bool_ctor_name(value: bool) -> &'static str {
     if value {
         MonoBuiltinCtor::True.name()
     } else {
         MonoBuiltinCtor::False.name()
     }
+}
+
+fn ty_is_storage_array<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let TyKind::Named {
+        ctor: TyCtor::User(storage),
+        args: storage_args,
+    } = ty.kind(db)
+    else {
+        return false;
+    };
+    if storage_args.len() != 1 || !is_canonical_std_def_named(db, storage.def, "storage") {
+        return false;
+    }
+    matches!(
+        storage_args[0].kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(array),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, array.def, "array")
+    )
+}
+
+fn ty_is_storage_collection<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let TyKind::Named {
+        ctor: TyCtor::User(storage),
+        args: storage_args,
+    } = ty.kind(db)
+    else {
+        return false;
+    };
+    if storage_args.len() != 1 || !is_canonical_std_def_named(db, storage.def, "storage") {
+        return false;
+    }
+    matches!(
+        storage_args[0].kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(collection),
+            args,
+        } if ((args.len() == 1 && is_canonical_std_def_named(db, collection.def, "array"))
+            || (args.len() == 2 && is_canonical_std_def_named(db, collection.def, "mapping")))
+    )
+}
+
+fn storage_collection_element_ref_ty<'db>(db: &'db dyn Db, ty: Ty<'db>) -> Option<Ty<'db>> {
+    let TyKind::Named {
+        ctor: storage_ctor @ TyCtor::User(storage),
+        args: storage_args,
+    } = ty.kind(db)
+    else {
+        return None;
+    };
+    if storage_args.len() != 1 || !is_canonical_std_def_named(db, storage.def, "storage") {
+        return None;
+    }
+    let TyKind::Named {
+        ctor: TyCtor::User(collection),
+        args,
+    } = storage_args[0].kind(db)
+    else {
+        return None;
+    };
+    let elem = if args.len() == 1 && is_canonical_std_def_named(db, collection.def, "array") {
+        args[0]
+    } else if args.len() == 2 && is_canonical_std_def_named(db, collection.def, "mapping") {
+        args[1]
+    } else {
+        return None;
+    };
+    Some(Ty::named(db, *storage_ctor, vec![elem]))
+}
+
+fn ty_is_builtin_word<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    matches!(
+        ty.kind(db),
+        TyKind::Named {
+            ctor: TyCtor::Builtin(BuiltinTyCtor::Word),
+            args,
+        } if args.is_empty()
+    )
+}
+
+fn ty_is_storage_ref<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    matches!(
+        ty.kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(storage),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, storage.def, "storage")
+    )
+}
+
+fn ty_is_memory_dyn_array<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let TyKind::Named {
+        ctor: TyCtor::User(memory),
+        args: memory_args,
+    } = ty.kind(db)
+    else {
+        return false;
+    };
+    if memory_args.len() != 1 || !is_canonical_std_def_named(db, memory.def, "memory") {
+        return false;
+    }
+    matches!(
+        memory_args[0].kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(array),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, array.def, "DynArray")
+    )
+}
+
+fn ty_is_calldata_array<'db>(db: &'db dyn Db, ty: Ty<'db>) -> bool {
+    let TyKind::Named {
+        ctor: TyCtor::User(calldata),
+        args: calldata_args,
+    } = ty.kind(db)
+    else {
+        return false;
+    };
+    if calldata_args.len() != 1 || !is_canonical_std_def_named(db, calldata.def, "calldata") {
+        return false;
+    }
+    matches!(
+        calldata_args[0].kind(db),
+        TyKind::Named {
+            ctor: TyCtor::User(array),
+            args,
+        } if args.len() == 1 && is_canonical_std_def_named(db, array.def, "array")
+    )
 }
