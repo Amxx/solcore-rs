@@ -10,8 +10,8 @@ Try it in the [online playground](https://solcore-rs-preview.solcore-rs-team.wor
 ## Compatibility target
 
 The current compatibility target is the Haskell reference implementation at
-[`argotorg/solcore@e1361599`](https://github.com/argotorg/solcore/tree/e13615992388cd7bfd59eef5a2b6f61ddc37da1f).
-The standard library and the complete 497-source reference frontend corpus are
+[`argotorg/solcore@2f372bde`](https://github.com/argotorg/solcore/tree/2f372bde2801612814015a22319d0bc51486cbf0).
+The standard library and the complete 499-source reference frontend corpus are
 vendored from that exact revision. See
 [`SEMANTIC_DIFFERENCES.md`](SEMANTIC_DIFFERENCES.md) for intentional Rust
 extensions, shared upstream limitations, and phase-sensitive differences, and
@@ -20,8 +20,8 @@ reproducible reference verdict configuration.
 
 Compatibility does not imply production readiness or byte-for-byte compiler
 output. Rust deliberately keeps structured diagnostics and several safety
-checks that are stricter than e136, while shared e136 limitations remain
-explicitly unsupported.
+checks that are stricter than the reference target, while shared upstream
+limitations remain explicitly unsupported.
 
 ## Build and test
 
