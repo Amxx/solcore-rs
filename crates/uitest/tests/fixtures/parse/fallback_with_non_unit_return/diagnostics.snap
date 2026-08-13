@@ -1,14 +1,15 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/fallback_with_non_unit_return/main.solc
+input_file: crates/uitest/tests/fixtures/parse/fallback_with_non_unit_return/main.sol
 ---
-error[SC0001]: fallback function must return unit (`()`)
- --> /main/main.solc:2:17
+error[SC0001]: parse error: unexpected identifier `returns`
+ --> /main/main.sol:2:14
   |
 1 | contract Bad {
-2 |   fallback() -> word {}
-  |                 ^^^^
+2 |   fallback() returns (word) {}
+  |              ^^^^^^^ unexpected token
 3 |
   |
+  = note: expecting `payable`, `public`, or `{`
   = note: while parsing fallback definition

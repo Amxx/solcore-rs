@@ -1,25 +1,25 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/ergo_two_errors_recovery/main.solc
+input_file: crates/uitest/tests/fixtures/parse/ergo_two_errors_recovery/main.sol
 ---
 error[SC0001]: parse error: unexpected `;`
- --> /main/main.solc:2:13
+ --> /main/main.sol:2:13
   |
-1 | function f() -> word {
+1 | function f() returns (word) {
 2 |     let x = ;
   |             ^ unexpected token
 3 |     return 0;
   |
-  = note: expecting expression after `=`
+  = note: expecting `&&`, `&`, `(`, `.`, `?`, `[`, `^`, `|`, or `||`
 ---
 
 error[SC0001]: parse error: unexpected `;`
-  --> /main/main.solc:12:14
+  --> /main/main.sol:12:14
    |
-11 | function h() -> word {
+11 | function h() returns (word) {
 12 |     return (1;
    |              ^ unexpected token
 13 | }
    |
-   = note: expecting `&&`, `&`, `(`, `)`, `,`, `.`, `:`, `?`, `[`, `^`, `|`, or `||`
+   = note: expecting `&&`, `&`, `(`, `)`, `,`, `.`, `?`, `[`, `^`, `|`, or `||`

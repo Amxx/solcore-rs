@@ -1,0 +1,13 @@
+---
+source: crates/test-utils/src/lib.rs
+expression: rendered
+input_file: crates/uitest/tests/fixtures/parse/impl_missing_head/main.sol
+---
+error[SC0001]: parse error: unexpected `{`
+ --> /main/main.sol:1:6
+  |
+1 | impl {}
+  |      ^ unexpected token
+  |
+  = note: expecting `<`
+  = note: while parsing impl declaration

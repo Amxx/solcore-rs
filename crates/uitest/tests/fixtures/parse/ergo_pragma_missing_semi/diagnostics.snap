@@ -1,13 +1,13 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/ergo_pragma_missing_semi/main.solc
+input_file: crates/uitest/tests/fixtures/parse/ergo_pragma_missing_semi/main.sol
 ---
 error[SC0001]: parse error: unexpected `function`
- --> /main/main.solc:3:1
+ --> /main/main.sol:3:1
   |
 2 |
-3 | function f() -> word {
+3 | function f() returns (word) {
   | ^^^^^^^^ unexpected token
 4 |     return 1;
   |

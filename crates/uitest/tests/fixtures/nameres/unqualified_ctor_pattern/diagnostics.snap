@@ -17,9 +17,9 @@ error[SC0106]: unqualified constructor: off
 error[SC0106]: unqualified constructor: on
  --> /main/main.sol:8:6
   |
-5 |   | off => return 0;
-6 |   | on => return 1;
-  |     ^^ constructor must be qualified
-7 |   }
+7 | }
+8 | case on {
+  |      ^^ constructor must be qualified
+9 | return 1;
   |
   = help: use `flag.on`

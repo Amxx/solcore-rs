@@ -1,0 +1,21 @@
+enum Nat { Zero, Succ(Nat) }
+
+function pick(x: Nat, y: Nat) returns (word) {
+  match (x, y) {
+case Nat.Zero {
+return 0;
+}
+case (Nat.Succ(a), Nat.Zero) {
+return 1;
+}
+case (Nat.Succ(a), Nat.Succ(b)) {
+return 2;
+}
+}
+}
+
+contract T {
+  function main() public returns (word) {
+    return pick(Nat.Zero, Nat.Zero);
+  }
+}

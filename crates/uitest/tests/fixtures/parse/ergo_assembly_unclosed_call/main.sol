@@ -1,4 +1,4 @@
-function f() -> word {
+function f() returns (word) {
     let r : word;
     assembly {
         r := add(1,
