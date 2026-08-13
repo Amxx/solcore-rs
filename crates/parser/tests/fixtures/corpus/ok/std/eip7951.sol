@@ -1,5 +1,5 @@
-import std.{*};
-import std.opcodes.{mstore, mload, gas, staticcall};
+import * from std;
+import {mstore, mload, gas, staticcall} from std.opcodes;
 
 export { p256verify };
 
@@ -9,7 +9,7 @@ export { p256verify };
 // returns a 32-byte word equal to 1 on a valid signature and empty output on an
 // invalid one; we pre-clear the [0, 32) scratch slot so the failing case reads
 // back as 0.
-function p256verify(hash: bytes32, r: bytes32, s: bytes32, qx: bytes32, qy: bytes32) -> bool {
+function p256verify(hash: bytes32, r: bytes32, s: bytes32, qx: bytes32, qy: bytes32) returns (bool) {
     let hash_ = Typedef.rep(hash);
     let r_ = Typedef.rep(r);
     let s_ = Typedef.rep(s);
@@ -27,8 +27,12 @@ function p256verify(hash: bytes32, r: bytes32, s: bytes32, qx: bytes32, qy: byte
     let ret = staticcall(gas(), 0x100, ptr, 160, 0, 32);
     require(ret != 0, Error(0x1fb6bf04)); // P256VerifyCallFailed()
     // NOTE: we are doing the inverse check here for safety, so not using tobool()
-    match mload(0) {
-        | 1 => return true;
-        | _ => return false;
-    }
+    match (mload(0)) {
+case 1 {
+return true;
+}
+default {
+return false;
+}
+}
 }
