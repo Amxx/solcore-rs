@@ -354,7 +354,7 @@ where
             .then_ignore(just(Token::Question))
             .then(expr.clone())
             .then_ignore(just(Token::Colon));
-        let ternary = ternary_head
+        ternary_head
             .repeated()
             .foldr(or, |(cond, then_expr), else_expr| {
                 let span = LexSpan::from(cond.span.start..else_expr.span.end);
@@ -366,9 +366,7 @@ where
                         else_expr: Box::new(else_expr),
                     },
                 }
-            });
-
-        ternary
+            })
     });
 
     pat.define({
