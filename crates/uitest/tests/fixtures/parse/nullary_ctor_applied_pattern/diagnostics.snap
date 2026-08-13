@@ -1,25 +1,25 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/nullary_ctor_applied_pattern/main.solc
+input_file: crates/uitest/tests/fixtures/parse/nullary_ctor_applied_pattern/main.sol
 ---
-error[SC0001]: parse error: unexpected `match`
- --> /main/main.solc:4:3
+error[SC0001]: parse error: unexpected `)`
+ --> /main/main.sol:4:11
   |
-3 | function f(x: D) -> word {
-4 |   match x {
-  |   ^^^^^ unexpected token
-5 |   | C() => return 1;
+3 | function f(x: D) returns (word) {
+4 |   match (x) {
+  |           ^ unexpected token
+5 | case C() {
   |
-  = note: expecting `!`, `(`, `.`, `@`, `[`, `if`, `lam`, or `~`
+  = note: expecting `&&`, `&`, `(`, `.`, `?`, `[`, `^`, `|`, or `||`
 ---
 
-error[SC0001]: parse error: unexpected `=>`
- --> /main/main.solc:5:9
+error[SC0001]: parse error: unexpected `)`
+ --> /main/main.sol:5:8
   |
-4 |   match x {
-5 |   | C() => return 1;
-  |         ^^ unexpected token
-6 |   }
+4 |   match (x) {
+5 | case C() {
+  |        ^ unexpected token
+6 | return 1;
   |
-  = note: expecting `%=`, `&&`, `&=`, `&`, `(`, `*=`, `+=`, `-=`, `.`, `/=`, `:`, `;`, `=`, `?`, `[`, `^=`, `^`, `|=`, `|`, `||`, `~=`, end of input, or statement
+  = note: expecting `(`, `.`, or `_`

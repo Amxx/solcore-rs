@@ -1,7 +1,9 @@
-data D = C;
+enum D { C }
 
-function f(x: D) -> word {
-  match x {
-  | C() => return 1;
-  }
+function f(x: D) returns (word) {
+  match (x) {
+case C() {
+return 1;
+}
+}
 }

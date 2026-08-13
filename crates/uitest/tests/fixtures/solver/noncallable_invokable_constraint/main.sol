@@ -1,4 +1,4 @@
-function f() -> word {
+function f() returns (word) {
   let x : word = 1;
   return x();
 }

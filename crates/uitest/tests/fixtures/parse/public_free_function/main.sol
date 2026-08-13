@@ -1,3 +1,3 @@
-public function bad() {}
+function bad() public {}
 
 function after() {}

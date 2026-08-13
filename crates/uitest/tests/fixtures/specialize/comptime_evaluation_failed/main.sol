@@ -1,4 +1,4 @@
-function sloadWord() -> word {
+function sloadWord() returns (word) {
   let v : word;
   assembly {
     v := sload(0)
@@ -7,8 +7,8 @@ function sloadWord() -> word {
 }
 
 contract C {
-  public function main() -> word {
-    let y : comptime word = sloadWord();
+  function main() public returns (word) {
+    let y : comptime<word> = sloadWord();
     return y;
   }
 }

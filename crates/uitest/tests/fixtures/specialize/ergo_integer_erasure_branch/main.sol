@@ -3,10 +3,10 @@
 // Box cannot be erased.  Judge cascade volume and span quality.
 import std;
 
-data Box = MkBox(integer);
+enum Box { MkBox(integer) }
 
 contract IntegerEscapesBranch {
-  function main() -> word {
+  function main() returns (word) {
     let v : word;
     assembly {
       v := sload(0)
@@ -15,8 +15,10 @@ contract IntegerEscapesBranch {
     if (v > 0) {
       b = Box.MkBox(2);
     }
-    match b {
-    | Box.MkBox(i) => return wordFromInteger(i);
-    }
+    match (b) {
+case Box.MkBox(i) {
+return wordFromInteger(i);
+}
+}
   }
 }

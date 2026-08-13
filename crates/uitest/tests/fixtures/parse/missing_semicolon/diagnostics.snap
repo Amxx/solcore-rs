@@ -1,13 +1,13 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/missing_semicolon/main.solc
+input_file: crates/uitest/tests/fixtures/parse/missing_semicolon/main.sol
 ---
 error[SC0001]: parse error: unexpected end of input
- --> /main/main.solc:1:18
+ --> /main/main.sol:1:18
   |
 1 | import core.math
   |                 ^ unexpected token
   |
-  = note: expecting `.`, `;`, or `as`
+  = note: expecting `.`, or `;`
   = note: while parsing import declaration

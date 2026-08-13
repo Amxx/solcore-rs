@@ -1,13 +1,13 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/public_free_function/main.solc
+input_file: crates/uitest/tests/fixtures/parse/public_free_function/main.sol
 ---
 error[SC0001]: 'public' is only allowed on functions declared inside a contract
- --> /main/main.solc:1:1
+ --> /main/main.sol:1:16
   |
-1 | public function bad() {}
-  | ^^^^^^
+1 | function bad() public {}
+  |                ^^^^^^
 2 |
 3 | function after() {}
   |

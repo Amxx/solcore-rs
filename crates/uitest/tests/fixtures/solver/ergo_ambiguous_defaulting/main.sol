@@ -1,30 +1,32 @@
-data Wrap = Wrap(word);
+enum Wrap { Wrap(word) }
 
-forall a . class a : Conv {
-  function make(x: word) -> a;
-  function out(y: a) -> word;
+trait Conv<a> {
+  function make(x: word) returns (a) ;
+  function out(y: a) returns (word) ;
 }
 
-instance word : Conv {
-  function make(x: word) -> word {
+impl Conv<word> {
+  function make(x: word) returns (word) {
     return x;
   }
-  function out(y: word) -> word {
+  function out(y: word) returns (word) {
     return y;
   }
 }
 
-instance Wrap : Conv {
-  function make(x: word) -> Wrap {
+impl Conv<Wrap> {
+  function make(x: word) returns (Wrap) {
     return Wrap(x);
   }
-  function out(y: Wrap) -> word {
-    match y {
-    | Wrap(w) => return w;
-    }
+  function out(y: Wrap) returns (word) {
+    match (y) {
+case Wrap(w) {
+return w;
+}
+}
   }
 }
 
-function f() -> word {
+function f() returns (word) {
   return Conv.out(Conv.make(1));
 }

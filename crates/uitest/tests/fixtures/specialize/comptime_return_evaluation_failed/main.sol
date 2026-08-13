@@ -1,4 +1,4 @@
-function sloadWord() -> word {
+function sloadWord() returns (word) {
   let v : word;
   assembly {
     v := sload(0)
@@ -6,12 +6,12 @@ function sloadWord() -> word {
   return v;
 }
 
-function leak(comptime x: word) -> comptime word {
+function leak(comptime x: word) returns (comptime<word>) {
   return sloadWord();
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return leak(1);
   }
 }
