@@ -13,21 +13,11 @@ use std::{
 use lsp_types::Url;
 use serde_json::{Value, json};
 
-const MAIN_SOURCE: &str = "\
-import math.{double};
-
-function f() -> word {
-  return double(true);
-}
-";
-const MATH_SOURCE: &str = "\
-function double(x: word) -> word {
-  return x;
-}
-
-export { double };
-";
-const SECONDARY_SOURCE: &str = "function secondaryValue() -> word { return 2; }\n";
+const MAIN_SOURCE: &str =
+    "import {double} from math;\n\nfunction f() returns (word) {\n  return double(true);\n}\n";
+const MATH_SOURCE: &str =
+    "function double(x: word) returns (word) {\n  return x;\n}\n\nexport { double };\n";
+const SECONDARY_SOURCE: &str = "function secondaryValue() returns (word) { return 2; }\n";
 
 struct TestWorkspace {
     root: PathBuf,
@@ -50,8 +40,8 @@ impl TestWorkspace {
             std::process::id()
         ));
         fs::create_dir_all(&root).expect("create test workspace");
-        let main = root.join("main.solc");
-        let math = root.join("math.solc");
+        let main = root.join("main.sol");
+        let math = root.join("math.sol");
         fs::write(&main, MAIN_SOURCE).expect("write main source");
         fs::write(&math, MATH_SOURCE).expect("write math source");
         let secondary_root = std::env::temp_dir().join(format!(
@@ -59,7 +49,7 @@ impl TestWorkspace {
             std::process::id()
         ));
         fs::create_dir_all(&secondary_root).expect("create secondary workspace");
-        let secondary = secondary_root.join("secondary.solc");
+        let secondary = secondary_root.join("secondary.sol");
         fs::write(&secondary, SECONDARY_SOURCE).expect("write secondary source");
 
         Self {
@@ -344,8 +334,8 @@ fn run_lsp_smoke(
         Some(&workspace.secondary_uri),
     )?;
 
-    fs::remove_file(workspace.root.join("math.solc"))
-        .map_err(|error| format!("failed to remove watched math.solc: {error}"))?;
+    fs::remove_file(workspace.root.join("math.sol"))
+        .map_err(|error| format!("failed to remove watched math.sol: {error}"))?;
     send_message(
         stdin,
         &json!({

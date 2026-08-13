@@ -492,12 +492,12 @@ fn initial_workspace_roots(params: &InitializeParams) -> Vec<Url> {
 fn watched_files_registration() -> Registration {
     let options = DidChangeWatchedFilesRegistrationOptions {
         watchers: vec![FileSystemWatcher {
-            glob_pattern: GlobPattern::String("**/*.solc".to_owned()),
+            glob_pattern: GlobPattern::String("**/*.sol".to_owned()),
             kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
         }],
     };
     Registration {
-        id: "solcore-watch-solc".to_owned(),
+        id: "solcore-watch-sol".to_owned(),
         method: "workspace/didChangeWatchedFiles".to_owned(),
         register_options: serde_json::to_value(options).ok(),
     }
@@ -566,7 +566,7 @@ fn is_solcore_uri(uri: &Url) -> bool {
 }
 
 fn is_solcore_path(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()) == Some("solc")
+    path.extension().and_then(|extension| extension.to_str()) == Some("sol")
 }
 
 fn is_ignored_directory(path: &Path) -> bool {

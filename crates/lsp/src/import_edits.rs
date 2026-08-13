@@ -842,16 +842,19 @@ mod tests {
     #[test]
     fn empty_source_gets_a_top_level_import() {
         let edit = plan("", "lib.math", "value").expect("edit");
-        assert_eq!(edit, insertion(0, "import lib.math.{value};\n".to_owned()));
+        assert_eq!(
+            edit,
+            insertion(0, "import {value} from lib.math;\n".to_owned())
+        );
     }
 
     #[test]
     fn import_at_eof_stays_on_its_own_line() {
-        let source = "import first.{a}; // first";
+        let source = "import {a} from first; // first";
         let edit = plan(source, "lib", "value").expect("edit");
         assert_eq!(
             apply(source, &edit),
-            "import first.{a}; // first\nimport lib.{value};"
+            "import {a} from first; // first\nimport {value} from lib;"
         );
     }
 
@@ -861,7 +864,7 @@ mod tests {
         let edit = plan(source, "@dep.util", "value").expect("edit");
         assert_eq!(
             apply(source, &edit),
-            "import @dep.util.{value};\nfunction main() { value; }\n"
+            "import {value} from @dep.util;\nfunction main() { value; }\n"
         );
     }
 
@@ -885,10 +888,10 @@ mod tests {
     #[test]
     fn selected_wildcard_and_aliased_imports_do_not_count_as_plain() {
         for existing in [
-            "import lib.math.{value};",
-            "import lib.math.{other} hiding {other};",
-            "import lib.math.{*};",
-            "import lib.math as Math;",
+            "import {value} from lib.math;",
+            "import {other} from lib.math hiding {other};",
+            "import * from lib.math;",
+            "import * as Math from lib.math;",
         ] {
             let source = format!("{existing}\nfunction main() {{ lib.value; }}\n");
             let edit =
@@ -930,7 +933,7 @@ mod tests {
         assert_eq!(plan_module(source, ""), None);
 
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         let db = world.db();
         let path = world.vfs_path_for_uri(&uri).expect("VFS path");
@@ -958,7 +961,7 @@ mod tests {
     fn rejects_stale_parse_metadata() {
         let source = "function main() { value; }\n";
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         let db = world.db();
         let path = world.vfs_path_for_uri(&uri).expect("VFS path");

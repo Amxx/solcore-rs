@@ -251,14 +251,14 @@ mod tests {
 
     fn world_with_main(source: &str) -> (WorldState, Url) {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         (world, uri)
     }
 
     #[test]
     fn unannotated_let_gets_type_hint() {
-        let source = "function main() -> word {\n  let x = 42;\n  return x;\n}\n";
+        let source = "function main() returns (word) {\n  let x = 42;\n  return x;\n}\n";
         let (world, uri) = world_with_main(source);
         let line_index = world.line_index(&uri).expect("line index");
         let range = line_index.range(0, source.len() as u32);
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn annotated_let_gets_no_type_hint() {
-        let source = "function main() -> word {\n  let y: word = 42;\n  return y;\n}\n";
+        let source = "function main() returns (word) {\n  let y: word = 42;\n  return y;\n}\n";
         let (world, uri) = world_with_main(source);
         let line_index = world.line_index(&uri).expect("line index");
         let range = line_index.range(0, source.len() as u32);
@@ -297,13 +297,8 @@ mod tests {
 
     #[test]
     fn range_filters_binding_names() {
-        let source = "\
-function main() -> word {
-  let a = 1;
-  let b = 2;
-  return b;
-}
-";
+        let source =
+            "function main() returns (word) {\n  let a = 1;\n  let b = 2;\n  return b;\n}\n";
         let (world, uri) = world_with_main(source);
         let line_index = world.line_index(&uri).expect("line index");
         let start = line_index.byte_to_position(source.find("let b").expect("let b") as u32);

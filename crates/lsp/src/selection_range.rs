@@ -259,10 +259,13 @@ fn is_two_byte_operator(bytes: Option<&[u8]>) -> bool {
                 | b"||"
                 | b"+="
                 | b"-="
+                | b"*="
+                | b"/="
                 | b"^="
                 | b"&="
                 | b"|="
                 | b"%="
+                | b"~="
         )
     )
 }
@@ -376,7 +379,7 @@ mod tests {
 
     fn world_with_main(source: &str) -> (WorldState, Url) {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         (world, uri)
     }
@@ -393,8 +396,7 @@ mod tests {
 
     #[test]
     fn builds_unicode_safe_leaf_to_module_chain() {
-        let source =
-            "function main(value: word) -> word {\n  let café = (value + 1);\n  return café;\n}\n";
+        let source = "function main(value: word) returns (word) {\n  let café = (value + 1);\n  return café;\n}\n";
         let (world, uri) = world_with_main(source);
         let line_index = world.line_index(&uri).expect("line index");
         let leaf_start = source.find("café").expect("unicode identifier");
@@ -453,14 +455,7 @@ mod tests {
 
     #[test]
     fn overlapping_source_line_does_not_hide_multiline_call_selection() {
-        let source = "\
-function main() -> word {
-  let x = add(
-    1,
-    2); // trailing
-  return x;
-}
-";
+        let source = "function main() returns (word) {\n  let x = add(\n    1,\n    2); // trailing\n  return x;\n}\n";
         let (world, uri) = world_with_main(source);
         let position = Position::new(3, 4);
         let ranges = handle_selection_range(&world, &uri, &[position]).expect("selection ranges");
@@ -479,7 +474,7 @@ function main() -> word {
 
     #[test]
     fn leaf_ranges_follow_identifier_and_operator_token_boundaries() {
-        let source = "pragma no-bounded-variable-condition;\nfunction main() -> word {\n  let value = 1;\n  return value-1;\n}\n";
+        let source = "pragma no-bounded-variable-condition;\nfunction main() returns (word) {\n  let value = 1;\n  return value-1;\n}\n";
         let (world, uri) = world_with_main(source);
         let index = world.line_index(&uri).unwrap();
         let pragma = source.find("no-bounded").unwrap();
@@ -504,6 +499,21 @@ function main() -> word {
     }
 
     #[test]
+    fn compound_assignment_leaf_ranges_include_every_canonical_operator() {
+        let source = "left *= right; left /= right; left ~=;";
+        for operator in ["*=", "/=", "~="] {
+            let start = source.find(operator).expect("operator");
+            assert_eq!(
+                leaf_range_at(source, start + 1),
+                Some(ByteRange {
+                    start,
+                    end: start + operator.len(),
+                })
+            );
+        }
+    }
+
+    #[test]
     fn rejects_out_of_range_and_mid_surrogate_positions() {
         let source = "// 😀\n";
         let (world, uri) = world_with_main(source);
@@ -523,7 +533,7 @@ function main() -> word {
         let (world, uri) = world_with_main("");
         assert_eq!(handle_selection_range(&world, &uri, &[]), Some(Vec::new()));
 
-        let missing = Url::parse("file:///main/missing.solc").expect("uri");
+        let missing = Url::parse("file:///main/missing.sol").expect("uri");
         assert_eq!(handle_selection_range(&world, &missing, &[]), None);
     }
 }

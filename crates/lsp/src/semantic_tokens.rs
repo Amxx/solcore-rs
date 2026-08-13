@@ -676,14 +676,14 @@ mod tests {
 
     fn world_with_main(source: &str) -> (WorldState, Url) {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         (world, uri)
     }
 
     #[test]
     fn semantic_tokens_are_non_empty_ordered_and_start_at_first_named_entity() {
-        let source = "function main(x: word) -> word {\n  let y = x;\n  return y;\n}\n";
+        let source = "function main(x: word) returns (word) {\n  let y = x;\n  return y;\n}\n";
         let (world, uri) = world_with_main(source);
 
         let result = handle_semantic_tokens_full(&world, &uri).expect("semantic tokens");
@@ -704,17 +704,7 @@ mod tests {
 
     #[test]
     fn emitted_token_type_indexes_are_covered_by_the_legend() {
-        let source = "\
-data Maybe = None | Some(word);
-
-contract Box {
-  value: word;
-  function get(x: word) -> word {
-    let current = value;
-    return current + x;
-  }
-}
-";
+        let source = "enum Maybe {None , Some(word)}\n\ncontract Box {\n  value: word;\n  function get(x: word) returns (word) {\n    let current = value;\n    return current + x;\n  }\n}\n";
         let (world, uri) = world_with_main(source);
 
         let result = handle_semantic_tokens_full(&world, &uri).expect("semantic tokens");
