@@ -1,10 +1,10 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 contract Counter {
   counter : word;
 
   // #[() -> 42]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     counter = Num.add(counter, 42);
     return uint256(counter);
   }

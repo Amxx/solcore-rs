@@ -1,9 +1,9 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract Answer {
   // #[() -> 42]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     return uint256(42);
   }
 }

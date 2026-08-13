@@ -1,5 +1,5 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 // test single contract field
 import std;
@@ -11,7 +11,7 @@ contract Counter {
   counter : word;
 
   // #[() -> 1]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     counter = std.addWord(counter, 1);
     return uint256(counter);
   }

@@ -1,11 +1,11 @@
-import std.{*};
-import std.dispatch.{*};
-import std.{address, uint256, mapping, Num, Add, Sub, Bounded, Eq, Ord, Typedef, ge, not};
+import * from std;
+import * from std.dispatch;
+import {address, uint256, mapping, Num, Add, Sub, Bounded, Eq, Ord, Typedef, ge, not} from std;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
 
-function caller() -> address {
+function caller() returns (address) {
   let res: word;
   assembly {
      res := caller()
@@ -13,24 +13,25 @@ function caller() -> address {
   return address(res);
 }
 
-function myrevert( msg: (word, word) ) -> () {
-  match msg {
-    | (str, len) =>
-       let str1 = str; let len1 = len;
+function myrevert(msg: (word, word)) {
+  match (msg) {
+case (str, len) {
+let str1 = str; let len1 = len;
        assembly { mstore(0, str1) revert(0, len1) }
-  }
+}
+}
 }
 
-function myrequire(cond: bool, msg: (word, word) ) -> () {
+function myrequire(cond: bool, msg: (word, word)) {
       if( not(cond) ) { myrevert(msg); }
 }
 
-function require1(cond: bool) -> () {
+function require1(cond: bool) {
     myrequire (cond, (0x72657175697265313a204641494c, 14) /* "require1: FAIL" */ );
 }
 
 
-function nop() -> () { return ();}
+function nop() { return ();}
 
 contract Uint {
   reserved : word;
@@ -38,15 +39,15 @@ contract Uint {
   owner : address;
   decimals : uint256;
   totalSupply : uint256;
-  balances : mapping(address,uint256);
+  balances : mapping(address => uint256);
 
-  function mint(amount:uint256) -> () {
+  function mint(amount: uint256) {
     balances[owner] = Num.add(balances[owner], amount);
     totalSupply = Num.add(totalSupply, amount);
   }
 
   //     function transferFrom(address src, address dst, uint256 amt) public returns (bool)
-  function transferFrom(src:address, dst:address, amt:uint256) -> bool {
+  function transferFrom(src: address, dst: address, amt: uint256) returns (bool) {
      require1(ge(balances[src], amt));
 
      /*
@@ -59,27 +60,27 @@ contract Uint {
   }
 
 
-  function withdraw(src:address, amt:uint256) -> () {
-    balances[src] = Num.sub(balances[src], amt):uint256;
+  function withdraw(src: address, amt: uint256) {
+    balances[src] = Num.sub(balances[src], amt);
   }
 
-  function deposit(dst:address, amt:uint256) -> () {
-    balances[dst] = Num.add(balances[dst], amt):uint256;
+  function deposit(dst: address, amt: uint256) {
+    balances[dst] = Num.add(balances[dst], amt);
   }
 
-  function init() -> () {
+  function init() {
     owner = address(0x123456789abcdef);
     msg_sender = caller();
     decimals = uint256(18);
   }
 
   // #[() -> 42]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     init();
     mint(uint256(1000));
     let src : address = owner;
     transferFrom(owner, msg_sender, uint256(42));
 
-    return balances[msg_sender] : uint256;
+    return balances[msg_sender] ;
   }
 }

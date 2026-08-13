@@ -1,11 +1,11 @@
-import std.{*};
-import std.dispatch.{*};
-import std.{address, uint256, mapping, Num, Add, Sub, Bounded, Eq, Ord, Typedef, ge, ne, not};
+import * from std;
+import * from std.dispatch;
+import {address, uint256, mapping, Num, Add, Sub, Bounded, Eq, Ord, Typedef, ge, ne, not} from std;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
 
-function caller() -> address {
+function caller() returns (address) {
   let res: word;
   assembly {
      res := caller()
@@ -13,7 +13,7 @@ function caller() -> address {
   return address(res);
 }
 
-function require1fail() -> () {
+function require1fail() {
   let res: word;
   assembly {
     mstore(0x0, 0x72657175697265313a204641494c) // "require1: FAIL"
@@ -22,14 +22,18 @@ function require1fail() -> () {
   return (); // for the typechecker
 }
 
-function require1(cond: bool) -> () {
-    match cond {
-    | false => return require1fail();
-    | true => return ();
-  }
+function require1(cond: bool) {
+    match (cond) {
+case false {
+return require1fail();
+}
+case true {
+return ();
+}
+}
 }
 
-function nop() -> () { return ();}
+function nop() { return ();}
 
 contract Mini {
   reserved : word;
@@ -37,10 +41,10 @@ contract Mini {
   owner : address;
   decimals : uint256;
   totalSupply : uint256;
-  balances : mapping(address,uint256);
-  allowance : mapping(address, mapping(address, uint256));
+  balances : mapping(address => uint256);
+  allowance : mapping(address => mapping(address => uint256));
 
-  function mint(amount:uint256) -> () {
+  function mint(amount: uint256) {
     balances[owner] = Num.add(balances[owner], amount);
     totalSupply = Num.add(totalSupply, amount);
   }
@@ -61,16 +65,24 @@ contract Mini {
 */
 
 //  function transferFrom(src:address, dst:address, amt:uint256) -> bool {
-  function transferFrom(src : address, dst : address, amt : uint256) -> bool  {
+  function transferFrom(src: address, dst: address, amt: uint256) returns (bool) {
      require1(ge(balances[src], amt));
 
      match (Eq.eq(src, msg_sender)) {
-       | true => match ne(allowance[src][msg_sender], Num.maxVal():uint256) {
-           | true => require1(false);
-	   | false => ();
-	   }
-       | false => ();
-     }
+case true {
+match (ne(allowance[src][msg_sender], Num.maxVal())) {
+case true {
+require1(false);
+}
+case false {
+();
+}
+}
+}
+case false {
+();
+}
+}
 
 /*
      if ((src != msg_sender) && (allowance [src][msg_sender] != (Num.maxVal():uint256)) ) {
@@ -78,7 +90,7 @@ contract Mini {
      }
 */
      balances[src] = Num.sub(balances[src], amt);
-     balances[dst] = Num.add(balances[dst], amt):uint256;
+     balances[dst] = Num.add(balances[dst], amt);
      return true;
   }
 
@@ -91,19 +103,19 @@ contract Mini {
 */
 
 
-  function init() -> () {
+  function init() {
     owner = address(0x123456789abcdef);
     msg_sender = caller();
     decimals = uint256(18);
   }
 
   // #[() -> 42]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     init();
     mint(uint256(1000));
     allowance[owner][msg_sender] = uint256(10000);
     transferFrom(owner, msg_sender, uint256(42));
 
-    return balances[msg_sender] : uint256;
+    return balances[msg_sender] ;
   }
 }

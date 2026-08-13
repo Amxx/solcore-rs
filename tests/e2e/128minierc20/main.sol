@@ -1,11 +1,11 @@
-import std.{*};
-import std.dispatch.{*};
-import std.{address, uint256, mapping, Num, Add, Sub, Bounded, Eq, Ord, Typedef, ge, ne, not};
+import * from std;
+import * from std.dispatch;
+import {address, uint256, mapping, Num, Add, Sub, Bounded, Eq, Ord, Typedef, ge, ne, not} from std;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
 
-function caller() -> address {
+function caller() returns (address) {
   let res: word;
   assembly {
      res := caller()
@@ -13,11 +13,11 @@ function caller() -> address {
   return address(res);
 }
 
-function myrevert(msg: word) -> () {
+function myrevert(msg: word) {
        assembly { mstore(0, msg) revert(0, 32) }
 }
 
-function myrequire(cond: bool, msg: word ) -> () {
+function myrequire(cond: bool, msg: word) {
       if( !cond ) { myrevert(msg); }
 }
 
@@ -26,8 +26,8 @@ contract MiniERC20 {
   owner : address;
   decimals : uint256;
   totalSupply : uint256;
-  balances : mapping(address,uint256);
-  allowance : mapping(address, mapping(address, uint256));
+  balances : mapping(address => uint256);
+  allowance : mapping(address => mapping(address => uint256));
 
   function mint(amount:uint256) -> () {
     balances[owner] = Num.add(balances[owner], amount);

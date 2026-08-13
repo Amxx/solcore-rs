@@ -1,6 +1,6 @@
 // test multiple contract fields
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract Counter {
   counter1 : word;
@@ -8,7 +8,7 @@ contract Counter {
   counter3 : word;
 
   // #[() -> 3]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     let x: word;
     x = counter1 + 1;
     counter1 = x;

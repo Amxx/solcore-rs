@@ -1,16 +1,18 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract Triple {
 
-  function asel(t : (word, word, word)) -> word {
-    match t {
-      | (a,b,c) => return c;
-    }
+  function asel(t: (word, word, word)) returns (word) {
+    match (t) {
+case (a,b,c) {
+return c;
+}
+}
   }
 
   // #[() -> 42]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     return uint256(asel((1,21,42)));
   }
 }
