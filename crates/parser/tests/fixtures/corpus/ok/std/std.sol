@@ -2379,34 +2379,34 @@ impl<v> CanStore<storage<array<v>>, storage<array<v>>> where v: StorageCopy {
 // Assigning an array literal to a storage array field: `xs = [1,2,3]`.
 //
 // This is Solidity's memory -> storage array copy. It is a plain function, not
-// a CanStore instance, on purpose: instance overlap is decided by the main type
-// alone, so a second CanStore instance for storage(array(t)) would clash with
+// a CanStore impl, on purpose: impl overlap is decided by the main type alone,
+// so a second CanStore impl for storage<array<t>> would clash with
 // the deep-copy one above. FieldAccess routes `field = <array literal>` here
 // instead of through Assign.assign.
 //
 // Array.setLength resizes and clears the abandoned tail, so old elements never
 // resurrect. The element types differ: `t` is the storage element tag and `v`
 // what a value of it looks like in memory (they coincide for word-sized
-// elements; for array(string), t = string and v = memory(string)).
-forall t v . storage(t):CanStore(v), v:Typedef(word) =>
-function storeArrayLit(dst : storage(array(t)), src : memory(DynArray(v))) -> () {
+// elements; for array<string>, t = string and v = memory<string>).
+function storeArrayLit<t, v>(dst: storage<array<t>>, src: memory<DynArray<v>>) where storage<t>: CanStore<v>, v: Typedef<word> {
     let n : word = mload(Typedef.rep(src));
     Array.setLength(dst, uint256(n));
     let base : word = hash1(Typedef.rep(dst));
     let i : word = 0;
     for (; i < n; i += 1) {
-        CanStore.store(storage(base + i) : storage(t), IndexAccess.get(src, uint256(i)));
+        let element : storage<t> = storage(base + i);
+        CanStore.store(element, IndexAccess.get(src, uint256(i)));
     }
 }
 
-instance storage(string):CanStore(memory(string)) {
-  function store(dst:storage(string), src:memory(string)) -> () {
+impl CanStore<storage<string>, memory<string>> {
+  function store(dst: storage<string>, src: memory<string>) {
     let srcPtr : word = Typedef.rep(src);
     let slot = Typedef.rep(dst);
     storeBytesFromMemory(slot, srcPtr);
   }
 
-  function load(src:storage(string)) -> memory(string) {
+  function load(src: storage<string>) returns (memory<string>) {
     let srcPtr : word = Typedef.rep(src);
     let dstPtr : word = get_free_memory();
     let endPtr = loadBytesFromStorage(srcPtr, dstPtr);
@@ -2417,14 +2417,14 @@ instance storage(string):CanStore(memory(string)) {
 
 // bytes share the same storage layout as string, so the same
 // storeBytesFromMemory / loadBytesFromStorage helpers apply.
-instance storage(bytes):CanStore(memory(bytes)) {
-  function store(dst:storage(bytes), src:memory(bytes)) -> () {
+impl CanStore<storage<bytes>, memory<bytes>> {
+  function store(dst: storage<bytes>, src: memory<bytes>) {
     let srcPtr : word = Typedef.rep(src);
     let slot = Typedef.rep(dst);
     storeBytesFromMemory(slot, srcPtr);
   }
 
-  function load(src:storage(bytes)) -> memory(bytes) {
+  function load(src: storage<bytes>) returns (memory<bytes>) {
     let srcPtr : word = Typedef.rep(src);
     let dstPtr : word = get_free_memory();
     let endPtr = loadBytesFromStorage(srcPtr, dstPtr);
@@ -2436,23 +2436,23 @@ instance storage(bytes):CanStore(memory(bytes)) {
 // --- StorageCopy: per-element copy used by whole-array assignment ---
 
 // Word-sized elements are self-contained: the slot is the value.
-instance word:StorageCopy {
-  function copySlot(dst:storage(word), src:storage(word)) -> () {
+impl StorageCopy<word> {
+  function copySlot(dst: storage<word>, src: storage<word>) {
     sstore(Typedef.rep(dst), sload(Typedef.rep(src)));
   }
 }
-instance uint256:StorageCopy {
-  function copySlot(dst:storage(uint256), src:storage(uint256)) -> () {
+impl StorageCopy<uint256> {
+  function copySlot(dst: storage<uint256>, src: storage<uint256>) {
     sstore(Typedef.rep(dst), sload(Typedef.rep(src)));
   }
 }
-instance bytes32:StorageCopy {
-  function copySlot(dst:storage(bytes32), src:storage(bytes32)) -> () {
+impl StorageCopy<bytes32> {
+  function copySlot(dst: storage<bytes32>, src: storage<bytes32>) {
     sstore(Typedef.rep(dst), sload(Typedef.rep(src)));
   }
 }
-instance address:StorageCopy {
-  function copySlot(dst:storage(address), src:storage(address)) -> () {
+impl StorageCopy<address> {
+  function copySlot(dst: storage<address>, src: storage<address>) {
     sstore(Typedef.rep(dst), sload(Typedef.rep(src)));
   }
 }
@@ -2460,29 +2460,30 @@ instance address:StorageCopy {
 // Dynamic elements keep their payload at keccak256(elementSlot), so copying the
 // inline slot alone would leave the destination pointing at the *source's* tail.
 // Round-tripping through memory copies the payload too.
-instance string:StorageCopy {
-  function copySlot(dst:storage(string), src:storage(string)) -> () {
-    CanStore.store(dst, CanStore.load(src):memory(string));
+impl StorageCopy<string> {
+  function copySlot(dst: storage<string>, src: storage<string>) {
+    let value : memory<string> = CanStore.load(src);
+    CanStore.store(dst, value);
   }
 }
-instance bytes:StorageCopy {
-  function copySlot(dst:storage(bytes), src:storage(bytes)) -> () {
-    CanStore.store(dst, CanStore.load(src):memory(bytes));
+impl StorageCopy<bytes> {
+  function copySlot(dst: storage<bytes>, src: storage<bytes>) {
+    let value : memory<bytes> = CanStore.load(src);
+    CanStore.store(dst, value);
   }
 }
 
-// Nested arrays recurse into the array CanStore instance above. The recursion is
+// Nested arrays recurse into the array CanStore impl above. The recursion is
 // on the element type, so it terminates with the type's structure.
-forall t . t:StorageCopy =>
-instance array(t):StorageCopy {
-  function copySlot(dst:storage(array(t)), src:storage(array(t))) -> () {
+impl<t> StorageCopy<array<t>> where t: StorageCopy {
+  function copySlot(dst: storage<array<t>>, src: storage<array<t>>) {
     CanStore.store(dst, src);
   }
 }
 
 // Shamelessly stolen from  function copy_byte_array_to_storage_from_t_bytes_memory_ptr_to_t_bytes_storage
 // TODO: consider wrapping behaviour at end of storage
-function storeBytesFromMemory(slot: word, src: word) -> () {
+function storeBytesFromMemory(slot: word, src: word) {
   assembly {
     let newLen := mload(src)
     // TODO: check old len, cleanup etc
@@ -2522,7 +2523,7 @@ function storeBytesFromMemory(slot: word, src: word) -> () {
 
 
 // shamelessly stolen from abi_encode_t_string_storage_to_t_string_memory_ptr
-function loadBytesFromStorage(slot:word, memPtr:word) -> word {
+function loadBytesFromStorage(slot: word, memPtr: word) returns (word) {
     let pos = memPtr;
     let slotValue = sload(slot);
     let length = slotValue / 2;
@@ -2532,47 +2533,49 @@ function loadBytesFromStorage(slot:word, memPtr:word) -> word {
     }
     mstore(pos, length);
     pos += 32;
-    match outOfPlaceEncoding {
-        | false =>
-            // Short byte array
+    match (outOfPlaceEncoding) {
+case false {
+// Short byte array
             mstore(pos, slotValue & ~0xff);
             let empty = iszero(length);
             let notzero = iszero(empty);
             return pos + (notzero * 32);
-        | true =>
-            // Long byte array
+}
+case true {
+// Long byte array
             let dataPos = hash1(slot);
             let i = 0;
             for (; i < length; i += 32, dataPos += 1) {
                 mstore(pos + i, sload(dataPos));
             }
             return pos + i;
-    }
+}
+}
 }
 
 
 // -- Tuple-based indexed access:
 
-forall col_idx val . class col_idx:RValueIdxAccess(val) {
-  function lookup(ci : col_idx) -> val;
+trait RValueIdxAccess<col_idx, val> {
+  function lookup(ci: col_idx) returns (val) ;
 }
 
-forall col_idx ref . class col_idx:LValueIdxAccess(ref) {
-  function lookup(ci : col_idx) -> ref;
+trait LValueIdxAccess<col_idx, ref> {
+  function lookup(ci: col_idx) returns (ref) ;
 }
 
-forall i a . i:Typedef(word) =>
-instance (storage(mapping(i,a)), i): LValueIdxAccess(storage(a)) {
-  function lookup(xi : (storage(mapping(i,a)), i)) -> storage(a) {
-    match(xi) {
-      | (x, i) => return storage(hash2(Typedef.rep(x), Typedef.rep(i)));
-    }
+impl<i, a> LValueIdxAccess<(storage<mapping(i => a)>, i), storage<a>> where i: Typedef<word> {
+  function lookup(xi: (storage<mapping(i => a)>, i)) returns (storage<a>) {
+    match (xi) {
+case (x, i) {
+return storage(hash2(Typedef.rep(x), Typedef.rep(i)));
+}
+}
   }
 }
 
-forall i a . storage(a):CanStore(a), i:Typedef(word) =>
-instance (storage(mapping(i,a)), i): RValueIdxAccess(a) {
-  function lookup(xi : (storage(mapping(i,a)), i)) -> a {
+impl<i, a> RValueIdxAccess<(storage<mapping(i => a)>, i), a> where storage<a>: CanStore<a>, i: Typedef<word> {
+  function lookup(xi: (storage<mapping(i => a)>, i)) returns (a) {
   /*
     match(xi) {
       | (x, i) => return StorageType.load(hash2(Typedef.rep(x), Typedef.rep(i)));
@@ -2582,114 +2585,107 @@ instance (storage(mapping(i,a)), i): RValueIdxAccess(a) {
   }
 }
 
-forall a i . i:Typedef(word) =>
-instance (storage(array(a)), i): LValueIdxAccess(storage(a)) {
-  function lookup(xi : (storage(array(a)), i)) -> storage(a) {
-    match(xi) {
-      | (x, i) =>
-          let slot : word = Typedef.rep(x);
+impl<a, i> LValueIdxAccess<(storage<array<a>>, i), storage<a>> where i: Typedef<word> {
+  function lookup(xi: (storage<array<a>>, i)) returns (storage<a>) {
+    match (xi) {
+case (x, i) {
+let slot : word = Typedef.rep(x);
           let idx : word = Typedef.rep(i);
           // Bounds check: idx must be in [0, length). Length lives at the
           // slot itself; inlined to avoid an Array(t) dispatch here.
           if (idx >= sload(slot)) { out_of_bounds(); }
           return storage(hash1(slot) + idx);
-    }
+}
+}
   }
 }
 
 // Reading arr[i] yields whatever the element's storage reference loads, rather
 // than the element tag type. For word-sized elements that is the element itself;
-// for array(string) it is a memory(string); for a nested array(array(t)) it
+// for array<string> it is a memory<string>; for a nested array<array<t>> it
 // is the inner array's handle, which push/pop/length then consume.
-forall a v i . storage(a):CanStore(v), i:Typedef(word) =>
-instance (storage(array(a)), i): RValueIdxAccess(v) {
-  function lookup(xi : (storage(array(a)), i)) -> v {
+impl<a, v, i> RValueIdxAccess<(storage<array<a>>, i), v> where storage<a>: CanStore<v>, i: Typedef<word> {
+  function lookup(xi: (storage<array<a>>, i)) returns (v) {
     return CanStore.load(LValueIdxAccess.lookup(xi));
   }
 }
 
 // Indexed read of a lazily-decoded calldata array: `arr[i]` desugars to
 // ridx(arr, i), which dispatches here and decodes element i on demand via
-// abiArrayGet. There is deliberately no LValueIdxAccess instance — calldata is
+// abiArrayGet. There is deliberately no LValueIdxAccess impl — calldata is
 // immutable, so `arr[i] = …` is (correctly) rejected at compile time.
-forall t t_decoded i .
-    t : ABIAttribs,
-    ABIDecoder(t, CalldataWordReader):ABIDecode(t_decoded),
-    i : Typedef(word) =>
-instance (calldata(array(t)), i): RValueIdxAccess(t_decoded) {
-  function lookup(xi : (calldata(array(t)), i)) -> t_decoded {
-    match(xi) {
-      | (a, idx) => return abiArrayGet(a, uint256(Typedef.rep(idx)));
-    }
+impl<t, t_decoded, i> RValueIdxAccess<(calldata<array<t>>, i), t_decoded> where t: ABIAttribs, ABIDecoder<t, CalldataWordReader>: ABIDecode<t_decoded>, i: Typedef<word> {
+  function lookup(xi: (calldata<array<t>>, i)) returns (t_decoded) {
+    match (xi) {
+case (a, idx) {
+return abiArrayGet(a, uint256(Typedef.rep(idx)));
+}
+}
   }
 }
 
 // Memory arrays are read-only through `m[i]`: there is no memory cell reference
-// type, so they get an RValue instance but no LValue one.
-forall t i . t:Typedef(word), i:Typedef(word) =>
-instance (memory(DynArray(t)), i): RValueIdxAccess(t) {
-  function lookup(xi : (memory(DynArray(t)), i)) -> t {
-    match xi {
-      | (x, j) => return IndexAccess.get(x, uint256(Typedef.rep(j)));
-    }
+// type, so they get an RValue impl but no LValue one.
+impl<t, i> RValueIdxAccess<(memory<DynArray<t>>, i), t> where t: Typedef<word>, i: Typedef<word> {
+  function lookup(xi: (memory<DynArray<t>>, i)) returns (t) {
+    match (xi) {
+case (x, j) {
+return IndexAccess.get(x, uint256(Typedef.rep(j)));
+}
+}
   }
 }
 
 
 // Mapping reads go through CanStore, matching the write side (Assign -> CanStore.store).
-// This lets a mapping hold any value with a CanStore instance — including ADTs whose
-// fields are dynamic (memory(bytes)) — not just the fixed-slot StorageType primitives.
-forall a. storage(a):CanStore(a) =>
-function readStorage(x:storage(a)) -> a {
+// This lets a mapping hold any value with a CanStore impl — including ADTs whose
+// fields are dynamic (memory<bytes>) — not just the fixed-slot StorageType primitives.
+function readStorage<a>(x: storage<a>) returns (a) where storage<a>: CanStore<a> {
   return CanStore.load(x);
 }
 /*
-forall r a. a:StorageType, r: RValueIdxAccess(a) =>
-function rval(x:r) -> a {
+function rval<r, a>(x: r) returns (a) where a: StorageType, r: RValueIdxAccess<a> {
   return RValueIdxAccess.lookup(x);
 }
 
-forall r a. r: LValueIdxAccess(a) =>
-function lval(x:r) -> a {
+function lval<r, a>(x: r) returns (a) where r: LValueIdxAccess<a> {
   return LValueIdxAccess.lookup(x);
 }
 */
 
 // lidx/ridx are the generic indexed-access helpers used by the `arr[i]`
 // desugaring. They dispatch through LValueIdxAccess / RValueIdxAccess, so any
-// collection (mapping, array, ...) that provides those instances supports the
+// collection (mapping, array, ...) that provides those impls supports the
 // `arr[i]` syntax.
-forall col idx ref . (col, idx):LValueIdxAccess(ref) =>
-function lidx(c: col, i: idx) -> ref {
+function lidx<col, idx, ref>(c: col, i: idx) returns (ref) where (col, idx): LValueIdxAccess<ref> {
     return LValueIdxAccess.lookup((c, i));
 }
 
-forall col idx val . (col, idx):RValueIdxAccess(val) =>
-function ridx(c: col, i: idx) -> val {
+function ridx<col, idx, val>(c: col, i: idx) returns (val) where (col, idx): RValueIdxAccess<val> {
     return RValueIdxAccess.lookup((c, i));
 }
 
 // --- Memory Encoding ---
 
-forall t . class t:MemorySize {
+trait MemorySize<t> {
     // The size needed for the value.
-    function len(v: t) -> word;
+    function len(v: t) returns (word) ;
 }
 
 // NOTE: this is not implemented for value types.
-forall t . class t:MemoryPointer {
+trait MemoryPointer<t> {
     // In-memory location of the given value.
-    function ptr(v: t) -> word;
+    function ptr(v: t) returns (word) ;
 }
 
-forall t . class t:MemoryEncode {
+trait MemoryEncode<t> {
     // Serialize the entire contents at a provided memory area.
-    function encodeInto(v: t, target: word) -> ();
+    function encodeInto(v: t, target: word) ;
 }
 
 // TODO: support variadic arguments
 // Allocates new memory and concatenates the inputs into it.
-forall a b . a:MemorySize, a:MemoryEncode, b:MemorySize, b:MemoryEncode => function concat(x: a, y: b) -> memory(bytes) {
+function concat<a, b>(x: a, y: b) returns (memory<bytes>) where a: MemorySize, a: MemoryEncode, b: MemorySize, b: MemoryEncode {
     let x_len = MemorySize.len(x);
     let y_len = MemorySize.len(y);
     let res: word = allocate_memory(32 + x_len + y_len);
@@ -2700,7 +2696,7 @@ forall a b . a:MemorySize, a:MemoryEncode, b:MemorySize, b:MemoryEncode => funct
 }
 
 // This is a specialized 1-input version of concat.
-forall a . a:MemorySize, a:MemoryEncode => function to_bytes(x: a) -> memory(bytes) {
+function to_bytes<a>(x: a) returns (memory<bytes>) where a: MemorySize, a: MemoryEncode {
     let len = MemorySize.len(x);
     let res = allocate_memory(32 + len);
     mstore(res, len);
@@ -2708,32 +2704,32 @@ forall a . a:MemorySize, a:MemoryEncode => function to_bytes(x: a) -> memory(byt
     return memory(res);
 }
 
-instance bytes32:MemorySize {
-    function len(v: bytes32) -> word {
+impl MemorySize<bytes32> {
+    function len(v: bytes32) returns (word) {
         return 32;
     }
 }
 
-instance bytes32:MemoryEncode {
-    function encodeInto(v: bytes32, target: word) -> () {
+impl MemoryEncode<bytes32> {
+    function encodeInto(v: bytes32, target: word) {
         mstore(target, Typedef.rep(v));
     }
 }
 
-instance memory(bytes):MemorySize {
-    function len(v: memory(bytes)) -> word {
+impl MemorySize<memory<bytes>> {
+    function len(v: memory<bytes>) returns (word) {
         return mload(Typedef.rep(v));
     }
 }
 
-instance memory(bytes):MemoryPointer {
-    function ptr(v: memory(bytes)) -> word {
+impl MemoryPointer<memory<bytes>> {
+    function ptr(v: memory<bytes>) returns (word) {
         return Typedef.rep(v) + 32;
     }
 }
 
-instance memory(bytes):MemoryEncode {
-    function encodeInto(v: memory(bytes), target: word) -> () {
+impl MemoryEncode<memory<bytes>> {
+    function encodeInto(v: memory<bytes>, target: word) {
         let v_ = Typedef.rep(v);
         mcopy(target, v_ + 32, mload(v_));
     }
@@ -2742,22 +2738,26 @@ instance memory(bytes):MemoryEncode {
 // Placeholder for an empty memory area.
 // The value is the size of the area in bytes. The area will be zeroed upon serialization.
 // NOTE: not implementing Typedef by design.
-data empty = empty(word);
+enum empty { empty(word) }
 
-instance empty:MemorySize {
-    function len(v: empty) -> word {
-        match v {
-            | empty(size) => return size;
-        }
+impl MemorySize<empty> {
+    function len(v: empty) returns (word) {
+        match (v) {
+case empty(size) {
+return size;
+}
+}
     }
 }
 
-instance empty:MemoryEncode {
-    function encodeInto(v: empty, target: word) -> () {
+impl MemoryEncode<empty> {
+    function encodeInto(v: empty, target: word) {
         let size;
-        match v {
-            | empty(size_) => size = size_;
-        }
+        match (v) {
+case empty(size_) {
+size = size_;
+}
+}
         zeroize_memory(target, size);
     }
 }
@@ -2766,42 +2766,46 @@ instance empty:MemoryEncode {
 
 // This is a very cheap abstraction over a memory area of [ptr, ptr+len)
 // No type information is preserved.
-data memory_ref = memory_ref(word, word);
+enum memory_ref { memory_ref(word, word) }
 
-instance memory_ref:MemorySize {
-    function len(v: memory_ref) -> word {
-        match v {
-            | memory_ref(ptr, len) => return len;
-        }
+impl MemorySize<memory_ref> {
+    function len(v: memory_ref) returns (word) {
+        match (v) {
+case memory_ref(ptr, len) {
+return len;
+}
+}
     }
 }
 
-instance memory_ref:MemoryPointer {
-    function ptr(v: memory_ref) -> word {
-        match v {
-            | memory_ref(ptr, len) => return ptr;
-        }
+impl MemoryPointer<memory_ref> {
+    function ptr(v: memory_ref) returns (word) {
+        match (v) {
+case memory_ref(ptr, len) {
+return ptr;
+}
+}
     }
 }
 
-instance memory_ref:MemoryEncode {
-    function encodeInto(v: memory_ref, target: word) -> () {
-        match v {
-            | memory_ref(ptr, len) => mcopy(target, ptr, len);
-        }
+impl MemoryEncode<memory_ref> {
+    function encodeInto(v: memory_ref, target: word) {
+        match (v) {
+case memory_ref(ptr, len) {
+mcopy(target, ptr, len);
+}
+}
     }
 }
 
-forall a . a:MemorySize, a:MemoryPointer =>
-function slice_(input: a, start: word) -> memory_ref {
+function slice_<a>(input: a, start: word) returns (memory_ref) where a: MemorySize, a: MemoryPointer {
     let len = MemorySize.len(input);
     // TODO: should this allow (it does now) a zero-length slice?
     require(len >= start, Error(0xb4120f14)); // OutOfBounds()
     return memory_ref(MemoryPointer.ptr(input) + start, len - start);
 }
 
-forall a . a:MemorySize, a:MemoryPointer =>
-function truncate(input: a, end: word) -> memory_ref {
+function truncate<a>(input: a, end: word) returns (memory_ref) where a: MemorySize, a: MemoryPointer {
     let len = MemorySize.len(input);
     // TODO: should this allow (it does now) a zero-length slice?
     require(len >= end, Error(0xb4120f14)); // OutOfBounds()
@@ -2811,13 +2815,13 @@ function truncate(input: a, end: word) -> memory_ref {
 // --- Hashing ---
 
 // NOTE: keccak256 name conflicts with assembly namespace
-forall a . a:MemorySize, a:MemoryPointer => function keccak256_(input: a) -> bytes32 {
+function keccak256_<a>(input: a) returns (bytes32) where a: MemorySize, a: MemoryPointer {
     let len : word = MemorySize.len(input);
     let ptr : word = MemoryPointer.ptr(input);
     return bytes32(keccak256(ptr, len));
 }
 
-forall a . a:MemorySize, a:MemoryPointer => function sha256(input: a) -> bytes32 {
+function sha256<a>(input: a) returns (bytes32) where a: MemorySize, a: MemoryPointer {
     let len : word = MemorySize.len(input);
     let ptr : word = MemoryPointer.ptr(input);
     // We assume the [0, 32] scratch space is reserved.
@@ -2826,7 +2830,7 @@ forall a . a:MemorySize, a:MemoryPointer => function sha256(input: a) -> bytes32
     return bytes32(mload(0));
 }
 
-forall a . a:MemorySize, a:MemoryPointer => function ripemd160(input: a) -> bytes32 {
+function ripemd160<a>(input: a) returns (bytes32) where a: MemorySize, a: MemoryPointer {
     let len : word = MemorySize.len(input);
     let ptr : word = MemoryPointer.ptr(input);
     // We assume the [0, 32] scratch space is reserved.
@@ -2842,7 +2846,7 @@ forall a . a:MemorySize, a:MemoryPointer => function ripemd160(input: a) -> byte
 // were updated to ban this, but the precompile wasn't. If a user relies on that
 // feature they can call the precompile via assembly.
 // TODO: use uint8
-function ecrecover(hash: bytes32, v: uint256, r: bytes32, s: bytes32) -> address {
+function ecrecover(hash: bytes32, v: uint256, r: bytes32, s: bytes32) returns (address) {
     // MalleableSignatureRejected()
     require(
         Typedef.rep(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
@@ -2875,11 +2879,11 @@ function ecrecover(hash: bytes32, v: uint256, r: bytes32, s: bytes32) -> address
 // ERC-7201 namespaced storage slot, computed entirely at compile time from a
 // string-literal namespace `id`:
 //   keccak256(abi.encode(uint256(keccak256(bytes(id))) - 1)) & ~bytes32(uint256(0xff))
-function erc7201(comptime id: string) -> comptime bytes32 {
+function erc7201(comptime id: string) returns (comptime<bytes32>) {
     return bytes32(keccakWordLit(keccakLit(id) - 1) & ~0xff);
 }
 
-forall a . a:MemorySize, a:MemoryPointer => function raw_call(target: address, value: uint256, payload: a) -> (bool, memory(bytes)) {
+function raw_call<a>(target: address, value: uint256, payload: a) returns (bool, memory<bytes>) where a: MemorySize, a: MemoryPointer {
     let ret = call(
         gas(),
         Typedef.rep(target),
