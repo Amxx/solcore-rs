@@ -1,15 +1,15 @@
 contract Compose {
-  public function compose(f,g) {
+function compose<a, b, c>(f: function(b) returns (c), g: function(a) returns (b)) public {
     return lam (x) {
       return f(g(x));
     } ;
   }
 
-  public function id(x) { return x; }
+function id<a>(x: a) public { return x; }
 
-  public function idid() { return compose(id,id); }
+  function idid() public { return compose(id,id); }
 
-  public function main() {
+  function main() public {
     let f = compose(id,id);
     return f(42);
   }

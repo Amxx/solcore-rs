@@ -1,14 +1,14 @@
 contract Id1 {
 
-  data Bool = False | True;
+  enum Bool { False, True }
 
-  public function id(x) {
+function id<a>(x: a) public {
     return x ;
   }
 
-  public function const(x, y) { return x; }
+function const<a, b>(x: a, y: b) public { return x; }
 
-  public function main() {
+  function main() public {
     return const(id(42), Bool.False);
   }
 }

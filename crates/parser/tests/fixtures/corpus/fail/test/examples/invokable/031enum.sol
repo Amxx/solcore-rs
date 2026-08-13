@@ -30,27 +30,31 @@ return 3;
 
 enum Bool { False, True }
 
-instance Bool : Enum {
-  function fromEnum(b) {
-      match b {
-      | False => return 0;
-      | Bool.True => return 1;
-      };
+impl Enum<Bool> {
+  function fromEnum(b: Bool) returns (Word) {
+      match (b) {
+case False {
+return 0;
+}
+case Bool.True {
+return 1;
+}
+}
   }
 }
-data FromEnumToken(a) = FromEnumToken
+enum FromEnumToken<a> { FromEnumToken }
 
-class self : Invokable(args, ret) {
-    function invoke (s:self,  a:args) -> ret;
+trait Invokable<self, args, ret> {
+    function invoke(s: self, a: args) returns (ret) ;
 }
 
-instance (a:Enum) => FromEnumToken(a) : Invokable(a,Word) {
-   function invoke(fet : FromEnumToken(a), arg) -> Word {
+impl<a> Invokable<FromEnumToken<a>, a, Word> where a: Enum {
+   function invoke(fet: FromEnumToken<a>, arg: a) returns (Word) {
      return fromEnum(arg);
    }
 }
 contract RGB {
-  public function main() {
+  function main() public returns (Word) {
   /*
   let x = fromEnum(Color.B);
   let y = fromEnum(Bool.True);

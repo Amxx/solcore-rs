@@ -1,7 +1,7 @@
 // v5: nested struct
 // variables holding field MAPs
 
-function add(x : word, y : word) {
+function add(x : word, y : word) returns (word) {
   let res: word;
   assembly {
      res := add(x, y)
@@ -10,13 +10,13 @@ function add(x : word, y : word) {
 }
 
 /////// Construction
-class abs:Typedef(rep) {
-    function rep(x:abs) -> rep;
-    function abs(x:rep) -> abs;
+trait Typedef<abs, rep> {
+    function rep(x: abs) returns (rep) ;
+    function abs(x: rep) returns (abs) ;
 }
 
 
-data uint = uint(word);
+enum uint { uint(word) }
 
 // this does not work :(
 /*
