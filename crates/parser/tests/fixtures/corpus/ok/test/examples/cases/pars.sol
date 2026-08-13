@@ -1,3 +1,3 @@
 contract Pars {
-   public function main() -> (){  let f:word; 42:word; (); }
+   function main() public { let f: word; let ignored: word = 42; (); }
 }

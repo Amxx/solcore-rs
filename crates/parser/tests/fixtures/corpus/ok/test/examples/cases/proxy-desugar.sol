@@ -1,12 +1,12 @@
-import std.{*};
+import * from std;
 pragma no-patterson-condition;
 pragma no-coverage-condition;
 pragma no-bounded-variable-condition;
 
-function foo(x : @word) -> word {
+function foo(x: @word) returns (word) {
   return 0;
 }
 
-function fuz(y : word) -> word {
+function fuz(y: word) returns (word) {
   return y + foo(@word);
 }

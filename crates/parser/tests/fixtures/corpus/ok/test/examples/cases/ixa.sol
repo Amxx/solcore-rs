@@ -54,79 +54,90 @@ impl MemoryType<word> {
   }
 }
 
-forall a . instance memory(array(a)):MemoryType {
-  function load(loc: word) -> memory(array(a)) {
+impl<a> MemoryType<memory<array<a>>> {
+  function load(loc: word) returns (memory<array<a>>) {
     let ret : word;
     assembly { ret := mload(loc) }
     return memory(ret);
   }
 
-  function store(loc : word, val : memory(array(a))) -> () {
-    match val {
-      | memory(ptr) => assembly { mstore(loc,ptr) }
-    }
+  function store(loc: word, val: memory<array<a>>) {
+    match (val) {
+case memory(ptr) {
+assembly { mstore(loc,ptr) }
+}
+}
   }
 
-  function size(prx : Proxy(memory(a))) -> word {
+  function size(prx: Proxy<memory<a>>) returns (word) {
     return 32;
   }
 }
 
 // --- Assignment ---
 
-forall lhs rhs . class lhs:Assign(rhs) {
-  function assign(l : lhs, r : rhs) -> ();
+trait Assign<lhs, rhs> {
+  function assign(l: lhs, r: rhs) ;
 }
 
-instance memory(word):Assign(word) {
-  function assign(ptr : memory(word), val : word) -> () {
-    match ptr {
-      | memory(loc) => assembly {
+impl Assign<memory<word>, word> {
+  function assign(ptr: memory<word>, val: word) {
+    match (ptr) {
+case memory(loc) {
+assembly {
           mstore(loc, val)
       }
-    }
+}
+}
   }
 }
 
 // --- Index Access ---
 
-forall col_idx val . class col_idx:RValueIdxAccess(val) {
-  function lookup(ci : col_idx) -> val;
+trait RValueIdxAccess<col_idx, val> {
+  function lookup(ci: col_idx) returns (val) ;
 }
 
-forall col_idx val . class col_idx:LValueIdxAccess(val) {
-  function lookup(ci : col_idx) -> val;
+trait LValueIdxAccess<col_idx, val> {
+  function lookup(ci: col_idx) returns (val) ;
 }
 
-forall a . a:MemoryType => instance (memory(array(a)), word):RValueIdxAccess(a) {
-  function lookup(col_idx : (memory(array(a)), word)) -> a {
-    let sz = MemoryType.size(Proxy : Proxy(a));
-    match col_idx {
-      | (col, idx) => match col {
-        | memory(loc) =>
-          return MemoryType.load(Add.add(loc, Mul.mul(idx, sz)));
-      }
-    }
+impl<a> RValueIdxAccess<(memory<array<a>>, word), a> where a: MemoryType {
+  function lookup(col_idx: (memory<array<a>>, word)) returns (a) {
+    let sz = MemoryType.size(@a);
+    match (col_idx) {
+case (col, idx) {
+match (col) {
+case memory(loc) {
+return MemoryType.load(Add.add(loc, Mul.mul(idx, sz)));
+}
+}
+}
+}
   }
 }
 
-forall a . a:MemoryType => instance (memory(array(a)), word):LValueIdxAccess(memory(a)) {
-  function lookup(col_idx : (memory(array(a)), word)) -> memory(a) {
-    let sz = MemoryType.size(Proxy : Proxy(a));
-    match col_idx {
-      | (col, idx) => match col {
-        | memory(loc) => return memory(Add.add(loc, Mul.mul(idx, sz)));
-      }
-    }
+impl<a> LValueIdxAccess<(memory<array<a>>, word), memory<a>> where a: MemoryType {
+  function lookup(col_idx: (memory<array<a>>, word)) returns (memory<a>) {
+    let sz = MemoryType.size(@a);
+    match (col_idx) {
+case (col, idx) {
+match (col) {
+case memory(loc) {
+return memory(Add.add(loc, Mul.mul(idx, sz)));
+}
+}
+}
+}
   }
 }
 
 // --- Examples ---
 
-function main() -> () {
-  let x : memory(array(memory(array(word)))) = memory(0);
+function main() {
+  let x : memory<array<memory<array<word>>>> = memory(0);
   let y : word = 0;
-  let z : memory(array(word)) = memory(0);
+  let z : memory<array<word>> = memory(0);
 
   let i0 : word = 0;
   let i1 : word = 1;

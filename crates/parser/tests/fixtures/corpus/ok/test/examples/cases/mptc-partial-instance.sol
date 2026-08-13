@@ -7,31 +7,39 @@
 
 pragma no-coverage-condition Nth;
 
-data Zero;
-data Succ(a);
-data Proxy(a) = Proxy;
+enum Zero {}
+enum Succ<a> {}
+enum Proxy<a> { Proxy }
 
-forall a b c. class a:Nth(b, c) {
-    function nth(x:Proxy(a), y:b) -> c;
+trait Nth<a, b, c> {
+    function nth(x: Proxy<a>, y: b) returns (c) ;
 }
 
-forall a b. instance Zero:Nth((a,b), a) {
-    function nth(x:Proxy(Zero), y:(a,b)) -> a {
-        match y { | (a, b) => return a; }
+impl<a, b> Nth<Zero, (a, b), a> {
+    function nth(x: Proxy<Zero>, y: (a, b)) returns (a) {
+        match (y) {
+case (a, b) {
+return a;
+}
+}
     }
 }
 
-forall n a b c. n:Nth(b,c) => instance Succ(n):Nth((a,b), c) {
-    function nth(x:Proxy(Succ(n)), y:(a,b)) -> c {
-        match y { | (a, b) => return Nth.nth(Proxy : Proxy(n), b); }
+impl<n, a, b, c> Nth<Succ<n>, (a, b), c> where n: Nth<b, c> {
+    function nth(x: Proxy<Succ<n>>, y: (a, b)) returns (c) {
+        match (y) {
+case (a, b) {
+return Nth.nth(@n, b);
+}
+}
     }
 }
 
 contract C {
     constructor() {}
-    public function main() -> word {
+    function main() public returns (word) {
         let p : (word, word, word) = (1, 2, 3);
-        let x : word = Nth.nth(Proxy : Proxy(Zero), p);
+        let x : word = Nth.nth(@Zero, p);
         return x;
     }
 }

@@ -7,26 +7,28 @@
 // sink's specialisation name is being built, which would produce sink$rep
 // (wrong) instead of sink$word (correct).
 
-data Foo = Foo(word);
+enum Foo { Foo(word) }
 
-forall self rep.
-class self:Encoder(rep) {
-    function encode(x:self, hint:word) -> rep;
+trait Encoder<self, rep> {
+    function encode(x: self, hint: word) returns (rep) ;
 }
 
-forall rep r.
-class rep:Sink(r) {
-    function sink(x:rep) -> ();
+trait Sink<rep, r> {
+    function sink(x: rep) ;
 }
 
-instance Foo:Encoder(word) {
-    function encode(x:Foo, hint:word) -> word {
-        match x { | Foo(v) => return v; }
+impl Encoder<Foo, word> {
+    function encode(x: Foo, hint: word) returns (word) {
+        match (x) {
+case Foo(v) {
+return v;
+}
+}
     }
 }
 
-instance word:Sink(word) {
-    function sink(x:word) -> () {
+impl Sink<word, word> {
+    function sink(x: word) {
         return ();
     }
 }
@@ -35,8 +37,7 @@ instance word:Sink(word) {
 // Inside the body, encode returns rep and sink consumes rep.
 // resolveMPTCsFromPreds must bind rep=word so that sink specialises
 // to sink$word (not sink$rep).
-forall a rep . a:Encoder(rep), rep:Sink(word) =>
-function f(x:a) -> () {
+function f<a, rep>(x: a) where a: Encoder<rep>, rep: Sink<word> {
     let r : rep = Encoder.encode(x, 0);
     Sink.sink(r);
     return ();
@@ -44,7 +45,7 @@ function f(x:a) -> () {
 
 contract C {
     constructor() {}
-    public function main() -> word {
+    function main() public returns (word) {
         f(Foo(42));
         return 0;
     }
