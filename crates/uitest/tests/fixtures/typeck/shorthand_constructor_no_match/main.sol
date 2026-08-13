@@ -1,5 +1,5 @@
-data Other = Other;
+enum Other { Other }
 
-function noMatch() -> Other {
+function noMatch() returns (Other) {
   return .Some(1);
 }

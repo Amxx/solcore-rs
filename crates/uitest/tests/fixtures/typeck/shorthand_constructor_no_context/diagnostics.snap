@@ -1,12 +1,12 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/shorthand_constructor_no_context/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/shorthand_constructor_no_context/main.sol
 ---
 error[SC0224]: cannot resolve shorthand constructor `.Some`: cannot resolve without expected constructor type
- --> /main/main.solc:4:11
+ --> /main/main.sol:4:11
   |
-3 | function noContext() -> word {
+3 | function noContext() returns (word) {
 4 |   let x = .Some(1);
   |           ^^^^^^^^ shorthand constructor
 5 |   return 0;

@@ -1,14 +1,16 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/nested_constructor_unreachable/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/nested_constructor_unreachable/main.sol
 ---
 warning[SC0303]: unreachable match arm
- --> /main/main.solc:7:3
-  |
-6 |   | Outer.Wrap(_) => return 0;
-7 |   | Outer.Wrap(Inner.A) => return 1;
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this arm is unreachable
-8 |   | Outer.Other => return 2;
-  |
-  = note: this arm is covered by previous match arms
+  --> /main/main.sol:9:1
+   |
+ 8 |   }
+ 9 | / case Outer.Wrap(Inner.A) {
+10 | | return 1;
+11 | | }
+   | |_^ this arm is unreachable
+12 |   case Outer.Other {
+   |
+   = note: this arm is covered by previous match arms
