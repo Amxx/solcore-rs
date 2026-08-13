@@ -1,5 +1,5 @@
-import std.{*};
-import std.opcodes.{mstore, keccak256, shl};
+import * from std;
+import {mstore, keccak256, shl} from std.opcodes;
 
 export {
   eip712Digest,
@@ -25,12 +25,7 @@ export {
 // keccak256 of the (dynamic) name / version strings — typically compile-time
 // constants produced with `keccakLit`. `chainId` / `verifyingContract` are
 // encoded as their left-padded 32-byte words.
-function eip712DomainSeparator(
-    nameHash: bytes32,
-    versionHash: bytes32,
-    chainId: uint256,
-    verifyingContract: address
-) -> bytes32 {
+function eip712DomainSeparator(nameHash: bytes32, versionHash: bytes32, chainId: uint256, verifyingContract: address) returns (bytes32) {
     let typeHash = keccakLit("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     // Lay the five 32-byte words out contiguously and hash them. We borrow the
     // area above the free-memory pointer as scratch (as `ecrecover` does): the
@@ -48,7 +43,7 @@ function eip712DomainSeparator(
 // Binds a domain separator to a message's struct hash, yielding the final
 // EIP-712 digest: keccak256(0x19 0x01 ‖ domainSeparator ‖ structHash). The
 // two-byte 0x1901 prefix occupies the leading bytes of the first word.
-function eip712Digest(domainSeparator: bytes32, structHash: bytes32) -> bytes32 {
+function eip712Digest(domainSeparator: bytes32, structHash: bytes32) returns (bytes32) {
     let ptr = get_free_memory();
     mstore(ptr,      shl(240, 0x1901));            // 0x1901 in the leading two bytes
     mstore(ptr + 2,  Typedef.rep(domainSeparator));
