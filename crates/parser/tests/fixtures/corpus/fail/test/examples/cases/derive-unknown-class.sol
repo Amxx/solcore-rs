@@ -1,12 +1,12 @@
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
 #[derive(NoSuchClass)]
-data Color = Red | Green | Blue;
+enum Color { Red, Green, Blue }
 
-function useIt() -> bool {
+function useIt() returns (bool) {
     return true;
 }

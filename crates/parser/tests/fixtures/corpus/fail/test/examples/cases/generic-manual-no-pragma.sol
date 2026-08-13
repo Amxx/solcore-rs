@@ -1,18 +1,22 @@
 // Error case: manual Generic instance without pragma no-generic-instance-for.
 // The compiler must reject this with a conflict error.
 
-import std.Generic.{*};
+import * from std.Generic;
 
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
-data Foo = MkFoo(word);
+enum Foo { MkFoo(word) }
 
-instance Foo : Generic(word) {
-    function from(x : Foo) -> word {
-        match x { | Foo.MkFoo(v) => return v; }
+impl Generic<Foo, word> {
+    function from(x: Foo) returns (word) {
+        match (x) {
+case Foo.MkFoo(v) {
+return v;
+}
+}
     }
-    function to(v : word) -> Foo {
+    function to(v: word) returns (Foo) {
         return Foo.MkFoo(v);
     }
 }

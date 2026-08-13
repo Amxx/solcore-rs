@@ -1,16 +1,16 @@
-function addW (x : word, y : word) {
+function addW (x : word, y : word) returns (word) {
    let res : word ;
    assembly { res := add(x, y)
             }
    return res;
 }
-function subW (x : word, y : word) {
+function subW (x : word, y : word) returns (word) {
    let res : word ;
    assembly { res := sub(x, y)
             }
    return res;
 }
-function addU (x : uint, y : uint) -> uint {
+function addU(x: uint, y: uint) returns (uint) {
    let res : word ;
    let xw : word = Num.toWord(x) ;
    let yw : word = Num.toWord(y) ;
@@ -18,14 +18,14 @@ function addU (x : uint, y : uint) -> uint {
             }
    return uint(res);
 }
-function hash1 (x : word) -> word {
+function hash1(x: word) returns (word) {
    let result : word = 0 ;
    assembly { mstore(0, x)
               result := keccak256(0, 32)
             }
    return result;
 }
-function hash2 (x : word, y : word) -> word {
+function hash2(x: word, y: word) returns (word) {
    let result : word = 0 ;
    assembly { mstore(0, x)
               mstore(32, y)
@@ -33,170 +33,183 @@ function hash2 (x : word, y : word) -> word {
             }
    return result;
 }
-data Bool = False  | True  ;
-function not (b : Bool) -> Bool {
+enum Bool { False, True }
+function not(b: Bool) returns (Bool) {
    match (b) {
-   | Bool.False =>
-      return Bool.True;
-   | Bool.True =>
-      return Bool.False;
-   }
+case Bool.False {
+return Bool.True;
 }
-function or (x : Bool, y : Bool) -> Bool {
+case Bool.True {
+return Bool.False;
+}
+}
+}
+function or(x: Bool, y: Bool) returns (Bool) {
    match (x) {
-   | Bool.False =>
-      return y;
-   | Bool.True =>
-      return Bool.True;
-   }
+case Bool.False {
+return y;
 }
-function fromBool (b) {
+case Bool.True {
+return Bool.True;
+}
+}
+}
+function fromBool (b: Bool) returns (word) {
    match (b) {
-   | Bool.False =>
-      return 0;
-   | Bool.True =>
-      return 1;
-   }
+case Bool.False {
+return 0;
 }
-function toBool (x : word) {
+case Bool.True {
+return 1;
+}
+}
+}
+function toBool (x : word) returns (Bool) {
    match (x) {
-   | 0 =>
-      return Bool.False;
-   | _ =>
-      return Bool.True;
-   }
+case 0 {
+return Bool.False;
 }
-forall a . class  a : Num {
-   function toWord (x : a) -> word;
-   function fromWord (x : word) -> a;
-   function add (x : a, y : a) -> a;
-   function sub (x : a, y : a) -> a;
-   function eq (x : a, y : a) -> Bool;
-   function gt (x : a, y : a) -> Bool;
+default {
+return Bool.True;
 }
-instance word : Num {
-   function toWord (x : word) -> word {
+}
+}
+trait Num<a> {
+   function toWord(x: a) returns (word) ;
+   function fromWord(x: word) returns (a) ;
+   function add(x: a, y: a) returns (a) ;
+   function sub(x: a, y: a) returns (a) ;
+   function eq(x: a, y: a) returns (Bool) ;
+   function gt(x: a, y: a) returns (Bool) ;
+}
+impl Num<word> {
+   function toWord(x: word) returns (word) {
       return x;
    }
-   function fromWord (x : word) -> word {
+   function fromWord(x: word) returns (word) {
       return x;
    }
-   function add (x : word, y : word) -> word {
+   function add(x: word, y: word) returns (word) {
       return addW(x, y);
    }
-   function sub (x : word, y : word) -> word {
+   function sub(x: word, y: word) returns (word) {
       return addW(x, y);
    }
-   function eq (x : word, y : word) -> Bool {
+   function eq(x: word, y: word) returns (Bool) {
       let res : word ;
       assembly { res := eq(x, y)
                }
       return toBool(res);
    }
-   function gt (x : word, y : word) -> Bool {
+   function gt(x: word, y: word) returns (Bool) {
       let res : word ;
       assembly { res := gt(x, y)
                }
       return toBool(res);
    }
 }
-forall a . a : Num => function ge (x : a, y : a) -> Bool {
+function ge<a>(x: a, y: a) returns (Bool) where a: Num {
    return or(Num.gt(x, y), Num.eq(x, y));
 }
-data uint = uint(word) ;
-instance uint : Num {
-   function toWord (x : uint) -> word {
+enum uint { uint(word) }
+impl Num<uint> {
+   function toWord(x: uint) returns (word) {
       match (x) {
-      | uint(y) =>
-         return y;
-      }
+case uint(y) {
+return y;
+}
+}
    }
 
-   function fromWord (x : word) -> uint {
+   function fromWord(x: word) returns (uint) {
       return uint(x);
    }
-   function add (x : uint, y : uint) -> uint {
+   function add(x: uint, y: uint) returns (uint) {
       return uint(addW(Num.toWord(x), Num.toWord(y)));
    }
-   function sub (x : uint, y : uint) -> uint {
+   function sub(x: uint, y: uint) returns (uint) {
       return uint(subW(Num.toWord(x), Num.toWord(y)));
    }
-   function eq (x : uint, y : uint) -> Bool {
+   function eq(x: uint, y: uint) returns (Bool) {
       return Num.eq(Num.toWord(x), Num.toWord(y));
    }
-   function gt (x : uint, y : uint) -> Bool {
+   function gt(x: uint, y: uint) returns (Bool) {
       return Num.gt(Num.toWord(x), Num.toWord(y));
    }
 }
-forall abs rep . class  abs : Typedef (rep) {
-   function rep (x : abs) -> rep;
-   function abs (x : rep) -> abs;
+trait Typedef<abs, rep> {
+   function rep(x: abs) returns (rep) ;
+   function abs(x: rep) returns (abs) ;
 }
-instance word : Typedef (word) {
-   function rep (x : word) -> word {
+impl Typedef<word, word> {
+   function rep(x: word) returns (word) {
       return x;
    }
-   function abs (x : word) -> word {
+   function abs(x: word) returns (word) {
       return x;
    }
 }
-instance uint : Typedef (word) {
-   function rep (x : uint) -> word {
+impl Typedef<uint, word> {
+   function rep(x: uint) returns (word) {
       match (x) {
-      | uint(y) =>
-         return y;
-      }
+case uint(y) {
+return y;
+}
+}
    }
-   function abs (x : word) -> uint {
+   function abs(x: word) returns (uint) {
       return uint(x);
    }
 }
-data address = address(word) ;
-instance address : Typedef (word) {
-   function rep (x : address) -> word {
+enum address { address(word) }
+impl Typedef<address, word> {
+   function rep(x: address) returns (word) {
       match (x) {
-      | address(y) =>
-         return y;
-      }
+case address(y) {
+return y;
+}
+}
    }
-   function abs (x : word) -> address {
+   function abs(x: word) returns (address) {
       return address(x);
    }
 }
-data storage (a) = storage(word) ;
-data ContractStorage (cxt) = ContractStorage(cxt) ;
-data storageRef (a) = storageRef(word) ;
-data Proxy (a) = Proxy  ;
-data mapping (member, index) = mapping(word, Proxy(member), Proxy(index)) ;
-data mapRef (a) = mapRef(word) ;
-forall a . instance storage(a) : Typedef (word) {
-   function rep (x : storage(a)) -> word {
+enum storage<a> { storage(word) }
+enum ContractStorage<cxt> { ContractStorage(cxt) }
+enum storageRef<a> { storageRef(word) }
+enum Proxy<a> { Proxy }
+enum mapping<member, index> { mapping(word, Proxy<member>, Proxy<index>) }
+enum mapRef<a> { mapRef(word) }
+impl<a> Typedef<storage<a>, word> {
+   function rep(x: storage<a>) returns (word) {
       match (x) {
-      | storage(y) =>
-         return y;
-      }
+case storage(y) {
+return y;
+}
+}
    }
-   function abs (x : word) -> storage(a) {
+   function abs(x: word) returns (storage<a>) {
       return storage(x);
    }
 }
-forall a . instance storageRef(a) : Typedef (word) {
-   function rep (x : storageRef(a)) -> word {
+impl<a> Typedef<storageRef<a>, word> {
+   function rep(x: storageRef<a>) returns (word) {
       match (x) {
-      | storageRef(y) =>
-         return y;
-      }
+case storageRef(y) {
+return y;
+}
+}
    }
-   function abs (x : word) -> storageRef(a) {
+   function abs(x: word) returns (storageRef<a>) {
       return storageRef(x);
    }
 }
-forall lhs rhs . class  lhs : Assign (rhs) {
-   function assign (l : lhs, r : rhs) -> ();
+trait Assign<lhs, rhs> {
+   function assign(l: lhs, r: rhs) ;
 }
-data ref (a) = ref(a) ;
-forall a . instance ref(a) : Assign (a) {
-   function assign (l : ref(a), r : a) -> () {
+enum ref<a> { ref(a) }
+impl<a> Assign<ref<a>, a> {
+   function assign(l: ref<a>, r: a) {
       return ();
    }
 }

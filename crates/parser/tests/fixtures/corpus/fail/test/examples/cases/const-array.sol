@@ -16,25 +16,26 @@ function concat<sizel, sizer, elem, sizeout, pairSizelSizer>(lhs: memory<array<s
 
 enum Itself<a> { ItselfRuntimeTag }
 
-data array(size, elem) = array;
-data memory(a) = memory(word);
+enum array<size, elem> { array }
+enum memory<a> { memory(word) }
 
-forall self indexType elementType . class self:IndexAccessible (indexType, elementType){
+trait IndexAccessible<self, indexType, elementType> {
     function set(self:self, ix:indexType, val:elementType);
-    function at(self:self, ix:indexType) -> elementType;
+    function at(self: self, ix: indexType) returns (elementType) ;
 }
 
-forall self . class self:ToWord{
-    function toWord(self:Itself(self)) -> word;
+trait ToWord<self> {
+    function toWord(self: Itself<self>) returns (word) ;
 }
 
-instance Zero : ToWord {
-    function toWord(zero) { return 0; }
+impl ToWord<Zero> {
+    function toWord(zero: Itself<Zero>) { return 0; }
 }
 
-forall prev . prev:ToWord => instance Succ(prev) : ToWord {
-    function toWord(self: Itself(Succ(prev))) {
-        let returnVal : word = ToWord.toWord(Itself.ItselfRuntimeTag:Itself(prev));
+impl<prev> ToWord<Succ<prev>> where prev: ToWord {
+    function toWord(self: Itself<Succ<prev>>) {
+        let prevTag : Itself<prev> = Itself.ItselfRuntimeTag;
+        let returnVal : word = ToWord.toWord(prevTag);
         assembly {
             returnVal := add(1, returnVal)
         }
@@ -42,13 +43,13 @@ forall prev . prev:ToWord => instance Succ(prev) : ToWord {
     }
 }
 
-forall self . class self:MemoryType {
-    function load(ptr:word) -> self;
+trait MemoryType<self> {
+    function load(ptr: word) returns (self) ;
     function store(ptr:word, value:self);
 }
 
-instance word:MemoryType {
-    function load(ptr:word) -> word {
+impl MemoryType<word> {
+    function load(ptr: word) returns (word) {
         let val : word;
         assembly { val := mload(ptr) }
         return val;
@@ -58,9 +59,10 @@ instance word:MemoryType {
     }
 }
 
-forall size elem . size : ToWord, elem:MemoryType => instance memory(array(size, elem)) : IndexAccessible(word, elem) {
-    function at(self, index) -> elem {
-        let sizeValue = ToWord.toWord(Itself.ItselfRuntimeTag:Itself(size));
+impl<size, elem> IndexAccessible<memory<array<size, elem>>, word, elem> where size: ToWord, elem: MemoryType {
+    function at(self: memory<array<size, elem>>, index: word) returns (elem) {
+        let sizeTag : Itself<size> = Itself.ItselfRuntimeTag;
+        let sizeValue = ToWord.toWord(sizeTag);
        // this should work but doesn't
         // assembly {
         //    if iszero(lt(index, sizeValue)) {
@@ -68,18 +70,20 @@ forall size elem . size : ToWord, elem:MemoryType => instance memory(array(size,
         //    }
         //}
 
-        match self {
-            | memory(offset) =>
-                let x = offset; // can't use this inside the assembly block :-(
+        match (self) {
+case memory(offset) {
+let x = offset; // can't use this inside the assembly block :-(
                 assembly {
                     index := add(x, mul(32, index))
                 }
                 return MemoryType.load(index);
-        }
+}
+}
     }
 
-    function set(self, index, val) {
-        let sizeValue = ToWord.toWord(Itself.ItselfRuntimeTag:Itself(size));
+    function set(self: memory<array<size, elem>>, index: word, val: elem) {
+        let sizeTag : Itself<size> = Itself.ItselfRuntimeTag;
+        let sizeValue = ToWord.toWord(sizeTag);
 
         //assembly {
         //    if iszero(lt(index, sizeValue)) {
@@ -87,14 +91,15 @@ forall size elem . size : ToWord, elem:MemoryType => instance memory(array(size,
         //    }
         //}
 
-        match self {
-            | memory(offset) =>
-            let x = offset; // can't use this inside the assembly block :-(
+        match (self) {
+case memory(offset) {
+let x = offset; // can't use this inside the assembly block :-(
                 assembly {
                     index := add(x, mul(32, index))
                 }
                 MemoryType.store(index, val);
-        }
+}
+}
     }
 }
 
@@ -102,8 +107,8 @@ forall size elem . size : ToWord, elem:MemoryType => instance memory(array(size,
 
 contract Array {
 
-    public function main() {
-        let arr : memory(array(Succ(Succ(Succ(Succ(Zero)))), word)) = memory(42);  // = (1,2,3,4,5,6,7,8,9,10);
+    function main() public {
+        let arr : memory<array<Succ<Succ<Succ<Succ<Zero>>>>, word>> = memory(42);  // = (1,2,3,4,5,6,7,8,9,10);
         IndexAccessible.set(arr, 4, 33);
 
        // this (correctly) typechecks but doesn't specialize
