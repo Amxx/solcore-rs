@@ -23,18 +23,18 @@ pub(super) fn display_scheme_source<'db>(
         .map(|pred| display_pred_source(db, *pred, &names))
         .collect::<Vec<_>>();
     let ty = display_ty_source(db, body.ty(db), &names);
-    let qualified = if preds.is_empty() {
+    let mut displayed = if scheme.binder_count(db) == 0 {
         ty
-    } else {
-        format!("{} => {ty}", preds.join(", "))
-    };
-    if scheme.binder_count(db) == 0 {
-        qualified
     } else {
         let vars = (0..scheme.binder_count(db))
             .map(|index| display_var_name(index, &names))
             .collect::<Vec<_>>()
             .join(", ");
-        format!("forall {vars}. {qualified}")
+        format!("<{vars}> {ty}")
+    };
+    if !preds.is_empty() {
+        displayed.push_str(" where ");
+        displayed.push_str(&preds.join(", "));
     }
+    displayed
 }

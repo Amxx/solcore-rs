@@ -19,10 +19,10 @@ impl<'db> Evidence<'db> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 if sub_evidence.is_empty() {
-                    format!("instance {name}({args})")
+                    format!("impl {name}<{args}>")
                 } else {
                     format!(
-                        "instance {name}({args}) with {} subproof(s)",
+                        "impl {name}<{args}> with {} subproof(s)",
                         sub_evidence.len()
                     )
                 }
@@ -34,7 +34,7 @@ impl<'db> Evidence<'db> {
                     .filter(|name| !name.is_empty())
                     .unwrap_or_else(|| format!("{:?}", class.kind(db)));
                 format!(
-                    "superclass {name} => {} via {}",
+                    "supertrait {name}: {} via {}",
                     pred.display(db),
                     child.display(db)
                 )

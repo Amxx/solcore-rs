@@ -1664,9 +1664,9 @@ mod tests {
             std_root.clone(),
             BTreeMap::new(),
         ));
-        let main_path = main_root.join("main.solc");
-        let std_path = std_root.join("std.solc");
-        let dispatch_path = std_root.join("dispatch.solc");
+        let main_path = main_root.join("main.sol");
+        let std_path = std_root.join("std.sol");
+        let dispatch_path = std_root.join("dispatch.sol");
         db.module_fs_snapshot = Some(ModuleFsSnapshot::new(
             &db,
             BTreeSet::from([main_path.clone(), std_path.clone(), dispatch_path.clone()]),
@@ -1739,8 +1739,8 @@ mod tests {
     #[test]
     fn preserves_source_and_builds_effective_dispatch_overlay() {
         let src = r#"
-import std.dispatch.{*};
-contract C { public function answer(x:uint256) -> uint256 { return x; } }
+import * from std.dispatch;
+contract C { function answer(x: uint256) public returns (uint256) { return x; } }
 "#;
         let (db, file) = db_with_main(src);
         let source = source_module(&db, file);
@@ -1772,8 +1772,8 @@ contract C { public function answer(x:uint256) -> uint256 { return x; } }
     #[test]
     fn preparation_preserves_contract_and_field_comments() {
         let src = r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 // contract documentation
 contract C {
   // stored value documentation
@@ -1781,7 +1781,7 @@ contract C {
   // constructor documentation
   constructor() {}
   // method documentation
-  public function answer(x:uint256) -> uint256 { return x; }
+  function answer(x:uint256) public returns (uint256) { return x; }
 }
 "#;
         let (db, file) = db_with_main(src);
@@ -1872,7 +1872,7 @@ contract C {
     #[test]
     fn runtime_dispatch_is_implicit_and_existing_main_suppresses_it() {
         let (db, file) = db_with_main(
-            "contract C { public function answer() -> uint256 { return uint256(1); } }",
+            "contract C { function answer() public returns (uint256) { return uint256(1); } }",
         );
         let source = source_module(&db, file);
         let prepared = prepare_module(&db, source);
@@ -1891,8 +1891,8 @@ contract C {
 
         let (db, file) = db_with_main(
             r#"
-import std.dispatch.{*};
-contract C { function main() -> () {} }
+import * from std.dispatch;
+contract C { function main() {} }
 "#,
         );
         let source = source_module(&db, file);
@@ -1913,8 +1913,7 @@ contract C { function main() -> () {} }
 
     #[test]
     fn nonempty_constructor_is_prepared_without_injecting_imports() {
-        let (db, file) =
-            db_with_main("contract C { constructor(x:word) {} function main() -> () {} }");
+        let (db, file) = db_with_main("contract C { constructor(x:word) {} function main() {} }");
         let source = source_module(&db, file);
         let prepared = prepare_module(&db, source);
         assert_ne!(prepared.module(&db), source);
@@ -1933,11 +1932,11 @@ contract C { function main() -> () {} }
     fn constructor_overlay_preserves_source_and_generates_deployment_entry() {
         let (db, file) = db_with_main(
             r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 contract C {
-  payable constructor(x:word, y:word) { let z = x; }
-  function main() -> () { return (); }
+  constructor(x:word, y:word) payable { let z = x; }
+  function main() returns () { return (); }
 }
 "#,
         );
@@ -1990,10 +1989,10 @@ contract C {
     fn explicit_constructor_overlay_is_idempotent() {
         let (db, file) = db_with_main(
             r#"
-import std.{*};
+import * from std;
 contract C {
-  payable constructor(x:word) { let saved = x; }
-  function main() -> () { return (); }
+  constructor(x:word) payable { let saved = x; }
+  function main() returns () { return (); }
 }
 "#,
         );
@@ -2030,19 +2029,19 @@ contract C {
     #[test]
     fn constructor_body_edit_keeps_generated_wrapper_identity() {
         let before = r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 contract C {
   constructor(x:word) { let z = 1; }
-  function main() -> () { return (); }
+  function main() returns () { return (); }
 }
 "#;
         let after = r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 contract C {
   constructor(x:word) { let z = 2; }
-  function main() -> () { return (); }
+  function main() returns () { return (); }
 }
 "#;
         let (mut db, file) = db_with_main(before);
@@ -2084,10 +2083,10 @@ contract C {
     fn deduplicates_overloaded_method_name_declarations() {
         let (db, file) = db_with_main(
             r#"
-import std.dispatch.{*};
+import * from std.dispatch;
 contract C {
-  public function get(x:uint256) -> uint256 { return x; }
-  public function get(x:bool) -> bool { return x; }
+  function get(x:uint256) public returns (uint256) { return x; }
+  function get(x:bool) public returns (bool) { return x; }
 }
 "#,
         );
@@ -2108,12 +2107,12 @@ contract C {
     fn dispatch_name_types_are_injective_across_contract_method_boundaries() {
         let (db, file) = db_with_main(
             r#"
-import std.dispatch.{*};
+import * from std.dispatch;
 contract A {
-  public function B_C(x:uint256) -> uint256 { return x; }
+  function B_C(x:uint256) public returns (uint256) { return x; }
 }
 contract A_B {
-  public function C(x:uint256) -> uint256 { return x; }
+  function C(x:uint256) public returns (uint256) { return x; }
 }
 "#,
         );
@@ -2150,12 +2149,12 @@ contract A_B {
     #[test]
     fn omitted_return_uses_unit_and_body_edit_keeps_generated_identity() {
         let before = r#"
-import std.dispatch.{*};
-contract C { public function ping() { let x = 1; } }
+import * from std.dispatch;
+contract C { function ping() public { let x = 1; } }
 "#;
         let after = r#"
-import std.dispatch.{*};
-contract C { public function ping() { let x = 2; } }
+import * from std.dispatch;
+contract C { function ping() public { let x = 2; } }
 "#;
         let (mut db, file) = db_with_main(before);
         let source = source_module(&db, file);

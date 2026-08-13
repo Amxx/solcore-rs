@@ -11,7 +11,7 @@ pub(super) struct DerivedStorageClauseSource<'db> {
     pub storage_size: DefId<'db>,
     /// `CanStore` class.
     pub can_store: DefId<'db>,
-    /// `storage(ty)` data type.
+    /// `storage<ty>` data type.
     pub storage: DefId<'db>,
 }
 
@@ -25,7 +25,7 @@ pub(super) fn visible_storage_clause_source<'db>(
 
 /// Builds the storage obligation carried by a contract field declaration.
 ///
-/// A field is addressed uniformly through `storage(field_ty)`, but mappings
+/// A field is addressed uniformly through `storage<field_ty>`, but mappings
 /// and storage arrays load back as slot handles while strings and bytes load
 /// into memory.  Keeping this distinction here mirrors expression inference
 /// and, importantly, makes an otherwise-unused ADT field validate the body of
@@ -338,7 +338,7 @@ fn adt_named<'db>(db: &'db dyn Db, def: DefId<'db>, name: &str) -> Option<()> {
 }
 
 /// Adds the concrete `T:StorageSize` and
-/// `storage(T):CanStore(T)` clauses emitted by upstream DeriveGeneric.
+/// `storage<T>: CanStore<T>` clauses emitted by upstream DeriveGeneric.
 pub(super) fn push_derived_storage_clauses<'db>(
     db: &'db dyn Db,
     clauses: &mut Vec<ProgramClause<'db>>,

@@ -262,7 +262,7 @@ pub enum DerivedClauseKind<'db> {
         /// ADT whose storage-size instance was synthesized.
         adt: DefId<'db>,
     },
-    /// Concrete `storage(T):CanStore(T)` instance.
+    /// Concrete `storage<T>: CanStore<T>` impl.
     CanStore {
         /// ADT whose storage instance was synthesized.
         adt: DefId<'db>,

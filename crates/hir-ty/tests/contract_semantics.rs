@@ -107,7 +107,7 @@ impl nameres::Db for TestDb {
 impl solcore_hir_ty::Db for TestDb {}
 
 fn source_file(db: &TestDb, name: &str, src: &str) -> SourceFile {
-    let url = format!("memory:///{name}.solc").parse().expect("valid url");
+    let url = format!("memory:///{name}.sol").parse().expect("valid url");
     SourceFile::new(db, url, Some(src.to_owned()))
 }
 
@@ -126,8 +126,8 @@ fn db_with_main(src: &str) -> (TestDb, ModuleKey) {
         library: LibraryId::Main,
         logical_path: vec!["main".to_owned()],
     };
-    let path = PathBuf::from("/main/main.solc");
-    let file = source_file_at(&db, "/main/main.solc", src);
+    let path = PathBuf::from("/main/main.sol");
+    let file = source_file_at(&db, "/main/main.sol", src);
     db.existing_files.insert(path);
     db.module_files.insert(key.clone(), file);
     db.sync_inputs();
@@ -143,45 +143,41 @@ fn insert_module_source(db: &mut TestDb, key: ModuleKey, path: &str, src: &str) 
 
 fn insert_real_std_modules(db: &mut TestDb) {
     for (logical, path, source) in [
-        (
-            "std",
-            "/std/std.solc",
-            include_str!("../../../std/std.solc"),
-        ),
+        ("std", "/std/std.sol", include_str!("../../../std/std.sol")),
         (
             "dispatch",
-            "/std/dispatch.solc",
-            include_str!("../../../std/dispatch.solc"),
+            "/std/dispatch.sol",
+            include_str!("../../../std/dispatch.sol"),
         ),
         (
             "opcodes",
-            "/std/opcodes.solc",
-            include_str!("../../../std/opcodes.solc"),
+            "/std/opcodes.sol",
+            include_str!("../../../std/opcodes.sol"),
         ),
         (
             "Generic",
-            "/std/Generic.solc",
-            include_str!("../../../std/Generic.solc"),
+            "/std/Generic.sol",
+            include_str!("../../../std/Generic.sol"),
         ),
         (
             "ABIGeneric",
-            "/std/ABIGeneric.solc",
-            include_str!("../../../std/ABIGeneric.solc"),
+            "/std/ABIGeneric.sol",
+            include_str!("../../../std/ABIGeneric.sol"),
         ),
         (
             "StorageGeneric",
-            "/std/StorageGeneric.solc",
-            include_str!("../../../std/StorageGeneric.solc"),
+            "/std/StorageGeneric.sol",
+            include_str!("../../../std/StorageGeneric.sol"),
         ),
         (
             "eip712",
-            "/std/eip712.solc",
-            include_str!("../../../std/eip712.solc"),
+            "/std/eip712.sol",
+            include_str!("../../../std/eip712.sol"),
         ),
         (
             "eip7951",
-            "/std/eip7951.solc",
-            include_str!("../../../std/eip7951.solc"),
+            "/std/eip7951.sol",
+            include_str!("../../../std/eip7951.sol"),
         ),
     ] {
         insert_module_source(
@@ -285,7 +281,7 @@ fn yul_function_values_are_local_and_cannot_capture_sail_values() {
             "dynamic read",
             r#"
 contract C {
-  function main() -> word {
+  function main() returns (word) {
     let outer : word;
     assembly {
       outer := callvalue()
@@ -301,7 +297,7 @@ contract C {
             "known write",
             r#"
 contract C {
-  function main() -> word {
+  function main() returns (word) {
     let outer : word = 7;
     assembly {
       function writeOuter() { outer := 9 }
@@ -316,7 +312,7 @@ contract C {
             "outer Yul read",
             r#"
 contract C {
-  function main() -> word {
+  function main() returns (word) {
     let result : word;
     assembly {
       let outerYul := callvalue()
@@ -342,7 +338,7 @@ contract C {
     let local = diagnostics(
         r#"
 contract C {
-  function main() -> word {
+  function main() returns (word) {
     let result : word;
     assembly {
       function localValue(input) -> output {
@@ -364,7 +360,7 @@ fn yul_for_body_values_do_not_leak_into_the_post_block() {
     let diagnostics = diagnostics(
         r#"
 contract C {
-  function main() -> word {
+  function main() returns (word) {
     let result : word;
     assembly {
       let i := 0
@@ -395,7 +391,7 @@ fn generated_dispatch_is_synthesized_before_import_resolution() {
         &db,
         r#"
 contract Answer {
-  public function add(x: word) -> word { return x; }
+  function add(x: word) public returns (word) { return x; }
 }
 "#,
     );
@@ -414,7 +410,7 @@ contract Answer {
         &manual_db,
         r#"
 contract Answer {
-  function main() -> () { return (); }
+  function main() returns () { return (); }
 }
 "#,
     );
@@ -428,7 +424,7 @@ contract Answer {
     let parameterized_main = diagnostics(
         r#"
 contract Answer {
-  public function main(x: word) -> word { return x; }
+  function main(x: word) public returns (word) { return x; }
 }
 "#,
     );
@@ -444,11 +440,11 @@ contract Answer {
 fn prepared_dispatch_uses_its_synthetic_sigstring_instance_during_typeck() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract Answer {
-  public function ping(x: word) -> word { return x; }
+  function ping(x: word) public returns (word) { return x; }
 }
 "#,
     );
@@ -458,11 +454,11 @@ contract Answer {
             library: LibraryId::Std,
             logical_path: vec!["std".to_owned()],
         },
-        "/std/std.solc",
+        "/std/std.sol",
         r#"
 export { Proxy(*), string };
-data Proxy(t) = Proxy;
-data string;
+enum Proxy<t> {Proxy}
+enum string {}
 "#,
     );
     insert_module_source(
@@ -471,9 +467,9 @@ data string;
             library: LibraryId::Std,
             logical_path: vec!["dispatch".to_owned()],
         },
-        "/std/dispatch.solc",
+        "/std/dispatch.sol",
         r#"
-import std.{*};
+import * from std;
 
 export {
   Contract(*),
@@ -486,31 +482,29 @@ export {
   fallback_default_implementation
 };
 
-data Contract(methods, fb) = Contract(methods, fb);
-data Method(name, payability, args, rets, fn) =
-  Method(Proxy(name), Proxy(payability), Proxy(args), Proxy(rets), fn);
-data Fallback(payability, args, rets, fn) =
-  Fallback(Proxy(payability), Proxy(args), Proxy(rets), fn);
-data Payable;
-data NonPayable;
+enum Contract<methods, fb> {Contract(methods, fb)}
+enum Method<name, payability, args, rets, fn> {Method(Proxy<name>, Proxy<payability>, Proxy<args>, Proxy<rets>, fn)}
+enum Fallback<payability, args, rets, fn> {Fallback(Proxy<payability>, Proxy<args>, Proxy<rets>, fn)}
+enum Payable {}
+enum NonPayable {}
 
-forall t . class t:SigString {
-  function sigStr(value: Proxy(t)) -> string;
+trait SigString<t> {
+  function sigStr(value: Proxy<t>) returns (string) ;
 }
 
-forall c . class c:RunContract {
-  function exec(value: c) -> ();
+trait RunContract<c> {
+  function exec(value: c) returns () ;
 }
 
-forall name payability args rets fn fb
-  . name:SigString
-=> instance Contract(Method(name, payability, args, rets, fn), fb):RunContract {
-  function exec(value: Contract(Method(name, payability, args, rets, fn), fb)) -> () {
+impl<name, payability, args, rets, fn, fb>
+  RunContract<Contract<Method<name, payability, args, rets, fn>, fb>>
+  where name: SigString {
+  function exec(value: Contract<Method<name, payability, args, rets, fn>, fb>) returns () {
     return ();
   }
 }
 
-function fallback_default_implementation() -> () { return (); }
+function fallback_default_implementation() returns () { return (); }
 "#,
     );
 
@@ -543,15 +537,15 @@ function fallback_default_implementation() -> () { return (); }
 fn dispatch_names_and_selectors_distinguish_contract_method_boundaries() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract A {
-  public function B_C(x:uint256) -> uint256 { return x; }
+  function B_C(x:uint256) public returns (uint256) { return x; }
 }
 
 contract A_B {
-  public function C(x:uint256) -> uint256 { return x; }
+  function C(x:uint256) public returns (uint256) { return x; }
 }
 "#,
     );
@@ -581,15 +575,15 @@ fn dispatch_surface_tracks_public_private_constructor_and_fallback() {
         &db,
         r#"
 contract Token {
-  payable constructor(amount: word) {}
+  constructor(amount: word) payable {}
 
-  function hidden(x: word) -> word { return x; }
+  function hidden(x: word) returns (word) { return x; }
 
-  public payable function pay(to: word) -> (word, bool) {
+  function pay(to: word) public payable returns ((word, bool)) {
     return (to, true);
   }
 
-  payable fallback() -> () {}
+  fallback() payable {}
 }
 "#,
     );
@@ -626,8 +620,8 @@ fn abi_json_matches_reference_public_function_shape() {
         &db,
         r#"
 contract Sample {
-  public function get() -> word { return 1; }
-  function secret() -> word { return 0; }
+  function get() public returns (word) { return 1; }
+  function secret() returns (word) { return 0; }
 }
 "#,
     );
@@ -663,7 +657,7 @@ fn abi_json_matches_reference_constructor_payable_and_tuple_outputs() {
 contract Token {
   constructor(amount: word) {}
 
-  public payable function pay(to: word) -> (word, bool) {
+  function pay(to: word) public payable returns ((word, bool)) {
     return (to, true);
   }
 }
@@ -685,10 +679,10 @@ fn abi_json_preserves_source_declaration_order() {
         &db,
         r#"
 contract Order {
-  public function a() -> word { return 1; }
+  function a() public returns (word) { return 1; }
   constructor(seed: word) {}
-  payable fallback() -> () {}
-  public function b(x: word) -> word { return x; }
+  fallback() payable {}
+  function b(x: word) public returns (word) { return x; }
 }
 "#,
     );
@@ -718,7 +712,7 @@ type UnitAlias = ();
 
 contract AliasDispatch {
   constructor(seed: U) {}
-  fallback() -> UnitAlias {}
+  fallback() {}
 }
 "#,
     );
@@ -747,20 +741,12 @@ contract AliasDispatch {
 fn dispatch_signature_spelling_matches_reference_sigstring_shape() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
+import * from std;
 
 type U = word;
 
 contract Signatures {
-  public function spell(
-    a: word,
-    b: (word, bool),
-    c: memory(string),
-    d: memory(bytes),
-    e: bytes32,
-    f: address,
-    g: U
-  ) -> word {
+  function spell(a: word, b: (word, bool), c: memory<string>, d: memory<bytes>, e: bytes32, f: address, g: U) public returns (word) {
     return a;
   }
 }
@@ -772,14 +758,14 @@ contract Signatures {
             library: LibraryId::Std,
             logical_path: vec!["std".to_owned()],
         },
-        "/std/std.solc",
+        "/std/std.sol",
         r#"
 export { string, address(*), bytes, bytes32(*), memory(*) };
-data string;
-data address = address(word);
-data bytes;
-data bytes32 = bytes32(word);
-data memory(t) = memory(word);
+enum string {}
+enum address {address(word)}
+enum bytes {}
+enum bytes32 {bytes32(word)}
+enum memory<t> {memory(word)}
 "#,
     );
     let file = db.module_files[&key];
@@ -797,10 +783,10 @@ data memory(t) = memory(word);
 fn bytes4_is_supported_by_the_e136_public_abi_surface() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
+import * from std;
 
 contract Bytes4Echo {
-  public function echo(value: bytes4) -> bytes4 { return value; }
+  function echo(value: bytes4) public returns (bytes4) { return value; }
 }
 "#,
     );
@@ -832,14 +818,14 @@ contract Bytes4Echo {
 fn calldata_array_abi_uses_generic_signature_and_source_adt_json_name() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Operation = Approve(uint256) | Reject(uint256);
+enum Operation {Approve(uint256) , Reject(uint256)}
 
 contract Batch {
-  public function count(ops: calldata(array(Operation))) -> uint256 {
+  function count(ops: calldata<array<Operation>>) public returns (uint256) {
     return uint256(0);
   }
 }
@@ -874,10 +860,10 @@ contract Batch {
 fn calldata_tuple_array_json_preserves_components_and_runtime_sigstring_shape() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
+import * from std;
 
 contract Tuples {
-  public function first(values: calldata(array((uint256, address)))) -> uint256 {
+  function first(values: calldata<array<(uint256, address)>>) public returns (uint256) {
     return uint256(0);
   }
 }
@@ -906,12 +892,10 @@ contract Tuples {
 fn nested_calldata_arrays_recurse_in_signatures_and_abi_json() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
+import * from std;
 
 contract NestedArrays {
-  public function first(
-    values: calldata(array(calldata(array(uint256))))
-  ) -> uint256 {
+  function first(values: calldata<array<calldata<array<uint256>>>>) public returns (uint256) {
     return uint256(0);
   }
 }
@@ -944,12 +928,10 @@ contract NestedArrays {
 fn calldata_arrays_are_rejected_from_nested_output_positions() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
+import * from std;
 
 contract InputOnly {
-  public function keep(
-    values: calldata(array(uint256))
-  ) -> (uint256, calldata(array(uint256))) {
+  function keep(values: calldata<array<uint256>>) public returns (uint256, calldata<array<uint256>>) {
     return (uint256(0), values);
   }
 }
@@ -970,7 +952,7 @@ contract InputOnly {
         diagnostic.code.as_deref() == Some("SC0231")
             && diagnostic
                 .message
-                .contains("calldata(array(t)) is input-only")
+                .contains("calldata<array<t>> is input-only")
             && diagnostic.message.contains("no ABIEncode evidence")
     }));
     assert!(contract_abi_json(&db, module, contract).is_err());
@@ -980,15 +962,15 @@ contract InputOnly {
 fn calldata_array_signature_recurses_through_nested_derived_generic_reps() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Inner = Number(uint256) | Account(address);
-data Outer = Outer(Inner, bytes32);
+enum Inner {Number(uint256) , Account(address)}
+enum Outer {Outer(Inner, bytes32)}
 
 contract Nested {
-  public function inspect(values: calldata(array(Outer))) -> uint256 {
+  function inspect(values: calldata<array<Outer>>) public returns (uint256) {
     return uint256(0);
   }
 }
@@ -1012,25 +994,25 @@ contract Nested {
 fn calldata_array_supports_parameterized_and_rejects_recursive_and_manual_generic_adts() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Box(a) = Box(a);
-data Node = Node(uint256, Node);
+enum Box<a> {Box(a)}
+enum Node {Node(uint256, Node)}
 
 pragma no-generic-instance-for Manual;
-data Manual = Left(uint256) | Right(uint256);
-instance Manual:Generic(sum(uint256, uint256)) {}
+enum Manual {Left(uint256) , Right(uint256)}
+impl Generic<Manual,sum<uint256, uint256>> {}
 
 contract Rejected {
-  public function boxed(values: calldata(array(Box(uint256)))) -> uint256 {
+  function boxed(values: calldata<array<Box<uint256>>>) public returns (uint256) {
     return uint256(0);
   }
-  public function recursive(values: calldata(array(Node))) -> uint256 {
+  function recursive(values: calldata<array<Node>>) public returns (uint256) {
     return uint256(0);
   }
-  public function manual(values: calldata(array(Manual))) -> uint256 {
+  function manual(values: calldata<array<Manual>>) public returns (uint256) {
     return uint256(0);
   }
 }
@@ -1046,7 +1028,7 @@ contract Rejected {
     assert_eq!(surface.methods[0].signature, "boxed(uint256[])");
     assert_eq!(
         surface.methods[0].inputs[0].ty.to_string(),
-        "Box(uint256)[]"
+        "Box<uint256>[]"
     );
     assert!(surface.methods[1..].iter().all(|method| {
         method.signature.ends_with("(<unsupported>)")
@@ -1070,16 +1052,16 @@ contract Rejected {
 fn visible_orphan_generic_instance_rejects_calldata_adt_array_surface() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
-import model.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.ABIGeneric;
+import * from model;
 
-instance Payload:Generic(word) {}
+impl Generic<Payload,word> {}
 
 contract C {
-  public function inspect(values:calldata(array(Payload))) -> uint256 {
+  function inspect(values:calldata<array<Payload>>) public returns (uint256) {
     return uint256(0);
   }
 }
@@ -1092,13 +1074,13 @@ contract C {
             library: LibraryId::Main,
             logical_path: vec!["model".to_owned()],
         },
-        "/main/model.solc",
+        "/main/model.sol",
         r#"
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 export { Payload(*) };
 
-data Payload = Left(uint256) | Right(uint256);
+enum Payload {Left(uint256) , Right(uint256)}
 "#,
     );
 
@@ -1122,11 +1104,11 @@ fn same_named_user_calldata_and_array_types_do_not_gain_abi_meaning() {
     let module = parse_module(
         &db,
         r#"
-data array(a) = array(word);
-data calldata(a) = calldata(word);
+enum array<a> {array(word)}
+enum calldata<a> {calldata(word)}
 
 contract Fake {
-  public function inspect(values: calldata(array(word))) -> word {
+  function inspect(values: calldata<array<word>>) public returns (word) {
     return 0;
   }
 }
@@ -1144,14 +1126,14 @@ contract Fake {
 fn parameterized_single_constructor_adt_uses_its_generic_rep_in_the_public_abi() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Point(a) = Point(a, bool);
+enum Point<a> {Point(a, bool)}
 
 contract Shapes {
-  public function roundtrip(p: Point(uint256)) -> Point(uint256) { return p; }
+  function roundtrip(p: Point<uint256>) public returns (Point<uint256>) { return p; }
 }
 "#,
     );
@@ -1171,32 +1153,32 @@ contract Shapes {
     );
     let method = &surface.methods[0];
     assert_eq!(method.signature, "roundtrip(uint256,bool)");
-    assert_eq!(method.inputs[0].ty.to_string(), "Point(uint256)");
-    assert_eq!(method.outputs[0].ty.to_string(), "Point(uint256)");
+    assert_eq!(method.inputs[0].ty.to_string(), "Point<uint256>");
+    assert_eq!(method.outputs[0].ty.to_string(), "Point<uint256>");
     let abi = contract_abi_json(&db, module, contract).expect("direct parameterized ADT ABI");
     assert!(
-        abi.contains("\"internalType\": \"Point(uint256)\""),
+        abi.contains("\"internalType\": \"Point<uint256>\""),
         "{abi}"
     );
-    assert!(abi.contains("\"type\": \"Point(uint256)\""), "{abi}");
+    assert!(abi.contains("\"type\": \"Point<uint256>\""), "{abi}");
 }
 
 #[test]
 fn nested_parameterized_adt_instantiations_are_finite_but_recursive_plans_are_rejected() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Box(a) = Box(a);
-data Node = Node(Node);
+enum Box<a> {Box(a)}
+enum Node {Node(Node)}
 
 contract Finite {
-  public function roundtrip(value:Box(Box(uint256))) -> Box(Box(uint256)) { return value; }
+  function roundtrip(value:Box<Box<uint256>>) public returns (Box<Box<uint256>>) { return value; }
 }
 contract Recursive {
-  public function recursive(value:Node) -> Node { return value; }
+  function recursive(value:Node) public returns (Node) { return value; }
 }
 "#,
     );
@@ -1209,14 +1191,14 @@ contract Recursive {
     assert_eq!(surface.methods[0].signature, "roundtrip(uint256)");
     assert_eq!(
         surface.methods[0].inputs[0].ty.to_string(),
-        "Box(Box(uint256))"
+        "Box<Box<uint256>>"
     );
     assert_eq!(
         surface.methods[0].outputs[0].ty.to_string(),
-        "Box(Box(uint256))"
+        "Box<Box<uint256>>"
     );
     let abi = contract_abi_json(&db, module, finite).expect("finite nested ADT ABI");
-    assert!(abi.contains("\"type\": \"Box(Box(uint256))\""), "{abi}");
+    assert!(abi.contains("\"type\": \"Box<Box<uint256>>\""), "{abi}");
 
     let recursive = contract_named(&db, module, "Recursive");
     let surface = contract_dispatch_surface(&db, module, recursive);
@@ -1235,17 +1217,17 @@ contract Recursive {
 fn phantom_adt_type_arguments_must_be_supported_by_the_derived_abi_context() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Phantom(a) = Phantom(uint256);
+enum Phantom<a> {Phantom(uint256)}
 
 contract PhantomAbi {
-  public function take(value:Phantom(mapping(uint256, uint256))) -> uint256 {
+  function take(value:Phantom<mapping(uint256 => uint256)>) public returns (uint256) {
     return uint256(0);
   }
-  public function make() -> Phantom(mapping(uint256, uint256)) {
+  function make() public returns (Phantom<mapping(uint256 => uint256)>) {
     return Phantom(uint256(0));
   }
 }

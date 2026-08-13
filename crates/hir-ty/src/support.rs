@@ -22,7 +22,7 @@ pub(crate) fn canonical_std_adt_defs<'db>(db: &'db dyn Db, name: &str) -> Vec<De
     let main_std_module = module_key_for_path(
         LibraryId::Main,
         tree.main_root(db),
-        &tree.std_root(db).join("std.solc"),
+        &tree.std_root(db).join("std.sol"),
     )
     .map(|key| module_id_from_key(db, &key));
 
