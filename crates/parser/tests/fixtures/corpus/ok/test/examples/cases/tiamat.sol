@@ -1,42 +1,43 @@
-data Proxy (a) = Proxy  ;
-data dict(member, index) = dict(word, Proxy(member), Proxy(index)) ;
-data address = address(word) ;
-data storage(a) = storage(word) ;
+enum Proxy<a> { Proxy }
+enum dict<member, index> { dict(word, Proxy<member>, Proxy<index>) }
+enum address { address(word) }
+enum storage<a> { storage(word) }
 
-forall a.
-function saddr(s: storage(a)) -> word {
-  match s {
-    | storage(a) => return a;
-  }
+function saddr<a>(s: storage<a>) returns (word) {
+  match (s) {
+case storage(a) {
+return a;
+}
+}
 }
 
 
 // Untyped Index (access) Proxy
-data UIP  (m, idx, member) = UIP(m ,idx);
+enum UIP<m, idx, member> { UIP(m, idx) }
 // Typed Index (access) Proxy
-data TIP  (m, idx, member) = TIP(m ,idx, Proxy(member));
+enum TIP<m, idx, member> { TIP(m, idx, Proxy<member>) }
 
-function setbal(ref: storage(dict(address, word)) , src : address, amt: word) -> () {
+function setbal(ref: storage<dict<address, word>>, src: address, amt: word) {
   /* Based on inference:
     ref : storage(dict(address, word))
     => ref[src] : storage(word)  assuming src is of the right type
   */
-  let tip = TIP(ref, src, Proxy:Proxy(word));
+  let tip = TIP(ref, src, @word);
   Assign.assign(LVA.acc(tip), amt);
 }
 
-function setAllowance(ref: storage(dict(address, dict(address, word))), owner : address, spender : address, amt : word) -> () {
+function setAllowance(ref: storage<dict<address, dict<address, word>>>, owner: address, spender: address, amt: word) {
 
-  let tip1 : TIP(storage(dict(address, dict(address, word))), address, dict(address, word))
-           = TIP(ref, owner, Proxy:Proxy(dict(address, word)  ));
-  let ref2 : storage(dict(address,word))  = LVA.acc(tip1);
-  let tip2 : TIP(storage(dict(address, word)), address, word)
-           = TIP(ref2, spender, Proxy:Proxy(word));
-  let ref3 : storage(word) = LVA.acc(tip2);
+  let tip1 : TIP<storage<dict<address, dict<address, word>>>, address, dict<address, word>>
+           = TIP(ref, owner, @dict<address, word>);
+  let ref2 : storage<dict<address, word>>  = LVA.acc(tip1);
+  let tip2 : TIP<storage<dict<address, word>>, address, word>
+           = TIP(ref2, spender, @word);
+  let ref3 : storage<word> = LVA.acc(tip2);
   Assign.assign(ref3, amt);
 }
 
-function getAllowance(ref: storage(dict(address, dict(address, word))), owner : address, spender : address) -> word {
+function getAllowance(ref: storage<dict<address, dict<address, word>>>, owner: address, spender: address) returns (word) {
 /*
   let tip : TIP(storage(dict(address, dict(address, word))), address, dict(address, word))
            = TIP(ref, owner, Proxy:Proxy(dict(address, word)  ));
@@ -50,85 +51,77 @@ function getAllowance(ref: storage(dict(address, dict(address, word))), owner : 
        TIP
        (ref
        , owner
-       , Proxy:Proxy(dict(address, word)  )
+       , @dict<address, word>
        ) /* tip : TIP(storage(dict(address, dict(address, word))), address, dict(address, word)) */
       ) /* ref2 : storage(dict(address,word)) */
     , spender
-    , Proxy:Proxy(word)
+    , @word
     ) /* tip2 : TIP(storage(dict(address, word)), address, word) */
   );
 }
 
-forall self memberRefType.
-class self:LVA(memberRefType) {
-    function acc(x:self) -> memberRefType;
+trait LVA<self, memberRefType> {
+    function acc(x: self) returns (memberRefType) ;
 }
 
 
-forall self member.
-class self:RVA(member) {
-    function acc(x:self) -> member;
+trait RVA<self, member> {
+    function acc(x: self) returns (member) ;
 }
 
-forall index member.
-  instance TIP(storage(dict(index,member)), index, member):LVA(storage(member)) {
-    function acc(x:TIP(storage(dict(index,member)), index, member)) -> storage(member) {
+impl<index, member> LVA<TIP<storage<dict<index, member>>, index, member>, storage<member>> {
+    function acc(x: TIP<storage<dict<index, member>>, index, member>) returns (storage<member>) {
 	    return storage(42);
     }
 }
 
-forall index member.
-  instance UIP(storage(dict(index,member)), index, member):LVA(storage(member)) {
-    function acc(x:UIP(storage(dict(index,member)), index, member)) -> storage(member) {
+impl<index, member> LVA<UIP<storage<dict<index, member>>, index, member>, storage<member>> {
+    function acc(x: UIP<storage<dict<index, member>>, index, member>) returns (storage<member>) {
 	    return storage(42);
     }
 }
 
-forall self.
-class self:StorageType {
-    function sload(ptr:word) -> self;
-    function store(ptr:word, value:self) -> ();
+trait StorageType<self> {
+    function sload(ptr: word) returns (self) ;
+    function store(ptr: word, value: self) ;
 }
 
-instance word:StorageType {
-    function sload(ptr:word) -> word {
+impl StorageType<word> {
+    function sload(ptr: word) returns (word) {
         let r:word;
         assembly {
             r := sload(ptr)
         }
         return r;
     }
-    function store(ptr:word, value:word) -> () {
+    function store(ptr: word, value: word) {
         assembly {
             sstore(ptr, value)
         }
     }
 }
 
-forall index member. member:StorageType =>
-  instance TIP(storage(dict(index,member)), index, member):RVA(member) {
-    function acc(x:TIP(storage(dict(index,member)), index, member)) -> member {
+impl<index, member> RVA<TIP<storage<dict<index, member>>, index, member>, member> where member: StorageType {
+    function acc(x: TIP<storage<dict<index, member>>, index, member>) returns (member) {
 	    let addr = saddr(LVA.acc(x));
 	    return StorageType.sload(addr);
     }
 }
 
-forall lhs rhs.
-class lhs:Assign(rhs) {
-    function assign(l:lhs, r:rhs) -> ();
+trait Assign<lhs, rhs> {
+    function assign(l: lhs, r: rhs) ;
 }
 
 
-forall a. a:StorageType =>
-instance storage(a):Assign(a) {
-    function assign(l:storage(a), r:a) -> () {
+impl<a> Assign<storage<a>, a> where a: StorageType {
+    function assign(l: storage<a>, r: a) {
       StorageType.store(saddr(l), r);
     }
 }
 
 contract Tiamat {
-  public function main() -> word {
-    let allowances : storage(dict(address, dict(address, word)));
+  function main() public returns (word) {
+    let allowances : storage<dict<address, dict<address, word>>>;
     let src = address(17);
     setAllowance(allowances, address(1),address(2), 666);
     return getAllowance(allowances, address(1),address(2));

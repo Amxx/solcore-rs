@@ -28,7 +28,7 @@ contract Uint {
 */
 
 
-function addW(x : word, y : word) -> word {
+function addW(x: word, y: word) returns (word) {
   let res: word;
   assembly {
      res := add(x, y)
@@ -36,7 +36,7 @@ function addW(x : word, y : word) -> word {
   return res;
 }
 
-function subW(x : word, y : word) -> word {
+function subW(x: word, y: word) returns (word) {
   let res: word;
   assembly {
      res := sub(x, y)
@@ -44,7 +44,7 @@ function subW(x : word, y : word) -> word {
   return res;
 }
 
-function addU(x : uint, y : uint) -> uint {
+function addU(x: uint, y: uint) returns (uint) {
   let res: word;
   let xw : word = Num.toWord(x);
   let yw : word = Num.toWord(y);
@@ -54,7 +54,7 @@ function addU(x : uint, y : uint) -> uint {
   return uint(res);
 }
 
-function hash1(x: word) -> word {
+function hash1(x: word) returns (word) {
   let result: word = 0;
   assembly {
     mstore(0, x)
@@ -63,7 +63,7 @@ function hash1(x: word) -> word {
   return result;
 }
 
-function hash2(x: word, y: word) -> word {
+function hash2(x: word, y: word) returns (word) {
   let result: word = 0;
   assembly {
     mstore(0, x)
@@ -73,12 +73,11 @@ function hash2(x: word, y: word) -> word {
   return result;
 }
 
-forall a.
-class a:Num {
-  function toWord(x:a) -> word;
-  function fromWord(x:word) -> a;
-  function add(x:a, y:a) -> a;
-  function sub(x:a, y:a) -> a;
+trait Num<a> {
+  function toWord(x: a) returns (word) ;
+  function fromWord(x: word) returns (a) ;
+  function add(x: a, y: a) returns (a) ;
+  function sub(x: a, y: a) returns (a) ;
 }
 
 instance word:Num {

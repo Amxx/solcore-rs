@@ -1,19 +1,17 @@
-forall abs rep . class abs:Typedef(rep) {
-    function abs(x:rep) -> abs;
-    function rep(x:abs) -> rep;
+trait Typedef<abs, rep> {
+    function abs(x: rep) returns (abs) ;
+    function rep(x: abs) returns (rep) ;
 }
 
-forall t.
-/* default */ instance t:Typedef(t) {
-    function abs(x:t) -> t { return x; }
-    function rep(x:t) -> t { return x; }
+impl<t> Typedef<t, t> {
+    function abs(x: t) returns (t) { return x; }
+    function rep(x: t) returns (t) { return x; }
 }
 
-forall abs rep res. abs:Typedef(rep) =>
-function lift1ac(f:(rep) -> res, x:abs) -> res { f(Typedef.rep(x)) }
+function lift1ac<abs, rep, res>(f: function(rep) returns (res), x: abs) returns (res) where abs: Typedef<rep> { f(Typedef.rep(x)) }
 
 
-forall a. function id(x:a) -> a {x}
+function id<a>(x: a) returns (a) {x}
 contract TD {
-  public function main() -> word { lift1ac(id, 42) }
+  function main() public returns (word) { lift1ac(id, 42) }
 }
