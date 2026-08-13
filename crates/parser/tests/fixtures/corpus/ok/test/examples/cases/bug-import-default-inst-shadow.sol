@@ -1,8 +1,8 @@
 pragma no-patterson-condition ABIAttribs, ABIEncode;
 pragma no-bounded-variable-condition ABIAttribs, ABIEncode;
 
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 
 // Minimal reproducer for the "imported-default-instance-stub mis-tagged" bug.
 //
