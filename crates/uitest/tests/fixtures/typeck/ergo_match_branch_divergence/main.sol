@@ -1,4 +1,4 @@
-data Shape = Circle(word) | Square(word);
+enum Shape { Circle(word), Square(word) }
 
 function area(s: Shape) -> word {
   match s {

@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/ergo_hull_asm_call_arity/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/ergo_hull_asm_call_arity/main.sol
 ---
 error[SC0203]: Yul call `dbl` expects 1 argument, but 2 were provided
- --> /main/main.solc:8:12
+ --> /main/main.sol:8:12
   |
 7 |       }
 8 |       x := dbl(1, 2)

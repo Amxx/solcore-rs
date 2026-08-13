@@ -1,5 +1,5 @@
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let x : word;
     assembly {
       function dbl(a) -> r {

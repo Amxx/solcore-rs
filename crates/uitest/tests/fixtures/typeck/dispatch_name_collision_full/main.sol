@@ -1,10 +1,10 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
-data DispatchNameTy_C_ping = Collision;
+enum DispatchNameTy_C_ping { Collision }
 
 contract C {
-  public function ping() -> uint256 {
+  function ping() public returns (uint256) {
     return uint256(0);
   }
 }

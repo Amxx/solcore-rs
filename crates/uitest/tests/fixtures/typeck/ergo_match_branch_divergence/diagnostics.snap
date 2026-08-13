@@ -1,15 +1,15 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/ergo_match_branch_divergence/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/ergo_match_branch_divergence/main.sol
 ---
 error[SC0201]: type mismatch: expected word, found bool
- --> /main/main.solc:6:31
-  |
-5 |   | Shape.Circle(r) => return r;
-6 |   | Shape.Square(w) => return true;
-  |                               ^^^^ expression has mismatched type
-7 |   }
-  |
-  = note: expected type: word
-  = note: found type: bool
+  --> /main/main.sol:9:8
+   |
+ 8 | case Shape.Square(w) {
+ 9 | return true;
+   |        ^^^^ expression has mismatched type
+10 | }
+   |
+   = note: expected type: word
+   = note: found type: bool
