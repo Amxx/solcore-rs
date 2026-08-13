@@ -2,6 +2,6 @@ export { helper };
 
 pragma no-patterson-condition C;
 
-function helper() -> word {
+function helper() returns (word) {
   return 1;
 }
