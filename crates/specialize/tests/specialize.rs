@@ -104,7 +104,7 @@ impl nameres::Db for TestDb {
 impl hir_ty::Db for TestDb {}
 
 fn source_file(db: &TestDb, name: &str, src: &str) -> SourceFile {
-    let url = format!("memory:///{name}.solc").parse().expect("valid URL");
+    let url = format!("memory:///{name}.sol").parse().expect("valid URL");
     SourceFile::new(db, url, Some(src.to_owned()))
 }
 
@@ -162,7 +162,7 @@ fn specialize_src_with_std_and_db_options(
         db,
         [main_root.as_path(), std_root.as_path()],
     ));
-    let main_path = main_root.join("main.solc");
+    let main_path = main_root.join("main.sol");
     let key =
         module_key_for_path(LibraryId::Main, &main_root, &main_path).expect("file under main root");
     let file = source_file_at_path(db, &main_path, src);
@@ -187,42 +187,41 @@ fn specialize_src_with_fake_calldata_array_std(
         BTreeMap::new(),
     ));
 
-    let std_path = std_root.join("std.solc");
-    let main_path = main_root.join("main.solc");
+    let std_path = std_root.join("std.sol");
+    let main_path = main_root.join("main.sol");
     let std_file = source_file_at_path(
         db,
         &std_path,
         r#"
 export { calldata(*), array(*), uint256(*), Encoded(*), Decoded(*), Typedef, RValueIdxAccess };
 
-data calldata(t) = calldata(word);
-data array(t) = array(word);
-data uint256 = uint256(word);
-data Encoded = Encoded(word);
-data Decoded = Decoded(word);
+enum calldata<t> {calldata(word)}
+enum array<t> {array(word)}
+enum uint256 {uint256(word)}
+enum Encoded {Encoded(word)}
+enum Decoded {Decoded(word)}
 
-forall abs rep . class abs:Typedef(rep) {
-  function abs(x:rep) -> abs;
-  function rep(x:abs) -> rep;
+trait Typedef<abs,rep> {
+  function abs(x:rep) returns (abs) ;
+  function rep(x:abs) returns (rep) ;
 }
 
-forall t . default instance t:Typedef(t) {
-  function abs(x:t) -> t { return x; }
-  function rep(x:t) -> t { return x; }
+default impl<t> Typedef<t,t> {
+  function abs(x:t) returns (t) { return x; }
+  function rep(x:t) returns (t) { return x; }
 }
 
-instance uint256:Typedef(word) {
-  function abs(x:word) -> uint256 { return uint256(x); }
-  function rep(x:uint256) -> word { return 0; }
+impl Typedef<uint256,word> {
+  function abs(x:word) returns (uint256) { return uint256(x); }
+  function rep(x:uint256) returns (word) { return 0; }
 }
 
-forall col_idx val . class col_idx:RValueIdxAccess(val) {
-  function lookup(xi:col_idx) -> val;
+trait RValueIdxAccess<col_idx,val> {
+  function lookup(xi:col_idx) returns (val) ;
 }
 
-forall i . i:Typedef(word) =>
-instance (calldata(array(Encoded)), i):RValueIdxAccess(Decoded) {
-  function lookup(xi:(calldata(array(Encoded)), i)) -> Decoded {
+impl<i> RValueIdxAccess<(calldata<array<Encoded>>, i),Decoded> where i: Typedef<word> {
+  function lookup(xi:(calldata<array<Encoded>>, i)) returns (Decoded) {
     let value:word;
     assembly { value := calldataload(0) }
     return Decoded(value);
@@ -261,7 +260,7 @@ fn function_names(output: &SpecializeOutput<'_>) -> Vec<String> {
 fn specializes_large_linear_body_with_indexed_frontend_lookups() {
     use std::fmt::Write as _;
 
-    let mut source = "function main() -> word {\n  let value0 : word = 0;\n".to_owned();
+    let mut source = "function main() returns (word) {\n  let value0 : word = 0;\n".to_owned();
     for index in 1..2_000 {
         writeln!(
             &mut source,
@@ -282,9 +281,9 @@ fn specializes_large_linear_body_with_indexed_frontend_lookups() {
 fn calldata_array_index_specializes_to_rvalue_lookup_call() {
     let (db, output) = specialize_src_with_fake_calldata_array_std(
         r#"
-import std.{*};
+import * from std;
 
-function main(xs:calldata(array(Encoded)), i:uint256) -> Decoded {
+function main(xs:calldata<array<Encoded>>, i:uint256) returns (Decoded) {
   return xs[i];
 }
 "#,
@@ -396,11 +395,11 @@ fn naming_matches_reference_mangling() {
 fn specialized_name_hash_is_independent_of_absolute_module_root() {
     let src = r#"
 contract C {
-  public function main() -> word { return 42; }
+  function main() public returns (word) { return 42; }
 }
 "#;
-    let left = specialize_source_at_root(Path::new("/workspace-a/project"), "src/main.solc", src);
-    let right = specialize_source_at_root(Path::new("/workspace-b/project"), "src/main.solc", src);
+    let left = specialize_source_at_root(Path::new("/workspace-a/project"), "src/main.sol", src);
+    let right = specialize_source_at_root(Path::new("/workspace-b/project"), "src/main.sol", src);
 
     assert_eq!(left.diagnostics, Vec::new());
     assert_eq!(right.diagnostics, Vec::new());
@@ -411,10 +410,10 @@ contract C {
 fn deduplicates_identical_instantiations() {
     let (_db, output) = specialize_src(
         r#"
-forall a . function id(x:a) -> a { return x; }
+function id<a>(x:a) returns (a) { return x; }
 
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     let a = id(x);
     let b = id(a);
     return b;
@@ -438,30 +437,30 @@ contract C {
 fn evidence_replay_resolves_instance_and_superclass_methods() {
     let (_db, output) = specialize_src(
         r#"
-data Bool = True | False;
+enum Bool {True , False}
 
-forall a . class a:Eq {
-  function eq(x:a, y:a) -> Bool;
+trait Eq<a> {
+  function eq(x:a, y:a) returns (Bool) ;
 }
 
-forall a . a:Eq => class a:Ord {
-  function lt(x:a, y:a) -> Bool;
+trait Ord<a> where a: Eq {
+  function lt(x:a, y:a) returns (Bool) ;
 }
 
-instance word:Eq {
-  function eq(x:word, y:word) -> Bool { return primEqWord(x, y); }
+impl Eq<word> {
+  function eq(x:word, y:word) returns (Bool) { return primEqWord(x, y); }
 }
 
-instance word:Ord {
-  function lt(x:word, y:word) -> Bool { return Bool.False; }
+impl Ord<word> {
+  function lt(x:word, y:word) returns (Bool) { return Bool.False; }
 }
 
-forall a . a:Ord => function same(x:a) -> Bool {
+function same<a>(x:a) returns (Bool) where a: Ord {
   return Eq.eq(x, x);
 }
 
 contract C {
-  public function main(x:word) -> Bool {
+  function main(x:word) public returns (Bool) {
     return same(x);
   }
 }
@@ -488,18 +487,18 @@ contract C {
 fn evidence_replay_preserves_class_method_local_forall_binders() {
     let (_db, output) = specialize_src(
         r#"
-forall b . class b:IsA {
-  forall a . function ais(x : a, witness : b) -> a;
+trait IsA<b> {
+  function ais<a>(x : a, witness : b) returns (a) ;
 }
 
-instance word:IsA {
-  forall a . function ais(x : a, witness : word) -> a {
+impl IsA<word> {
+  function ais<a>(x : a, witness : word) returns (a) {
     return x;
   }
 }
 
 contract C {
-  public function main(x : word) -> word {
+  function main(x : word) public returns (word) {
     return IsA.ais(x, 0);
   }
 }
@@ -520,23 +519,23 @@ contract C {
 fn field_ufcs_prepends_receiver_and_resolves_instance_method() {
     let (db, _, output) = specialize_src_with_std_and_db(
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
-forall a . class a:Combiner {
-  function combine(x:a, y:uint256) -> uint256;
+trait Combiner<a> {
+  function combine(x:a, y:uint256) returns (uint256) ;
 }
 
-instance storage(array(uint256)):Combiner {
-  function combine(x:storage(array(uint256)), y:uint256) -> uint256 { return y; }
+impl Combiner<storage<array<uint256>>> {
+  function combine(x:storage<array<uint256>>, y:uint256) returns (uint256) { return y; }
 }
 
 contract C {
-  value:array(uint256);
+  value:array<uint256>;
 
   constructor() {}
 
-  public function viaUfcs(y:uint256) -> uint256 {
+  function viaUfcs(y:uint256) public returns (uint256) {
     return value.combine(y);
   }
 }
@@ -611,24 +610,24 @@ contract C {
 fn local_and_parameter_ufcs_prepend_receivers_and_share_instance_method() {
     let (db, output) = specialize_src(
         r#"
-forall a . class a:Combiner {
-  function combine(x:a, y:word) -> word;
+trait Combiner<a> {
+  function combine(x:a, y:word) returns (word) ;
 }
 
-instance word:Combiner {
-  function combine(x:word, y:word) -> word { return y; }
+impl Combiner<word> {
+  function combine(x:word, y:word) returns (word) { return y; }
 }
 
-function viaParam(paramReceiver:word, paramArg:word) -> word {
+function viaParam(paramReceiver:word, paramArg:word) returns (word) {
   return paramReceiver.combine(paramArg);
 }
 
-function viaLocal(seed:word, localArg:word) -> word {
+function viaLocal(seed:word, localArg:word) returns (word) {
   let localReceiver:word = seed;
   return localReceiver.combine(localArg);
 }
 
-function main(x:word, y:word) -> word {
+function main(x:word, y:word) returns (word) {
   return viaParam(viaLocal(x, y), y);
 }
 "#,
@@ -712,20 +711,20 @@ fn evidence_replay_resolves_imported_instance_methods() {
         BTreeMap::new(),
     ));
     db.module_fs_snapshot = Some(module_fs_snapshot_for_roots(db, [main_root.as_path()]));
-    let lib_path = main_root.join("lib.solc");
-    let main_path = main_root.join("main.solc");
+    let lib_path = main_root.join("lib.sol");
+    let main_path = main_root.join("main.sol");
     let lib_file = source_file_at_path(
         db,
         &lib_path,
         r#"
 export { Boxed };
 
-forall a . class a:Boxed {
-  function id(x:a) -> a;
+trait Boxed<a> {
+  function id(x:a) returns (a) ;
 }
 
-instance word:Boxed {
-  function id(x:word) -> word { return x; }
+impl Boxed<word> {
+  function id(x:word) returns (word) { return x; }
 }
 "#,
     );
@@ -733,10 +732,10 @@ instance word:Boxed {
         db,
         &main_path,
         r#"
-import lib.{Boxed};
+import {Boxed} from lib;
 
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     return Boxed.id(x);
   }
 }
@@ -774,53 +773,53 @@ fn same_named_classes_in_different_modules_get_distinct_method_symbols() {
 
     let modules = [
         (
-            "left.solc",
+            "left.sol",
             r#"
 export { left };
 
-forall a . class a:Pick {
-  function choose(x:a) -> word;
+trait Pick<a> {
+  function choose(x:a) returns (word) ;
 }
 
-instance word:Pick {
-  function choose(x:word) -> word {
+impl Pick<word> {
+  function choose(x:word) returns (word) {
     let y : word;
     assembly { y := sload(x) }
     return y;
   }
 }
 
-function left(x:word) -> word { return Pick.choose(x); }
+function left(x:word) returns (word) { return Pick.choose(x); }
 "#,
         ),
         (
-            "right.solc",
+            "right.sol",
             r#"
 export { right };
 
-forall a . class a:Pick {
-  function choose(x:a) -> word;
+trait Pick<a> {
+  function choose(x:a) returns (word) ;
 }
 
-instance word:Pick {
-  function choose(x:word) -> word {
+impl Pick<word> {
+  function choose(x:word) returns (word) {
     let y : word;
     assembly { y := sload(x) }
     return x;
   }
 }
 
-function right(x:word) -> word { return Pick.choose(x); }
+function right(x:word) returns (word) { return Pick.choose(x); }
 "#,
         ),
         (
-            "main.solc",
+            "main.sol",
             r#"
-import left.{left};
-import right.{right};
+import {left} from left;
+import {right} from right;
 
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     let unused = right(x);
     return left(x);
   }
@@ -835,7 +834,7 @@ contract C {
         let file = source_file_at_path(db, &path, src);
         let key = module_key_for_path(LibraryId::Main, &main_root, &path).unwrap();
         db.insert_module_file(key, file);
-        if name == "main.solc" {
+        if name == "main.sol" {
             main_file = Some(file);
         }
     }
@@ -865,43 +864,43 @@ fn same_named_adts_in_different_modules_get_distinct_generic_symbols() {
 
     let modules = [
         (
-            "common.solc",
+            "common.sol",
             r#"
 export { id };
-forall a . function id(x:a) -> a { return x; }
+function id<a>(x:a) returns (a) { return x; }
 "#,
         ),
         (
-            "left.solc",
+            "left.sol",
             r#"
-import common.{id};
+import {id} from common;
 export { left };
-data Foo = Foo(word);
-function left(x:word) -> word {
+enum Foo {Foo(word)}
+function left(x:word) returns (word) {
   let value : Foo = id(Foo(x));
-  match value { | Foo(result) => return result; }
+  match (value) { case Foo(result) { return result; }}
 }
 "#,
         ),
         (
-            "right.solc",
+            "right.sol",
             r#"
-import common.{id};
+import {id} from common;
 export { right };
-data Foo = Foo(word);
-function right(x:word) -> word {
+enum Foo {Foo(word)}
+function right(x:word) returns (word) {
   let value : Foo = id(Foo(x));
-  match value { | Foo(result) => return result; }
+  match (value) { case Foo(result) { return result; }}
 }
 "#,
         ),
         (
-            "main.solc",
+            "main.sol",
             r#"
-import left.{left};
-import right.{right};
+import {left} from left;
+import {right} from right;
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     let unused = right(x);
     return left(x);
   }
@@ -916,7 +915,7 @@ contract C {
         let file = source_file_at_path(db, &path, src);
         let key = module_key_for_path(LibraryId::Main, &main_root, &path).unwrap();
         db.insert_module_file(key, file);
-        if name == "main.solc" {
+        if name == "main.sol" {
             main_file = Some(file);
         }
     }
@@ -944,8 +943,8 @@ fn derived_generic_specialization_uses_the_imported_adt_definition_module() {
         BTreeMap::new(),
     ));
     db.module_fs_snapshot = Some(module_fs_snapshot_for_roots(db, [main_root.as_path()]));
-    let lib_path = main_root.join("lib.solc");
-    let main_path = main_root.join("main.solc");
+    let lib_path = main_root.join("lib.sol");
+    let main_path = main_root.join("main.sol");
     let lib_file = source_file_at_path(
         db,
         &lib_path,
@@ -955,14 +954,14 @@ pragma no-bounded-variable-condition;
 
 export { Box(*), exercise };
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
-data Box = Box(word, bool);
+enum Box {Box(word, bool)}
 
-function exercise(x:Box) -> Box {
+function exercise(x:Box) returns (Box) {
   let rep : (word, bool) = Generic.from(x);
   return Generic.to(rep);
 }
@@ -972,10 +971,10 @@ function exercise(x:Box) -> Box {
         db,
         &main_path,
         r#"
-import lib.{*};
+import * from lib;
 
 contract C {
-  function main(x:Box) -> Box { return exercise(x); }
+  function main(x:Box) returns (Box) { return exercise(x); }
 }
 "#,
     );
@@ -1007,26 +1006,26 @@ contract C {
 fn invokable_invoke_replays_call_site_evidence() {
     let (_db, output) = specialize_src(
         r#"
-forall a b c . c : invokable(a, b) => function app(f : c, x : a) -> b {
+function app<a,b,c>(f : c, x : a) returns (b) where c : invokable<a, b> {
   return invokable.invoke(f, x);
 }
 
-data t_id = t_id;
+enum t_id {t_id}
 
-function impure(x : word) -> word {
+function impure(x : word) returns (word) {
   let y : word;
   assembly { y := sload(x) }
   return y;
 }
 
-instance t_id : invokable(word, word) {
-  function invoke(self : t_id, x : word) -> word {
+impl invokable<t_id,word, word> {
+  function invoke(self : t_id, x : word) returns (word) {
     return impure(x);
   }
 }
 
 contract C {
-  public function main(x : word) -> word {
+  function main(x : word) public returns (word) {
     return app(t_id, x);
   }
 }
@@ -1057,42 +1056,39 @@ contract C {
 fn mptc_phantom_extras_recovered_before_naming_and_body_lowering() {
     let (_db, output) = specialize_src(
         r#"
-data Foo = Foo(word);
+enum Foo {Foo(word)}
 
-forall self rep.
-class self:Encoder(rep) {
-  function encode(x:self, hint:word) -> rep;
+trait Encoder<self,rep> {
+  function encode(x:self, hint:word) returns (rep) ;
 }
 
-forall rep r.
-class rep:Sink(r) {
-  function sink(x:rep) -> r;
+trait Sink<rep,r> {
+  function sink(x:rep) returns (r) ;
 }
 
-instance Foo:Encoder(word) {
-  function encode(x:Foo, hint:word) -> word {
+impl Encoder<Foo,word> {
+  function encode(x:Foo, hint:word) returns (word) {
     let y : word;
     assembly { y := sload(hint) }
-    match x { | Foo(v) => return v; }
+    match (x) { case Foo(v) { return v; }}
   }
 }
 
-instance word:Sink(word) {
-  function sink(x:word) -> word {
+impl Sink<word,word> {
+  function sink(x:word) returns (word) {
     let y : word;
     assembly { y := sload(x) }
     return x;
   }
 }
 
-forall a rep . a:Encoder(rep), rep:Sink(word) =>
-function f(x:a) -> word {
+function f<a,rep>(x:a) returns (word) where a: Encoder<rep>, rep: Sink<word> {
   let r : rep = Encoder.encode(x, 0);
   return Sink.sink(r);
 }
 
 contract C {
-  public function main(x : word) -> word {
+  function main(x : word) public returns (word) {
     return f(Foo(x));
   }
 }
@@ -1125,33 +1121,31 @@ contract C {
 fn instance_method_names_include_the_complete_class_head() {
     let (_db, output) = specialize_src(
         r#"
-data Box = Box(word);
+enum Box {Box(word)}
 
-forall self rep.
-class self:Convert(rep) {
-    function toRep(x:self) -> rep;
-    function fromRep(x:rep) -> self;
+trait Convert<self,rep> {
+    function toRep(x:self) returns (rep) ;
+    function fromRep(x:rep) returns (self) ;
 }
 
-instance Box:Convert(word) {
-    function toRep(x:Box) -> word {
-        match x { | Box(w) => return w; }
+impl Convert<Box,word> {
+    function toRep(x:Box) returns (word) {
+        match (x) { case Box(w) { return w; }}
     }
-    function fromRep(x:word) -> Box {
+    function fromRep(x:word) returns (Box) {
         return Box(x);
     }
 }
 
-forall a rep . a:Convert(rep) =>
-function roundtrip(x:a) -> a {
+function roundtrip<a,rep>(x:a) returns (a) where a: Convert<rep> {
     let r : rep = Convert.toRep(x);
     return Convert.fromRep(r);
 }
 
 contract C {
-    public function main(x:word) -> word {
+    function main(x:word) public returns (word) {
         let b : Box = roundtrip(Box(x));
-        match b { | Box(w) => return w; }
+        match (b) { case Box(w) { return w; }}
     }
 }
 "#,
@@ -1179,13 +1173,13 @@ contract C {
 fn ensure_closed_failure_aborts_that_specialization() {
     let (_db, output) = specialize_src(
         r#"
-forall a . function leak() -> a {
+function leak<a>() returns (a) {
   let y : a;
   return y;
 }
 
 contract C {
-  public function main() -> () {
+  function main() public returns () {
     let x = leak();
     return ();
   }
@@ -1213,11 +1207,11 @@ contract C {
 #[test]
 fn generated_contract_dispatch_uses_explicit_std_dispatch_import() {
     let source = r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
-  public function answer() -> uint256 { return uint256(1); }
+  function answer() public returns (uint256) { return uint256(1); }
 }
 "#;
     let output = specialize_src_with_std(source);
@@ -1250,11 +1244,11 @@ contract C {
 fn generated_contract_dispatch_rejects_public_comptime_params_before_runtime_rooting() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
-  public function answer(comptime x: word) -> word {
+  function answer(comptime x: word) public returns (word) {
     return x;
   }
 }
@@ -1296,11 +1290,11 @@ contract C {
 #[test]
 fn generated_contract_dispatch_keeps_the_original_source_file() {
     let src = r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
-  public function answer() -> uint256 {
+  function answer() public returns (uint256) {
     return uint256(1);
   }
 }
@@ -1365,12 +1359,12 @@ contract C {
 #[test]
 fn already_prepared_input_keeps_std_dispatch_origin() {
     let src = r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
-  payable constructor(seed: uint256) { let saved = seed; }
-  public function answer() -> uint256 { return uint256(1); }
+  constructor(seed: uint256) payable { let saved = seed; }
+  function answer() public returns (uint256) { return uint256(1); }
 }
 "#;
     let (db, file, _) = specialize_src_with_std_and_db(src);
@@ -1404,8 +1398,8 @@ contract C {
 fn source_names_are_qualified_across_contracts() {
     let (_db, output) = specialize_src(
         r#"
-contract A { public function main() -> word { return 1; } }
-contract B { public function main() -> word { return 2; } }
+contract A { function main() public returns (word) { return 1; } }
+contract B { function main() public returns (word) { return 2; } }
 "#,
     );
 
@@ -1448,13 +1442,13 @@ contract B { public function main() -> word { return 2; } }
 fn dispatch_abi_shape_is_preserved_in_std_dispatch_mono_ir() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract PayableTest {
   constructor() {}
-  public payable function deposit() -> uint256 { return uint256(1); }
-  payable fallback() -> () {}
+  function deposit() public payable returns (uint256) { return uint256(1); }
+  fallback() payable {}
 }
 "#,
     );
@@ -1515,11 +1509,11 @@ contract PayableTest {
 fn tuple_dispatch_uses_the_canonical_abi_selector() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract TupleSelector {
-  public function pack(point: (uint256, uint256), tag: uint256) -> uint256 {
+  function pack(point: (uint256, uint256), tag: uint256) public returns (uint256) {
     return tag;
   }
 }
@@ -1555,33 +1549,33 @@ contract TupleSelector {
 fn dispatch_selector_patch_uses_identity_safe_method_markers() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data XDispatchNameTy_D_veryLongX = Wrapped(uint256);
+enum XDispatchNameTy_D_veryLongX {Wrapped(uint256)}
 
 contract C {
-  public function putOpt(k: uint256, v: uint256) -> () { return (); }
-  public function putOptPair(k: uint256, a: uint256, b: uint256) -> () { return (); }
-  public function clearOpt(k: uint256) -> () { return (); }
-  public function clearOptPair(k: uint256) -> () { return (); }
-  public function foo(k: uint256) -> () { return (); }
-  public function foo_bar(k: uint256, v: uint256) -> () { return (); }
-  public function f(x: XDispatchNameTy_D_veryLongX) -> uint256 { return 7; }
+  function putOpt(k: uint256, v: uint256) public returns () { return (); }
+  function putOptPair(k: uint256, a: uint256, b: uint256) public returns () { return (); }
+  function clearOpt(k: uint256) public returns () { return (); }
+  function clearOptPair(k: uint256) public returns () { return (); }
+  function foo(k: uint256) public returns () { return (); }
+  function foo_bar(k: uint256, v: uint256) public returns () { return (); }
+  function f(x: XDispatchNameTy_D_veryLongX) public returns (uint256) { return 7; }
 }
 
 contract D {
-  public function veryLong(k: uint256) -> uint256 { return k; }
+  function veryLong(k: uint256) public returns (uint256) { return k; }
 }
 
 contract A {
-  public function B_C(k: uint256) -> uint256 { return k; }
+  function B_C(k: uint256) public returns (uint256) { return k; }
 }
 
 contract A_B {
-  public function C(k: uint256) -> uint256 { return k; }
+  function C(k: uint256) public returns (uint256) { return k; }
 }
 "#,
     );
@@ -1669,12 +1663,12 @@ contract A_B {
 fn constructor_overlay_roots_three_argument_deployment_main() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
   constructor(x : uint256, y : uint256, z : uint256) { let saved = x; }
-  function main() -> () { return (); }
+  function main() returns () { return (); }
 }
 "#,
     );
@@ -1713,7 +1707,7 @@ contract C {
 fn specializes_reference_constructor_and_dispatch_collision_regressions() {
     let repo = repo_root();
     let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch");
-    for fixture in ["miniERC20.solc", "weth9.solc"] {
+    for fixture in ["miniERC20.sol", "weth9.sol"] {
         let output = specialize_fixture(&corpus.join(fixture));
         assert_eq!(output.diagnostics, Vec::new(), "{fixture}");
     }
@@ -1723,15 +1717,15 @@ fn specializes_reference_constructor_and_dispatch_collision_regressions() {
 fn mono_ir_carries_frontend_desugar_hook_plan() {
     let repo = repo_root();
     let storage = specialize_fixture(
-        &repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/storage.solc"),
+        &repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/storage.sol"),
     );
     let lambda = specialize_fixture(
-        &repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/cases/SimpleLambda.solc"),
+        &repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/cases/SimpleLambda.sol"),
     );
     let (_if_db, if_output) = specialize_src(
         r#"
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     if (true) { return 1; } else { return 0; }
   }
 }
@@ -1784,11 +1778,10 @@ fn tuple_syntax_specializes_through_product_constructors() {
     let (_db, output) = specialize_src(
         r#"
 contract C {
-  public function main(x:word, y:word, z:word) -> pair(word, pair(word, word)) {
+  function main(x:word, y:word, z:word) public returns (pair<word, pair<word, word>>) {
     let t = (x, y, z);
-    match t {
-      | (a, b, c) => return (a, b, c);
-    }
+    match (t) {
+      case (a, b, c) { return (a, b, c); }}
   }
 }
 "#,
@@ -1831,25 +1824,25 @@ fn specializes_p7_cited_regression_corpus() {
         let repo = repo_root();
         let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples");
         for fixture in [
-            "cases/app.solc",
-            "cases/mptc-chain-phantom.solc",
-            "cases/mptc-both-templates.solc",
-            "dispatch/nonpayable_ctor.solc",
-            "dispatch/storage.solc",
-            "cases/SimpleLambda.solc",
-            "dispatch/specialise_sum_of_product.solc",
+            "cases/app.sol",
+            "cases/mptc-chain-phantom.sol",
+            "cases/mptc-both-templates.sol",
+            "dispatch/nonpayable_ctor.sol",
+            "dispatch/storage.sol",
+            "cases/SimpleLambda.sol",
+            "dispatch/specialise_sum_of_product.sol",
         ] {
             let output = specialize_fixture(&corpus.join(fixture));
             assert_eq!(output.diagnostics, Vec::new(), "{fixture}");
         }
-        let basic = specialize_fixture(&corpus.join("dispatch/basic.solc"));
-        assert_eq!(basic.diagnostics, Vec::new(), "dispatch/basic.solc");
+        let basic = specialize_fixture(&corpus.join("dispatch/basic.sol"));
+        assert_eq!(basic.diagnostics, Vec::new(), "dispatch/basic.sol");
         assert!(
             !basic.module.items.iter().any(|item| match item {
                 MonoItem::Function(function) => function.body.iter().any(stmt_has_closure_dispatch),
                 _ => false,
             }),
-            "dispatch/basic.solc retained closure dispatch"
+            "dispatch/basic.sol retained closure dispatch"
         );
         let basic_contract = basic
             .module
@@ -1874,7 +1867,7 @@ fn specializes_p7_cited_regression_corpus() {
             "{:?}",
             basic_contract.entries
         );
-        let payable = specialize_fixture(&corpus.join("dispatch/payable.solc"));
+        let payable = specialize_fixture(&corpus.join("dispatch/payable.sol"));
         let payable_contract = payable
             .module
             .items
@@ -1907,7 +1900,7 @@ fn specializes_p7_cited_regression_corpus() {
 fn folds_direct_function_compose_closure_fixture() {
     let repo = repo_root();
     let output = specialize_fixture(
-        &repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/spec/06comp.solc"),
+        &repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/spec/06comp.sol"),
     );
 
     assert_eq!(output.diagnostics, Vec::new());
@@ -1915,24 +1908,23 @@ fn folds_direct_function_compose_closure_fixture() {
 }
 
 const OPERATOR_CUSTOM_UINT_ADD: &str = r#"
-import std.{*};
+import * from std;
 
-data uint = u(word);
+enum uint {u(word)}
 
-instance uint:Add {
-  function add(x:uint, y:uint) -> uint {
+impl Add<uint> {
+  function add(x:uint, y:uint) returns (uint) {
     return uint.u(42);
   }
 }
 
-function unwrap(x:uint) -> word {
-  match x {
-  | uint.u(w) => return w;
-  }
+function unwrap(x:uint) returns (word) {
+  match (x) {
+  case uint.u(w) { return w; }}
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let a:uint = uint.u(1);
     let b:uint = uint.u(2);
     let c:uint = a + b;
@@ -1942,26 +1934,24 @@ contract C {
 "#;
 
 const OPERATOR_METERS_ADD: &str = r#"
-import std.{*};
+import * from std;
 
-data meters = meters(word);
+enum meters {meters(word)}
 
-instance meters:Add {
-  function add(x:meters, y:meters) -> meters {
-    match x, y {
-    | meters(xw), meters(yw) => return meters(addWord(xw, yw));
-    }
+impl Add<meters> {
+  function add(x:meters, y:meters) returns (meters) {
+    match (x, y) {
+    case (meters(xw), meters(yw)) { return meters(addWord(xw, yw)); }}
   }
 }
 
-function unwrap(x:meters) -> word {
-  match x {
-  | meters(w) => return w;
-  }
+function unwrap(x:meters) returns (word) {
+  match (x) {
+  case meters(w) { return w; }}
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let a:meters = meters(1);
     let b:meters = meters(2);
     let c:meters = a + b;
@@ -1971,28 +1961,26 @@ contract C {
 "#;
 
 const OPERATOR_METERS_ORD: &str = r#"
-import std.{*};
+import * from std;
 
-data meters = meters(word);
+enum meters {meters(word)}
 
-instance meters:Eq {
-  function eq(x:meters, y:meters) -> bool {
-    match x, y {
-    | meters(xw), meters(yw) => return eqWord(xw, yw);
-    }
+impl Eq<meters> {
+  function eq(x:meters, y:meters) returns (bool) {
+    match (x, y) {
+    case (meters(xw), meters(yw)) { return eqWord(xw, yw); }}
   }
 }
 
-instance meters:Ord {
-  function gt(x:meters, y:meters) -> bool {
-    match x, y {
-    | meters(xw), meters(yw) => return gtWord(xw, yw);
-    }
+impl Ord<meters> {
+  function gt(x:meters, y:meters) returns (bool) {
+    match (x, y) {
+    case (meters(xw), meters(yw)) { return gtWord(xw, yw); }}
   }
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let a:meters = meters(1);
     let b:meters = meters(2);
     if (a < b) {
@@ -2005,59 +1993,59 @@ contract C {
 "#;
 
 const OPERATOR_CUSTOM_MUL: &str = r#"
-import std.{*};
+import * from std;
 
-data Weird = Weird(word);
+enum Weird {Weird(word)}
 
-instance Weird:Mul {
-  function mul(x:Weird, y:Weird) -> Weird {
+impl Mul<Weird> {
+  function mul(x:Weird, y:Weird) returns (Weird) {
     return Weird(99);
   }
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let result : Weird = Weird(2) * Weird(3);
-    match result { | Weird(value) => return value; }
+    match (result) { case Weird(value) { return value; }}
   }
 }
 "#;
 
 const OPERATOR_CUSTOM_EQ: &str = r#"
-import std.{*};
+import * from std;
 
-data Weird = Weird(word);
+enum Weird {Weird(word)}
 
-instance Weird:Eq {
-  function eq(x:Weird, y:Weird) -> bool {
+impl Eq<Weird> {
+  function eq(x:Weird, y:Weird) returns (bool) {
     return false;
   }
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     if (Weird(1) == Weird(1)) { return 0; } else { return 99; }
   }
 }
 "#;
 
 const OPERATOR_VISIBLE_BOOL_FUNCTIONS: &str = r#"
-function and(x:bool, y:bool) -> bool { return false; }
-function or(x:bool, y:bool) -> bool { return false; }
-function not(x:bool) -> bool { return true; }
+function and(x:bool, y:bool) returns (bool) { return false; }
+function or(x:bool, y:bool) returns (bool) { return false; }
+function not(x:bool) returns (bool) { return true; }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     if ((true && true) || !true) { return 0; } else { return 99; }
   }
 }
 "#;
 
 const OPERATOR_WORD_ADD: &str = r#"
-import std.{*};
+import * from std;
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return 1 + 2;
   }
 }
@@ -2102,15 +2090,15 @@ fn every_audited_operator_uses_its_selected_semantics() {
     ] {
         let src = format!(
             r#"
-import std.{{*}};
-data Weird = Weird(word);
-instance Weird:{class} {{
-  function {method}(x:Weird, y:Weird) -> Weird {{ return Weird({expected}); }}
+import * from std;
+enum Weird {{ Weird(word) }}
+impl {class}<Weird> {{
+  function {method}(x: Weird, y: Weird) returns (Weird) {{ return Weird({expected}); }}
 }}
 contract C {{
-  public function main() -> word {{
-    let result : Weird = Weird(8) {operator} Weird(3);
-    match result {{ | Weird(value) => return value; }}
+  function main() public returns (word) {{
+    let result: Weird = Weird(8) {operator} Weird(3);
+    match (result) {{ case Weird(value) {{ return value; }} }}
   }}
 }}
 "#
@@ -2126,13 +2114,13 @@ contract C {{
 
     let not_eq = specialize_src_with_std(
         r#"
-import std.{*};
-data Weird = Weird(word);
-instance Weird:Eq {
-  function eq(x:Weird, y:Weird) -> bool { return true; }
+import * from std;
+enum Weird {Weird(word)}
+impl Eq<Weird> {
+  function eq(x:Weird, y:Weird) returns (bool) { return true; }
 }
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     if (Weird(1) != Weird(2)) { return 0; } else { return 96; }
   }
 }
@@ -2144,19 +2132,19 @@ contract C {
     for (label, definition, expression, expected) in [
         (
             "And",
-            "function and(x:bool, y:bool) -> bool { return false; }",
+            "function and(x:bool, y:bool) returns (bool) { return false; }",
             "true && true",
             "0",
         ),
         (
             "Or",
-            "function or(x:bool, y:bool) -> bool { return false; }",
+            "function or(x:bool, y:bool) returns (bool) { return false; }",
             "false || true",
             "0",
         ),
         (
             "Not",
-            "function not(x:bool) -> bool { return true; }",
+            "function not(x:bool) returns (bool) { return true; }",
             "!true",
             "97",
         ),
@@ -2165,7 +2153,7 @@ contract C {
             r#"
 {definition}
 contract C {{
-  public function main() -> word {{
+  function main() public returns (word) {{
     if ({expression}) {{ return 97; }} else {{ return 0; }}
   }}
 }}
@@ -2185,10 +2173,10 @@ contract C {{
 fn comptime_obligations_are_carried_into_mono_side_table() {
     let (_db, output) = specialize_src(
         r#"
-function need(comptime x : word) -> word { return x; }
+function need(comptime x : word) returns (word) { return x; }
 
 contract C {
-  public function main(x : word) -> comptime word {
+  function main(x : word) public returns (comptime<word>) {
     return need(x);
   }
 }
@@ -2224,15 +2212,15 @@ contract C {
 fn derived_generic_evidence_generates_from_body() {
     let (_db, output) = specialize_src(
         r#"
-data Pair = Pair(word, word);
+enum Pair {Pair(word, word)}
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
 contract C {
-  public function main(x:Pair) -> pair(word, word) {
+  function main(x:Pair) public returns (pair<word, word>) {
     return Generic.from(x);
   }
 }
@@ -2254,23 +2242,23 @@ fn derived_class_wrapper_converts_exact_self_arguments_and_returns() {
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
-forall a . class a:CloneLike {
-  function clone(x:a) -> a;
+trait CloneLike<a> {
+  function clone(x:a) returns (a) ;
 }
 
-instance word:CloneLike {
-  function clone(x:word) -> word { return x; }
+impl CloneLike<word> {
+  function clone(x:word) returns (word) { return x; }
 }
 
 #[derive(CloneLike)]
-data Box = Box(word);
+enum Box {Box(word)}
 
-function main(x:Box) -> Box {
+function main(x:Box) returns (Box) {
   return CloneLike.clone(x);
 }
 "#,
@@ -2332,23 +2320,23 @@ fn derived_class_wrapper_keeps_method_binders_distinct_from_self() {
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
-forall self . class self:Choose {
-  forall x . function choose(value:x, witness:self) -> x;
+trait Choose<self> {
+  function choose<x>(value:x, witness:self) returns (x) ;
 }
 
-instance word:Choose {
-  forall x . function choose(value:x, witness:word) -> x { return value; }
+impl Choose<word> {
+  function choose<x>(value:x, witness:word) returns (x) { return value; }
 }
 
 #[derive(Choose)]
-data Box = Box(word);
+enum Box {Box(word)}
 
-function main(value:Box, witness:Box) -> Box {
+function main(value:Box, witness:Box) returns (Box) {
   return Choose.choose(value, witness);
 }
 "#,
@@ -2409,28 +2397,28 @@ pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 pragma no-generic-instance-for Box;
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
-forall a . class a:CloneLike {
-  function clone(x:a) -> a;
+trait CloneLike<a> {
+  function clone(x:a) returns (a) ;
 }
 
-instance word:CloneLike {
-  function clone(x:word) -> word { return x; }
+impl CloneLike<word> {
+  function clone(x:word) returns (word) { return x; }
 }
 
 #[derive(CloneLike)]
-data Box = Box(bool);
+enum Box {Box(bool)}
 
-instance Box:Generic(word) {
-  function from(x:Box) -> word { return 7; }
-  function to(x:word) -> Box { return Box(false); }
+impl Generic<Box,word> {
+  function from(x:Box) returns (word) { return 7; }
+  function to(x:word) returns (Box) { return Box(false); }
 }
 
-function main(x:Box) -> Box {
+function main(x:Box) returns (Box) {
   return CloneLike.clone(x);
 }
 "#,
@@ -2467,8 +2455,8 @@ fn derived_class_wrapper_uses_the_imported_definition_environment() {
         BTreeMap::new(),
     ));
     db.module_fs_snapshot = Some(module_fs_snapshot_for_roots(db, [main_root.as_path()]));
-    let lib_path = main_root.join("lib.solc");
-    let main_path = main_root.join("main.solc");
+    let lib_path = main_root.join("lib.sol");
+    let main_path = main_root.join("main.sol");
     let lib_file = source_file_at_path(
         db,
         &lib_path,
@@ -2478,23 +2466,23 @@ pragma no-bounded-variable-condition;
 
 export { Box(*), cloneBox };
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
-forall a . class a:CloneLike {
-  function clone(x:a) -> a;
+trait CloneLike<a> {
+  function clone(x:a) returns (a) ;
 }
 
-instance word:CloneLike {
-  function clone(x:word) -> word { return x; }
+impl CloneLike<word> {
+  function clone(x:word) returns (word) { return x; }
 }
 
 #[derive(CloneLike)]
-data Box = Box(word);
+enum Box {Box(word)}
 
-function cloneBox(x:Box) -> Box {
+function cloneBox(x:Box) returns (Box) {
   return CloneLike.clone(x);
 }
 "#,
@@ -2505,16 +2493,16 @@ function cloneBox(x:Box) -> Box {
         r#"
 import lib;
 
-forall a . class a:CloneLike {
-  function clone(x:a) -> a;
+trait CloneLike<a> {
+  function clone(x:a) returns (a) ;
 }
 
-instance word:CloneLike {
-  function clone(x:word) -> word { return x; }
+impl CloneLike<word> {
+  function clone(x:word) returns (word) { return x; }
 }
 
 contract C {
-  function main(x:lib.Box) -> lib.Box {
+  function main(x:lib.Box) returns (lib.Box) {
     return lib.cloneBox(x);
   }
 }
@@ -2559,87 +2547,86 @@ fn derived_class_and_instance_specializations_are_proof_aware_across_modules() {
 
     let modules = [
         (
-            "lib.solc",
+            "lib.sol",
             r#"
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
 export { Pick, Wrap(*) };
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
-forall a . class a:Pick {
-  function pick(x:a) -> word;
+trait Pick<a> {
+  function pick(x:a) returns (word) ;
 }
 
-forall a b . a:Pick, b:Pick =>
-instance (a,b):Pick {
-  function pick(x:(a,b)) -> word {
-    match x {
-    | (left, right) =>
-        let left_value = Pick.pick(left);
+impl<a,b> Pick<(a,b)> where a: Pick, b: Pick {
+  function pick(x:(a,b)) returns (word) {
+    match (x) {
+    case (left, right) {
+let left_value = Pick.pick(left);
         let right_value = Pick.pick(right);
         let result : word;
         assembly { result := add(mul(left_value, 10), right_value) }
         return result;
-    }
+    }}
   }
 }
 
 #[derive(Pick)]
-data Wrap(a) = Wrap(a, a);
+enum Wrap<a> {Wrap(a, a)}
 "#,
         ),
         (
-            "left.solc",
+            "left.sol",
             r#"
-import lib.{*};
+import * from lib;
 export { left };
 
-instance word:Pick {
-  function pick(x:word) -> word {
+impl Pick<word> {
+  function pick(x:word) returns (word) {
     let result : word;
     assembly { result := sload(x) }
     return result;
   }
 }
 
-function left(x:Wrap(word)) -> word {
+function left(x:Wrap<word>) returns (word) {
   return Pick.pick(x);
 }
 "#,
         ),
         (
-            "right.solc",
+            "right.sol",
             r#"
-import lib.{*};
+import * from lib;
 export { right };
 
-instance word:Pick {
-  function pick(x:word) -> word {
+impl Pick<word> {
+  function pick(x:word) returns (word) {
     let result : word;
     assembly { result := sload(add(x, 1)) }
     return result;
   }
 }
 
-function right(x:Wrap(word)) -> word {
+function right(x:Wrap<word>) returns (word) {
   return Pick.pick(x);
 }
 "#,
         ),
         (
-            "main.solc",
+            "main.sol",
             r#"
-import lib.{*};
-import left.{left};
-import right.{right};
+import * from lib;
+import {left} from left;
+import {right} from right;
 
 contract C {
-  function main(x:Wrap(word), y:Wrap(word)) -> (word, word) {
+  function main(x:Wrap<word>, y:Wrap<word>) returns ((word, word)) {
     return (left(x), right(y));
   }
 }
@@ -2656,10 +2643,10 @@ contract C {
         files.insert(name, file);
     }
 
-    let main_file = files["main.solc"];
-    let lib_file = files["lib.solc"];
-    let left_file = files["left.solc"];
-    let right_file = files["right.solc"];
+    let main_file = files["main.sol"];
+    let lib_file = files["lib.sol"];
+    let left_file = files["left.sol"];
+    let right_file = files["right.sol"];
     let module = parse_file_to_hir(db, main_file).module(db);
     let output = specialize_module(db, module, SpecializeOptions::default());
 
@@ -2764,23 +2751,23 @@ fn derived_class_wrapper_preserves_adt_arguments_and_reuses_proofs() {
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
-forall a . class a:CloneLike {
-  function clone(x:a) -> a;
+trait CloneLike<a> {
+  function clone(x:a) returns (a) ;
 }
 
-instance word:CloneLike {
-  function clone(x:word) -> word { return x; }
+impl CloneLike<word> {
+  function clone(x:word) returns (word) { return x; }
 }
 
 #[derive(CloneLike)]
-data Wrap(a) = Wrap(a);
+enum Wrap<a> {Wrap(a)}
 
-function main(x:Wrap(word)) -> Wrap(word) {
+function main(x:Wrap<word>) returns (Wrap<word>) {
   let first = CloneLike.clone(x);
   return CloneLike.clone(first);
 }
@@ -2830,16 +2817,16 @@ function main(x:Wrap(word)) -> Wrap(word) {
 fn derived_class_wrapper_reuses_its_reservation_for_recursive_adts() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
 #[derive(Eq)]
-data List = Nil | Cons(word, List);
+enum List {Nil , Cons(word, List)}
 
-function main(x:List) -> bool {
+function main(x:List) returns (bool) {
   return Eq.eq(x, x);
 }
 "#,
@@ -2871,23 +2858,23 @@ fn derived_class_wrapper_rejects_nested_self_without_emitting_unchecked_ir() {
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 
-forall a . class a:NestedSelf {
-  function inspect(x:a, nested:(a, word)) -> bool;
+trait NestedSelf<a> {
+  function inspect(x:a, nested:(a, word)) returns (bool) ;
 }
 
-instance word:NestedSelf {
-  function inspect(x:word, nested:(word, word)) -> bool { return true; }
+impl NestedSelf<word> {
+  function inspect(x:word, nested:(word, word)) returns (bool) { return true; }
 }
 
 #[derive(NestedSelf)]
-data Box = Box(word);
+enum Box {Box(word)}
 
-function main(x:Box) -> bool {
+function main(x:Box) returns (bool) {
   return NestedSelf.inspect(x, (x, 0));
 }
 "#,
@@ -2909,16 +2896,16 @@ function main(x:Box) -> bool {
 fn derived_class_wrapper_uses_absurd_for_an_empty_adt() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
-forall a . class a:Make {
-  function make() -> a;
+trait Make<a> {
+  function make() returns (a) ;
 }
 
 #[derive(Make)]
-data Never;
+enum Never {}
 
-function main() -> Never {
+function main() returns (Never) {
   return Make.make();
 }
 "#,
@@ -2957,22 +2944,26 @@ function main() -> Never {
 fn generic_abi_decoder_evidence_specializes_for_internal_sum_adt() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Choice = Left(uint256) | Right(address);
+enum Choice {Left(uint256) , Right(address)}
 
 contract C {
-  function main() -> word {
+  function main() returns (word) {
     let buf = allocate_zeroed_memory(64);
     let rdr : MemoryWordReader = MemoryWordReader(buf);
-    let dec : ABIDecoder(Choice, MemoryWordReader) =
-        ABIDecoder(rdr) : ABIDecoder(Choice, MemoryWordReader);
+    let dec : ABIDecoder<Choice, MemoryWordReader> =
+        ABIDecoder(rdr) ;
     let value : Choice = decode(dec, 0);
-    match value {
-    | Choice.Left(x) => return Typedef.rep(x);
-    | Choice.Right(_) => return 0;
+    match (value) {
+      case Choice.Left(x) {
+        return Typedef.rep(x);
+      }
+      case Choice.Right(_) {
+        return 0;
+      }
     }
   }
 }
@@ -2997,10 +2988,10 @@ contract C {
 fn snapshot_small_specialized_module() {
     let (db, output) = specialize_src(
         r#"
-forall a . function id(x:a) -> a { return x; }
+function id<a>(x:a) returns (a) { return x; }
 
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     return id(x);
   }
 }
@@ -3035,9 +3026,9 @@ fn specializes_curated_typecheck_parity_corpus_files() {
     let repo = repo_root();
     let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples");
     for fixture in [
-        "spec/00answer.solc",
-        "spec/06comp.solc",
-        "cases/super-class.solc",
+        "spec/00answer.sol",
+        "spec/06comp.sol",
+        "cases/super-class.sol",
     ] {
         let output = specialize_fixture(&corpus.join(fixture));
         assert_eq!(output.diagnostics, Vec::new(), "{fixture}");
@@ -3049,18 +3040,18 @@ fn specializes_comptime_evaluation_corpus_verdicts() {
     let repo = repo_root();
     let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples");
     let passing = [
-        "comptime/ct_asm_mem.solc",
-        "comptime/ct_chain_ok.solc",
-        "comptime/ct_let_ok.solc",
-        "comptime/ct_overloaded_ok.solc",
-        "comptime/ct_param_ok.solc",
-        "comptime/integer-basic.solc",
-        "comptime/integer-fib.solc",
-        "comptime/integer-lit-pat.solc",
-        "comptime/match_labels.solc",
-        "comptime/Plus.solc",
-        "comptime/string-lit-keccak.solc",
-        "comptime/string-lit-len.solc",
+        "comptime/ct_asm_mem.sol",
+        "comptime/ct_chain_ok.sol",
+        "comptime/ct_let_ok.sol",
+        "comptime/ct_overloaded_ok.sol",
+        "comptime/ct_param_ok.sol",
+        "comptime/integer-basic.sol",
+        "comptime/integer-fib.sol",
+        "comptime/integer-lit-pat.sol",
+        "comptime/match_labels.sol",
+        "comptime/Plus.sol",
+        "comptime/string-lit-keccak.sol",
+        "comptime/string-lit-len.sol",
     ];
     for fixture in passing {
         let output = specialize_fixture(&corpus.join(fixture));
@@ -3072,7 +3063,7 @@ fn specializes_comptime_evaluation_corpus_verdicts() {
 fn folds_recursive_comptime_integer_function() {
     let (_db, output) = specialize_src(
         r#"
-function fib(comptime n : integer) -> comptime integer {
+function fib(comptime n : integer) returns (comptime<integer>) {
   if (integerLt(n, 2)) {
     return n;
   } else {
@@ -3081,7 +3072,7 @@ function fib(comptime n : integer) -> comptime integer {
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return wordFromInteger(fib(10));
   }
 }
@@ -3106,7 +3097,7 @@ contract C {
 fn folds_comptime_yul_mstore_mload_subset() {
     let (_db, output) = specialize_src(
         r#"
-function storeLoad(x : word) -> word {
+function storeLoad(x : word) returns (word) {
   let r : word;
   assembly {
     mstore(0, x)
@@ -3116,8 +3107,8 @@ function storeLoad(x : word) -> word {
 }
 
 contract C {
-  public function main() -> word {
-    let res : comptime word = storeLoad(42);
+  function main() public returns (word) {
+    let res : comptime<word> = storeLoad(42);
     return res;
   }
 }
@@ -3133,7 +3124,7 @@ fn assembly_substitution_does_not_reuse_values_after_an_in_block_write() {
     let (db, output) = specialize_src(
         r#"
 contract C {
-  public function main(x: word) -> word {
+  function main(x: word) public returns (word) {
     let a: word = 1;
     assembly {
       a := add(a, x)
@@ -3179,7 +3170,7 @@ fn assembly_substitution_does_not_capture_same_named_function_parameters() {
     let (db, output) = specialize_src(
         r#"
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let x : word = 1;
     let observed : word = 0;
     assembly {
@@ -3246,12 +3237,12 @@ contract C {
 fn does_not_fold_user_function_shadowing_std_literal_intrinsic() {
     let (_db, output) = specialize_src(
         r#"
-function keccakLit(a:string) -> word {
+function keccakLit(a:string) returns (word) {
   return 0;
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return keccakLit("abc");
   }
 }
@@ -3266,7 +3257,7 @@ contract C {
 fn folds_resolved_std_string_keccak_literal_intrinsic() {
     let repo = repo_root();
     let fixture = repo.join(
-        "crates/parser/tests/fixtures/corpus/ok/test/examples/comptime/string-lit-keccak.solc",
+        "crates/parser/tests/fixtures/corpus/ok/test/examples/comptime/string-lit-keccak.sol",
     );
     let output = specialize_fixture(&fixture);
 
@@ -3284,14 +3275,14 @@ fn folds_resolved_std_string_keccak_literal_intrinsic() {
 fn clones_and_deduplicates_folded_comptime_string_arguments() {
     let (db, _, output) = specialize_src_with_std_and_db(
         r#"
-import std.{*};
+import * from std;
 
-function consume(s:string, x:word) -> word {
+function consume(s:string, x:word) returns (word) {
   return addWord(strlenLit(s), x);
 }
 
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     return addWord(consume("abcd", x), consume(concatLit("ab", "cd"), x));
   }
 }
@@ -3332,18 +3323,18 @@ contract C {
 fn user_str_instance_clone_leaves_only_a_literal_materializer_call() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
-data Wrapped = Wrapped(memory(string));
+enum Wrapped {Wrapped(memory<string>)}
 
-instance Wrapped:Str {
-  function fromString(s:string) -> Wrapped {
+impl Str<Wrapped> {
+  function fromString(s:string) returns (Wrapped) {
     return Wrapped(Str.fromString(s));
   }
 }
 
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     let wrapped:Wrapped = "abcd";
     let source = "abcd";
     let explicit:Wrapped = Str.fromString(source);
@@ -3376,10 +3367,10 @@ contract C {
 fn require_accepts_a_string_literal_via_the_std_error_str_instance() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
 contract C {
-  public function main(cond:bool) -> () {
+  function main(cond:bool) public returns () {
     require(cond, "boom");
     return ();
   }
@@ -3405,13 +3396,13 @@ contract C {
 fn materializes_a_string_literal_through_a_memory_string_alias() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
-type Text = memory(string);
+type Text = memory<string>;
 type Source = string;
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let implicit:Text = "x";
     let source:Source = "y";
     let explicit:Text = Str.fromString(source);
@@ -3439,24 +3430,24 @@ contract C {
 fn string_clone_worklist_evaluates_clones_that_spawn_clones() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
-function inner(s:string, x:word) -> word {
+function inner(s:string, x:word) returns (word) {
   return addWord(strlenLit(s), x);
 }
 
-function touch(x:word) -> () {
+function touch(x:word) returns () {
   assembly { sstore(0, x) }
 }
 
-function outer(s:string, x:word) -> word {
+function outer(s:string, x:word) returns (word) {
   let result:word = inner(s, x);
   touch(x);
   return result;
 }
 
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     return outer("abcd", x);
   }
 }
@@ -3492,7 +3483,7 @@ contract C {
 fn recursive_string_clone_creation_consumes_global_fuel() {
     let output = specialize_src_with_std_options(
         r#"
-import std.{*};
+import * from std;
 
 function grow(s:string, x:word) -> word {
   let result:word = grow(concatLit(s, "x"), x);

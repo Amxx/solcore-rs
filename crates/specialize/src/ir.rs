@@ -126,7 +126,7 @@ pub enum MonoIntrinsic {
     KeccakLit,
     KeccakWordLit,
     /// Runtime materialization of a compile-time string literal into
-    /// `memory(string)`. This marker is deliberately not foldable: Hull
+    /// `memory<string>`. This marker is deliberately not foldable: Hull
     /// replaces it with a call to a generated allocator.
     MemStringFromLit,
     /// Runtime revert carrying the bytes of a compile-time string literal.
@@ -439,7 +439,7 @@ pub enum MonoExprKind<'db> {
         base: Box<MonoExpr<'db>>,
         index: Box<MonoExpr<'db>>,
     },
-    /// Checked read from a `memory(DynArray(t))` value.
+    /// Checked read from a `memory<DynArray<t>>` value.
     MemoryArrayIndex {
         base: Box<MonoExpr<'db>>,
         index: Box<MonoExpr<'db>>,
