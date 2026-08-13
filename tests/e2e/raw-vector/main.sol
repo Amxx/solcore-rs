@@ -1,5 +1,5 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract RawVector {
   stored: uint256;
@@ -8,11 +8,11 @@ contract RawVector {
     stored = uint256(7);
   }
 
-  public function initialValue() -> uint256 {
+  function initialValue() public returns (uint256) {
     return stored;
   }
 
-  public function callerAddress() -> address {
+  function callerAddress() public returns (address) {
     let result: word;
     assembly {
       result := caller()
@@ -20,11 +20,11 @@ contract RawVector {
     return address(result);
   }
 
-  public function setStored(value: uint256) {
+  function setStored(value: uint256) public {
     stored = value;
   }
 
-  public function valueAfterSend() -> uint256 {
+  function valueAfterSend() public returns (uint256) {
     return stored;
   }
 }

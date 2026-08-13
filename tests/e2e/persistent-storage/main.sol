@@ -1,5 +1,5 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract PersistentStorage {
   stored: uint256;
@@ -9,17 +9,17 @@ contract PersistentStorage {
   }
 
   // #[() -> 7]
-  public function initialValue() -> uint256 {
+  function initialValue() public returns (uint256) {
     return stored;
   }
 
   // #[send(41)]
-  public function setStored(value: uint256) {
+  function setStored(value: uint256) public {
     stored = value;
   }
 
   // #[() -> 41]
-  public function valueAfterSend() -> uint256 {
+  function valueAfterSend() public returns (uint256) {
     return stored;
   }
 }

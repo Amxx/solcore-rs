@@ -74,26 +74,36 @@ return uint256(0);
   }
 
   // #[() -> 1]
-  public function eqPointSame() -> uint256 {
-    match Eq.eq(Point(uint256(1), uint256(2)), Point(uint256(1), uint256(2))) {
-    | true => return uint256(1);
-    | false => return uint256(0);
-    }
+  function eqPointSame() public returns (uint256) {
+    match (Eq.eq(Point(uint256(1), uint256(2)), Point(uint256(1), uint256(2)))) {
+case true {
+return uint256(1);
+}
+case false {
+return uint256(0);
+}
+}
   }
 
   // #[() -> 1]
-  public function gtPointLex() -> uint256 {
-    match Ord.gt(Point(uint256(1), uint256(100)), Point(uint256(1), uint256(50))) {
-    | true => return uint256(1);
-    | false => return uint256(0);
-    }
+  function gtPointLex() public returns (uint256) {
+    match (Ord.gt(Point(uint256(1), uint256(100)), Point(uint256(1), uint256(50)))) {
+case true {
+return uint256(1);
+}
+case false {
+return uint256(0);
+}
+}
   }
 
   // #[(42) -> 42]
   // #[(3735928559) -> 3735928559]
-  public function clonePayload(x : uint256) -> uint256 {
-    match CloneLike.clone(Box(x)) {
-    | Box(value) => return value;
-    }
+  function clonePayload(x: uint256) public returns (uint256) {
+    match (CloneLike.clone(Box(x))) {
+case Box(value) {
+return value;
+}
+}
   }
 }

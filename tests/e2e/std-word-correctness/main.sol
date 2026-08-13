@@ -1,25 +1,25 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract StdWordCorrectness {
     // #[(7, 42) -> 7]
     // #[(42, 7) -> 7]
     // #[(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, 0) -> 0]
-    public function minOf(a: uint256, b: uint256) -> uint256 {
+    function minOf(a: uint256, b: uint256) public returns (uint256) {
         return uint256(minWord(Typedef.rep(a), Typedef.rep(b)));
     }
 
     // #[(7, 42) -> 42]
     // #[(42, 7) -> 42]
     // #[(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, 0) -> 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff]
-    public function maxOf(a: uint256, b: uint256) -> uint256 {
+    function maxOf(a: uint256, b: uint256) public returns (uint256) {
         return uint256(maxWord(Typedef.rep(a), Typedef.rep(b)));
     }
 
     // An invalid recovery id makes the precompile succeed with no returndata.
     // Dirty scratch memory must not be mistaken for a recovered address.
     // #[() -> revert(0x4fbfae63)]
-    public function recoverInvalidAfterDirtyScratch() -> address {
+    function recoverInvalidAfterDirtyScratch() public returns (address) {
         assembly { mstore(0, 0x1234) }
         let h: bytes32 = bytes32(0xaabbccddeeff00112233445566778899aabbccddeeff00112233445566778899);
         let v: uint256 = uint256(1);
