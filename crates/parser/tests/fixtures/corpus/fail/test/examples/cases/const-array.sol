@@ -1,20 +1,20 @@
 
-data Zero;
-data Succ(a);
+enum Zero {}
+enum Succ<a> {}
 
-forall self res . class self:TAdd(res) {}
-forall a . instance (Zero, a):TAdd(a) {}
-forall a b c . (b, a):TAdd(c) => instance (Succ(b), a):TAdd(Succ(c)) {}
+trait TAdd<self, res> {}
+impl<a> TAdd<(Zero, a), a> {}
+impl<a, b, c> TAdd<(Succ<b>, a), Succ<c>> where (b, a): TAdd<c> {}
 
-forall lhs rhs . class lhs:Eq(rhs) {}
-forall a . instance a:Eq(a) {}
+trait Eq<lhs, rhs> {}
+impl<a> Eq<a, a> {}
 
 // this should work but doesnt: forall sizel sizer elem sizeout . (sizel, sizer):TAdd(sizeout)
-forall sizel sizer elem sizeout pairSizelSizer . pairSizelSizer:Eq((sizel, sizer)), pairSizelSizer:TAdd(sizeout) => function concat(lhs:memory(array(sizel, elem)), rhs:memory(array(sizer, elem))) -> memory(array(sizeout, elem)) {
-    return memory(0) : memory(array(sizeout, elem)); // :D
+function concat<sizel, sizer, elem, sizeout, pairSizelSizer>(lhs: memory<array<sizel, elem>>, rhs: memory<array<sizer, elem>>) returns (memory<array<sizeout, elem>>) where pairSizelSizer: Eq<(sizel, sizer)>, pairSizelSizer: TAdd<sizeout> {
+    return memory(0) ; // :D
 }
 
-data Itself(a) = ItselfRuntimeTag;
+enum Itself<a> { ItselfRuntimeTag }
 
 data array(size, elem) = array;
 data memory(a) = memory(word);

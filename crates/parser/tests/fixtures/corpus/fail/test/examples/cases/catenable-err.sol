@@ -1,3 +1,3 @@
-forall t.class t:Catenable {
+trait Catenable<t> {
   function cat(x:t) -> memory(bytes)
 }

@@ -1,16 +1,17 @@
-class ref : Ref(deref) {
-  function load (r : ref) -> deref;
-  function store (r : ref, d : deref) -> unit;
+trait Ref<ref, deref> {
+  function load(r: ref) returns (deref) ;
+  function store(r: ref, d: deref) returns (unit) ;
 }
 
-data Memory(a) = new(a);
+enum Memory<a> { new(a) }
 
-instance Memory(a) : Ref(a) {
-  function load (r) {
-    match r {
-    | Memory.new(x) => return x;
-    }
+impl Ref<Memory<a>, a> {
+  function load (r: Memory<a>) returns (a) {
+    match (r) {
+case Memory.new(x) {
+return x;
+}
+}
   }
 }
-
 
