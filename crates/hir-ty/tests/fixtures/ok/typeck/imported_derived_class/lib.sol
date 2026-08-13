@@ -1,18 +1,17 @@
 export { Marker, Box, Phantom };
 
-forall a .
-class a:Marker {
-  function mark(x: a) -> word;
+trait Marker<a> {
+  function mark(x: a) returns (word) ;
 }
 
-instance word:Marker {
-  function mark(x: word) -> word {
+impl Marker<word> {
+  function mark(x: word) returns (word) {
     return x;
   }
 }
 
 #[derive(Marker)]
-data Box(a) = Box(a);
+enum Box<a> { Box(a) }
 
 #[derive(Marker)]
-data Phantom(a) = Phantom(word);
+enum Phantom<a> { Phantom(word) }

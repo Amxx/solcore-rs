@@ -1,6 +1,6 @@
-import std.{*};
-import std.dispatch.{*};
-import outer.{Outer};
+import * from std;
+import * from std.dispatch;
+import {Outer} from outer;
 
 contract C {
     value : Outer;

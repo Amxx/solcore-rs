@@ -1,7 +1,7 @@
-import std.{*};
-import std.Generic.{*};
-import std.StorageGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.StorageGeneric;
 
 export { Box(*) };
 
-data Box(a) = Box(a);
+enum Box<a> { Box(a) }

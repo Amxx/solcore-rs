@@ -1,12 +1,11 @@
-import lib.{Marker, Box, Phantom};
+import {Marker, Box, Phantom} from lib;
 
 // The derived instance is declared in an imported module and recursively
 // discharges the class constraint for every declared type parameter.
-function markBox(x: Box(word)) -> word {
+function markBox(x: Box<word>) returns (word) {
   return Marker.mark(x);
 }
 
-forall a . a:Marker =>
-function markPhantom(x: Phantom(a)) -> word {
+function markPhantom<a>(x: Phantom<a>) returns (word) where a: Marker {
   return Marker.mark(x);
 }

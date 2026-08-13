@@ -1,51 +1,51 @@
-forall t . class t:Add {
-  function add(l:t, r:t) -> t;
+trait Add<t> {
+  function add(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:Mod {
-  function mod(l:t, r:t) -> t;
+trait Mod<t> {
+  function mod(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:BitAnd {
-  function band(l:t, r:t) -> t;
+trait BitAnd<t> {
+  function band(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:BitOr {
-  function bor(l:t, r:t) -> t;
+trait BitOr<t> {
+  function bor(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:BitXor {
-  function bxor(l:t, r:t) -> t;
+trait BitXor<t> {
+  function bxor(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:Ord {
-  function gt(l:t, r:t) -> bool;
+trait Ord<t> {
+  function gt(l: t, r: t) returns (bool) ;
 }
 
-forall t . class t:Eq {
-  function eq(l:t, r:t) -> bool;
+trait Eq<t> {
+  function eq(l: t, r: t) returns (bool) ;
 }
 
-instance word:Add {
-  function add(l:word, r:word) -> word {
+impl Add<word> {
+  function add(l: word, r: word) returns (word) {
     return primAddWord(l, r);
   }
 }
 
-instance word:Mod {
-  function mod(l:word, r:word) -> word {
+impl Mod<word> {
+  function mod(l: word, r: word) returns (word) {
     return l;
   }
 }
 
-instance word:BitAnd {
-  function band(l:word, r:word) -> word {
+impl BitAnd<word> {
+  function band(l: word, r: word) returns (word) {
     return l;
   }
 }
 
-instance word:BitOr {
-  function bor(l:word, r:word) -> word {
+impl BitOr<word> {
+  function bor(l: word, r: word) returns (word) {
     return l;
   }
 }

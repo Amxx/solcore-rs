@@ -1,7 +1,7 @@
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 
 export { Box(*) };
 
 // StorageGeneric is deliberately not visible in this defining module.
-data Box(a) = Box(a);
+enum Box<a> { Box(a) }

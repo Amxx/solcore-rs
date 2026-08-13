@@ -1,7 +1,9 @@
-data Opaque;
+enum Opaque {}
 
-function keep(value: Opaque) -> Opaque {
-    match value {
-    | _ => return value;
-    }
+function keep(value: Opaque) returns (Opaque) {
+    match (value) {
+default {
+return value;
+}
+}
 }

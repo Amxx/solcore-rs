@@ -1,19 +1,25 @@
-data thing = thing;
-data m = m | k;
+enum thing { thing }
+enum m { m, k }
 
-function pickThing(t: thing) -> word {
-  match t {
-  | thing => return 7;
-  }
+function pickThing(t: thing) returns (word) {
+  match (t) {
+case thing {
+return 7;
+}
+}
 }
 
-function pickM(x: m) -> word {
-  match x {
-  | m => return 1;
-  | m.k => return 2;
-  }
+function pickM(x: m) returns (word) {
+  match (x) {
+case m {
+return 1;
+}
+case m.k {
+return 2;
+}
+}
 }
 
-function main() -> word {
+function main() returns (word) {
   return primAddWord(pickThing(thing), pickM(m.k));
 }

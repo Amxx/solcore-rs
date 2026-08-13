@@ -1,17 +1,17 @@
-data Box = Box(word);
+enum Box { Box(word) }
 
-forall a. class a : Scale {
-  function scale(comptime factor : word, comptime x : a) -> comptime a;
+trait Scale<a> {
+  function scale(comptime factor: word, comptime x: a) returns (comptime<a>) ;
 }
 
-instance word : Scale {
-  function scale(comptime factor : word, comptime x : word) -> comptime word {
+impl Scale<word> {
+  function scale(comptime factor: word, comptime x: word) returns (comptime<word>) {
     return x;
   }
 }
 
-instance Box : Scale {
-  function scale(comptime factor : word, comptime x : Box) -> comptime Box {
+impl Scale<Box> {
+  function scale(comptime factor: word, comptime x: Box) returns (comptime<Box>) {
     let y : word;
     assembly {
       y := sload(0)
@@ -21,8 +21,8 @@ instance Box : Scale {
 }
 
 contract C {
-  function main() -> word {
-    let a : comptime word = Scale.scale(1, 2);
+  function main() returns (word) {
+    let a : comptime<word> = Scale.scale(1, 2);
     return a;
   }
 }

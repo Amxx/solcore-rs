@@ -1,7 +1,7 @@
-import std.{*};
-import std.Generic.{*};
-import std.StorageGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.StorageGeneric;
 
 export { Wrapper(*) };
 
-data Wrapper = Wrapper(mapping(uint256, uint256));
+enum Wrapper { Wrapper(mapping(uint256 => uint256)) }

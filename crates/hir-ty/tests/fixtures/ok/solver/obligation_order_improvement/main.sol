@@ -9,35 +9,32 @@
 // `R(word):Assign2(word)` in the next round. The reference compiler accepts
 // this program.
 
-forall lhs rhs .
-class lhs:Assign2(rhs) {
-    function assign(l:lhs, r:rhs) -> ();
+trait Assign2<lhs, rhs> {
+    function assign(l: lhs, r: rhs) ;
 }
 
-forall s o .
-class s:Mk(o) {
-    function mk(x:s) -> o;
+trait Mk<s, o> {
+    function mk(x: s) returns (o) ;
 }
 
-data R(a) = R(a);
+enum R<a> { R(a) }
 
-forall a .
-instance R(a):Assign2(a) {
-    function assign(l:R(a), r:a) -> () {
+impl<a> Assign2<R<a>, a> {
+    function assign(l: R<a>, r: a) {
         return ();
     }
 }
 
-data S = S;
+enum S { S }
 
-instance S:Mk(R(word)) {
-    function mk(x:S) -> R(word) {
+impl Mk<S, R<word>> {
+    function mk(x: S) returns (R<word>) {
         return R(0);
     }
 }
 
 contract Main {
-    public function main() -> word {
+    function main() public returns (word) {
         Assign2.assign(Mk.mk(S), 7);
         return 1;
     }

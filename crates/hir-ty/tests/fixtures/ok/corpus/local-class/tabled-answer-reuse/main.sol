@@ -1,16 +1,16 @@
 pragma no-patterson-condition Derived;
 
-forall a . class a:Seed {}
-forall a . class a:Derived {}
+trait Seed<a> {}
+trait Derived<a> {}
 
-instance word:Seed {}
+impl Seed<word> {}
 
-forall a . a:Seed => instance a:Derived {}
+impl<a> Derived<a> where a: Seed {}
 
-forall a . a:Derived, a:Derived => function needsDerivedTwice(x:a) -> () {
+function needsDerivedTwice<a>(x: a) where a: Derived, a: Derived {
   return ();
 }
 
-function main() -> () {
+function main() {
   return needsDerivedTwice(0);
 }

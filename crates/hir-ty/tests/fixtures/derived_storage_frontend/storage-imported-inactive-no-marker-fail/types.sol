@@ -1,6 +1,6 @@
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 
 export { Box(*) };
 
-data Box(a) = Box(a);
+enum Box<a> { Box(a) }

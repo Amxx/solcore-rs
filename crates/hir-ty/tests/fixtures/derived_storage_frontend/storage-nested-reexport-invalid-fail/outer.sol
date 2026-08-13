@@ -1,8 +1,8 @@
-import std.{*};
-import std.Generic.{*};
-import std.StorageGeneric.{*};
-import api.{Inner};
+import * from std;
+import * from std.Generic;
+import * from std.StorageGeneric;
+import {Inner} from api;
 
 export { Outer(*) };
 
-data Outer = Outer(Inner);
+enum Outer { Outer(Inner) }

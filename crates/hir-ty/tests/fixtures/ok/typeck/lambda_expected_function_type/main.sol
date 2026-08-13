@@ -1,9 +1,9 @@
-data Option = None | Some(word);
+enum Option { None, Some(word) }
 
-function apply(f: (word) -> Option) -> Option {
+function apply(f: function(word) returns (Option)) returns (Option) {
   return f(1);
 }
 
-function main() -> Option {
+function main() returns (Option) {
   return apply(lam(x) { return .Some(x); });
 }
