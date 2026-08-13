@@ -1,7 +1,7 @@
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.ABIGeneric;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
@@ -9,7 +9,7 @@ pragma no-bounded-variable-condition ;
 // Direct tests for `abi_encode` over user-defined algebraic data types (ADTs).
 //
 // An ADT reaches `abi_encode` through its auto-derived `Generic` representation
-// and the ABIGeneric bridges (std/ABIGeneric.solc): a product constructor
+// and the ABIGeneric bridges (std/ABIGeneric.sol): a product constructor
 // represents as the primitive tuple of its fields, and a sum represents as the
 // binary `sum(f, g)` type (inl = first constructor, inr = second). Each method
 // encodes an ADT value and returns the `memory(bytes)` result, which the
@@ -33,41 +33,41 @@ pragma no-bounded-variable-condition ;
 //        tail — even the static (Empty) branch keeps that offset wrapper.
 
 // static product
-data Point = Point(uint256, uint256);
+enum Point { Point(uint256, uint256) }
 
 // static sum
-data Choice = First(uint256) | Second(uint256);
+enum Choice { First(uint256), Second(uint256) }
 
 // dynamic sum (the Text branch carries a dynamic string)
-data StrBox = Empty(uint256) | Text(memory(string));
+enum StrBox { Empty(uint256), Text(memory<string>) }
 
 contract AbiEncodeAdt {
   constructor() {}
 
   // Static product: encodes as the tuple (a, b) — two inline head words.
-  public function encPoint(a : uint256, b : uint256) -> memory(bytes) {
+  function encPoint(a: uint256, b: uint256) public returns (memory<bytes>) {
     return abi_encode(Point(a, b));
   }
 
   // Static sum, left constructor: [tag = 0][x].
-  public function encFirst(x : uint256) -> memory(bytes) {
+  function encFirst(x: uint256) public returns (memory<bytes>) {
     return abi_encode(Choice.First(x));
   }
 
   // Static sum, right constructor: [tag = 1][x].
-  public function encSecond(x : uint256) -> memory(bytes) {
+  function encSecond(x: uint256) public returns (memory<bytes>) {
     return abi_encode(Choice.Second(x));
   }
 
   // Dynamic sum, static branch: still offset-wrapped — [0x20] -> [tag = 0][n].
-  public function encEmpty(n : uint256) -> memory(bytes) {
+  function encEmpty(n: uint256) public returns (memory<bytes>) {
     return abi_encode(StrBox.Empty(n));
   }
 
   // Dynamic sum, dynamic branch: [0x20] -> [tag = 1][branch offset][len][data].
-  public function encText() -> memory(bytes) {
+  function encText() public returns (memory<bytes>) {
     let raw : string = "abc";
-    let s : memory(string) = Str.fromString(raw);
+    let s : memory<string> = Str.fromString(raw);
     return abi_encode(StrBox.Text(s));
   }
 }

@@ -29,7 +29,7 @@ contract MiniERC20 {
   balances : mapping(address => uint256);
   allowance : mapping(address => mapping(address => uint256));
 
-  function mint(amount:uint256) -> () {
+  function mint(amount: uint256) {
     balances[owner] = Num.add(balances[owner], amount);
     totalSupply = Num.add(totalSupply, amount);
   }
@@ -49,13 +49,13 @@ contract MiniERC20 {
     }
 */
 
-  function transferFrom(src:address, dst:address, amt:uint256) -> bool {
+  function transferFrom(src: address, dst: address, amt: uint256) returns (bool) {
      let msg_sender = caller();
      myrequire( balances[src] >= amt /* "token/insufficient-balance" */
             , 0x746f6b656e2f696e73756666696369656e742d62616c616e6365
 	    );
 
-     if (src != msg_sender && allowance[src][msg_sender] != (Num.maxVal():uint256)) {
+     if (src != msg_sender && allowance[src][msg_sender] != (Num.maxVal())) {
         myrequire( allowance[src][msg_sender] >= amt /* "token/insufficient-allowance" */
 	       , 0x746f6b656e2f696e73756666696369656e742d616c6c6f77616e6365
 	       );
@@ -74,7 +74,7 @@ contract MiniERC20 {
     }
 */
 
-  function approve(usr: address, amt: uint256) -> bool {
+  function approve(usr: address, amt: uint256) returns (bool) {
       let msg_sender = caller();
       allowance[msg_sender][usr] = amt;
       // emit Approval(msg.sender, usr, amt);
@@ -82,13 +82,13 @@ contract MiniERC20 {
 
   }
 
-  function init() -> () {
+  function init() {
     owner = address(0x123456789abcdef);
     decimals = uint256(18); // Num.fromWord(18) fails, which may be a problem
   }
 
   // #[() -> 958]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     let msg_sender = caller();
     init();
     mint(uint256(1000));

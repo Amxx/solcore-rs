@@ -1,5 +1,5 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 // Array literals, end to end.
 //
@@ -7,7 +7,7 @@ import std.dispatch.{*};
 // Solidity's memory -> storage copy: it resizes the field and clears the
 // abandoned tail, so shrinking must not leave old elements reachable.
 contract ArrayLit {
-  xs : array(uint256);
+  xs : array<uint256>;
 
   constructor() {}
 
@@ -15,13 +15,13 @@ contract ArrayLit {
 
   // Reads back an element of a memory literal. Element 0 must be the first
   // element, not the length word stored ahead of it.
-  public function memAt(i : uint256) -> uint256 {
-    let m : memory(DynArray(uint256)) = [11, 22, 33];
+  function memAt(i: uint256) public returns (uint256) {
+    let m : memory<DynArray<uint256>> = [11, 22, 33];
     return m[i];
   }
 
-  public function memSum() -> uint256 {
-    let m : memory(DynArray(uint256)) = [1, 2, 3, 4];
+  function memSum() public returns (uint256) {
+    let m : memory<DynArray<uint256>> = [1, 2, 3, 4];
     let acc : uint256 = uint256(0);
     let i : uint256;
     for (i = uint256(0); i < uint256(4); i = i + uint256(1)) {
@@ -31,41 +31,41 @@ contract ArrayLit {
   }
 
   // Nested literal: the element type is itself a memory array.
-  public function nested() -> uint256 {
-    let g : memory(DynArray(memory(DynArray(uint256)))) = [[1, 2], [3, 4]];
-    let row : memory(DynArray(uint256)) = g[uint256(1)];
+  function nested() public returns (uint256) {
+    let g : memory<DynArray<memory<DynArray<uint256>>>> = [[1, 2], [3, 4]];
+    let row : memory<DynArray<uint256>> = g[uint256(1)];
     return row[uint256(0)];
   }
 
   // --- storage literals ---
 
-  public function setThree() -> () {
+  function setThree() public {
     xs = [10, 20, 30];
   }
 
-  public function setFive() -> () {
+  function setFive() public {
     xs = [1, 2, 3, 4, 5];
   }
 
-  public function setTwo() -> () {
+  function setTwo() public {
     xs = [7, 8];
   }
 
-  public function clear() -> () {
+  function clear() public {
     xs = [];
   }
 
-  public function len() -> uint256 {
+  function len() public returns (uint256) {
     return Length.length(xs);
   }
 
-  public function get(i : uint256) -> uint256 {
+  function get(i: uint256) public returns (uint256) {
     return xs[i];
   }
 
   // Grow the array back without writing elements. Anything the shrink abandoned
   // must read as zero, not as the old value.
-  public function grow(n : uint256) -> () {
+  function grow(n: uint256) public {
     Array.setLength(xs, n);
   }
 }

@@ -1,18 +1,22 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract ConstructorSuffix {
-  data T = A | B_A;
+  enum T { A, B_A }
 
-  function value(x:T) -> word {
-    match x {
-    | T.A => return 1;
-    | T.B_A => return 42;
-    }
+  function value(x: T) returns (word) {
+    match (x) {
+case T.A {
+return 1;
+}
+case T.B_A {
+return 42;
+}
+}
   }
 
   // #[() -> 42]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     return uint256(value(T.B_A));
   }
 }

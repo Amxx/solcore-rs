@@ -1,60 +1,76 @@
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
 
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
-forall a . class a:CloneLike {
-  function clone(x : a) -> a;
+trait CloneLike<a> {
+  function clone(x: a) returns (a) ;
 }
 
-instance uint256:CloneLike {
-  function clone(x : uint256) -> uint256 { return x; }
+impl CloneLike<uint256> {
+  function clone(x: uint256) returns (uint256) { return x; }
 }
 
 contract DeriveClass {
   #[derive(Eq, Ord)]
-  data Color = Red | Green | Blue;
+  enum Color { Red, Green, Blue }
 
   #[derive(Eq, Ord)]
-  data Point = Point(uint256, uint256);
+  enum Point { Point(uint256, uint256) }
 
   #[derive(CloneLike)]
-  data Box = Box(uint256);
+  enum Box { Box(uint256) }
 
   constructor() {}
 
   // #[() -> 1]
-  public function eqRedRed() -> uint256 {
-    match Eq.eq(Color.Red, Color.Red) {
-    | true => return uint256(1);
-    | false => return uint256(0);
-    }
+  function eqRedRed() public returns (uint256) {
+    match (Eq.eq(Color.Red, Color.Red)) {
+case true {
+return uint256(1);
+}
+case false {
+return uint256(0);
+}
+}
   }
 
   // #[() -> 0]
-  public function eqRedBlue() -> uint256 {
-    match Eq.eq(Color.Red, Color.Blue) {
-    | true => return uint256(1);
-    | false => return uint256(0);
-    }
+  function eqRedBlue() public returns (uint256) {
+    match (Eq.eq(Color.Red, Color.Blue)) {
+case true {
+return uint256(1);
+}
+case false {
+return uint256(0);
+}
+}
   }
 
   // #[() -> 1]
-  public function gtGreenRed() -> uint256 {
-    match Ord.gt(Color.Green, Color.Red) {
-    | true => return uint256(1);
-    | false => return uint256(0);
-    }
+  function gtGreenRed() public returns (uint256) {
+    match (Ord.gt(Color.Green, Color.Red)) {
+case true {
+return uint256(1);
+}
+case false {
+return uint256(0);
+}
+}
   }
 
   // #[() -> 0]
-  public function gtRedGreen() -> uint256 {
-    match Ord.gt(Color.Red, Color.Green) {
-    | true => return uint256(1);
-    | false => return uint256(0);
-    }
+  function gtRedGreen() public returns (uint256) {
+    match (Ord.gt(Color.Red, Color.Green)) {
+case true {
+return uint256(1);
+}
+case false {
+return uint256(0);
+}
+}
   }
 
   // #[() -> 1]
