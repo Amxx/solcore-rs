@@ -3485,14 +3485,14 @@ fn recursive_string_clone_creation_consumes_global_fuel() {
         r#"
 import * from std;
 
-function grow(s:string, x:word) -> word {
+function grow(s:string, x:word) returns (word) {
   let result:word = grow(concatLit(s, "x"), x);
   assembly { sstore(0, x) }
   return result;
 }
 
 contract C {
-  public function main(x:word) -> word {
+  function main(x:word) public returns (word) {
     return grow("", x);
   }
 }
@@ -3532,13 +3532,13 @@ contract C {
 fn desugars_memory_and_storage_array_literals_to_runtime_builders() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
 contract ArrayLit {
-  xs : array(uint256);
+  xs : array<uint256>;
 
-  function main() -> uint256 {
-    let m : memory(DynArray(uint256)) = [1, 2, 3];
+  function main() returns (uint256) {
+    let m : memory<DynArray<uint256>> = [1, 2, 3];
     xs = [10, 20, 30];
     return m[uint256(1)] + xs[uint256(2)];
   }
@@ -3584,13 +3584,13 @@ contract ArrayLit {
 fn routes_whole_storage_array_assignment_through_assign_instance() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
 contract ArrayCopy {
-  dst : array(uint256);
-  src : array(uint256);
+  dst : array<uint256>;
+  src : array<uint256>;
 
-  function main() -> () {
+  function main() returns () {
     dst = src;
     return ();
   }
@@ -3618,23 +3618,23 @@ contract ArrayCopy {
 fn contract_fields_lower_through_storage_classes_and_prefix_offsets() {
     let (db, main_file, output) = specialize_src_with_std_and_db(
         r#"
-import std.{*};
+import * from std;
 
 contract FieldAccess {
   first : uint256;
   second : uint256;
   third : uint256;
-  values : array(uint256);
-  balances : mapping(uint256, uint256);
+  values : array<uint256>;
+  balances : mapping(uint256 => uint256);
 
-  function readFirst() -> uint256 { return first; }
-  function writeSecond(v:uint256) -> () { second = v; return (); }
-  function bumpThird(v:uint256) -> () { third += v; return (); }
-  function replaceValues() -> () { values = [uint256(4), uint256(5)]; return (); }
-  function readValue(k:uint256) -> uint256 { return values[k]; }
-  function readBalance(k:uint256) -> uint256 { return balances[k]; }
+  function readFirst() returns (uint256) { return first; }
+  function writeSecond(v:uint256) returns () { second = v; return (); }
+  function bumpThird(v:uint256) returns () { third += v; return (); }
+  function replaceValues() returns () { values = [uint256(4), uint256(5)]; return (); }
+  function readValue(k:uint256) returns (uint256) { return values[k]; }
+  function readBalance(k:uint256) returns (uint256) { return balances[k]; }
 
-  function main() -> uint256 {
+  function main() returns (uint256) {
     writeSecond(uint256(1));
     bumpThird(uint256(2));
     replaceValues();
@@ -3748,11 +3748,11 @@ contract FieldAccess {
 fn partial_contract_field_support_does_not_fall_back_to_legacy_slots() {
     let read = specialize_src_with_std(
         r#"
-import std.{Proxy, storage, StorageSize};
+import {Proxy, storage, StorageSize} from std;
 
 contract C {
   value : word;
-  function main() -> word { return value; }
+  function main() returns (word) { return value; }
 }
 "#,
     );
@@ -3768,11 +3768,11 @@ contract C {
 
     let write = specialize_src_with_std(
         r#"
-import std.{Proxy, storage, StorageSize, CanStore};
+import {Proxy, storage, StorageSize, CanStore} from std;
 
 contract C {
   value : word;
-  function main() -> word {
+  function main() returns (word) {
     value = value;
     return value;
   }
@@ -3794,30 +3794,30 @@ contract C {
 fn array_indexes_preserve_non_identity_typedef_representations() {
     let (db, main_file, output) = specialize_src_with_std_and_db(
         r#"
-import std.{*};
+import * from std;
 
-data Shifted = Shifted(word);
-instance Shifted:Typedef(word) {
-  function rep(x:Shifted) -> word {
-    match x { | Shifted(w) => return w + 100; }
+enum Shifted {Shifted(word)}
+impl Typedef<Shifted,word> {
+  function rep(x:Shifted) returns (word) {
+    match (x) { case Shifted(w) { return w + 100; }}
   }
-  function abs(w:word) -> Shifted { return Shifted(w - 100); }
+  function abs(w:word) returns (Shifted) { return Shifted(w - 100); }
 }
 
-data Second = Second(word);
-instance Second:Typedef(word) {
-  function rep(x:Second) -> word {
-    match x { | Second(w) => return w + 1; }
+enum Second {Second(word)}
+impl Typedef<Second,word> {
+  function rep(x:Second) returns (word) {
+    match (x) { case Second(w) { return w + 1; }}
   }
-  function abs(w:word) -> Second { return Second(w - 1); }
+  function abs(w:word) returns (Second) { return Second(w - 1); }
 }
 
 contract ReprArray {
-  xs : array(uint256);
+  xs : array<uint256>;
   seed : word;
 
-  function main() -> word {
-    let m : memory(DynArray(Shifted)) = [Shifted(3), Shifted(4)];
+  function main() returns (word) {
+    let m : memory<DynArray<Shifted>> = [Shifted(3), Shifted(4)];
     xs = [10, 20];
     let idx : Second = Second(seed);
     let picked : Shifted = m[idx];
@@ -3869,13 +3869,13 @@ contract ReprArray {
 fn public_dynamic_array_return_reaches_abi_encoder() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract PublicArray {
   constructor() {}
 
-  public function values() -> memory(DynArray(uint256)) {
+  function values() public returns (memory<DynArray<uint256>>) {
     return [1, 2, 3];
   }
 }
@@ -3902,14 +3902,14 @@ contract PublicArray {
 fn bool_and_nested_dynamic_storage_arrays_resolve_storage_conversions() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
 contract CollectionArray {
-  flags : array(bool);
-  grid : array(array(uint256));
-  names : array(string);
+  flags : array<bool>;
+  grid : array<array<uint256>>;
+  names : array<string>;
 
-  function main() -> uint256 {
+  function main() returns (uint256) {
     Array.setLength(flags, uint256(0));
     ArrayPush.push(flags, true);
     let flag : bool = flags[uint256(0)];
@@ -3917,15 +3917,15 @@ contract CollectionArray {
     Array.setLength(grid, uint256(1));
     ArrayPush.push(grid[uint256(0)], uint256(7));
     grid[uint256(0)][uint256(0)] = uint256(9);
-    let row : storage(array(uint256)) = grid[uint256(0)];
+    let row : storage<array<uint256>> = grid[uint256(0)];
     ArrayPush.push(row, uint256(11));
 
-    let s : memory(string) = "hello";
+    let s : memory<string> = "hello";
     ArrayPush.push(names, s);
     names[uint256(0)] = s;
-    let loaded : memory(string) = names[uint256(0)];
+    let loaded : memory<string> = names[uint256(0)];
 
-    if flag { return row[uint256(1)] + Length.length(names); }
+    if (flag) { return row[uint256(1)] + Length.length(names); }
     return uint256(0);
   }
 }
@@ -3952,12 +3952,12 @@ contract CollectionArray {
 fn nested_bool_array_write_composes_storage_refs_without_intermediate_copy() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
 contract NestedBool {
-  grid : array(array(bool));
+  grid : array<array<bool>>;
 
-  function main(v:bool) -> () {
+  function main(v:bool) returns () {
     grid[uint256(0)][uint256(0)] = v;
     return ();
   }
@@ -3998,10 +3998,10 @@ contract NestedBool {
 fn folds_resolved_std_word_keccak_literal_intrinsic() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return keccakWordLit(0);
   }
 }
@@ -4022,10 +4022,10 @@ contract C {
 fn folds_erc7201_namespace_to_a_single_constant() {
     let output = specialize_src_with_std(
         r#"
-import std.{*};
+import * from std;
 
 contract C {
-  public function main() -> bytes32 {
+  function main() public returns (bytes32) {
     return erc7201("example.main");
   }
 }
@@ -4048,14 +4048,14 @@ contract C {
 fn does_not_fold_user_addword_shadowing_builtin_wrapper_name() {
     let (_db, output) = specialize_src(
         r#"
-function addWord(x: word, y: word) -> word {
+function addWord(x: word, y: word) returns (word) {
   let r : word;
   assembly { r := sload(0) }
   return r;
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return addWord(1, 2);
   }
 }
@@ -4070,7 +4070,7 @@ contract C {
 fn assignment_lhs_root_is_not_substituted() {
     let repo = repo_root();
     let fixture =
-        repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/comptime/Plus.solc");
+        repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/comptime/Plus.sol");
     let output = specialize_fixture(&fixture);
 
     assert_eq!(output.diagnostics, Vec::new());
@@ -4081,12 +4081,12 @@ fn assignment_lhs_root_is_not_substituted() {
 fn compound_assignment_invalidates_lhs_root() {
     let (_db, output) = specialize_src(
         r#"
-forall t . class t:Add {
-  function add(l:t, r:t) -> t;
+trait Add<t> {
+  function add(l:t, r:t) returns (t) ;
 }
 
-instance word:Add {
-  function add(l:word, r:word) -> word {
+impl Add<word> {
+  function add(l:word, r:word) returns (word) {
     let result : word;
     assembly { result := sload(0) }
     return result;
@@ -4094,7 +4094,7 @@ instance word:Add {
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let x : word = 1;
     x += 2;
     return x;
@@ -4112,7 +4112,7 @@ fn unknown_if_invalidates_assignments_from_both_branches() {
     let (_db, output) = specialize_src(
         r#"
 contract C {
-  public function main(c: bool) -> word {
+  function main(c: bool) public returns (word) {
     let x : word = 1;
     if (c) {
     } else {
@@ -4133,7 +4133,7 @@ fn if_statement_specializes_through_pre_typeck_match_view() {
     let (_db, output) = specialize_src(
         r#"
 contract C {
-  public function main(c: bool) -> word {
+  function main(c: bool) public returns (word) {
     let x : word = 1;
     if (c) {
       x = 2;
@@ -4177,8 +4177,8 @@ fn if_expression_specializes_through_pre_typeck_match_view() {
     let (_db, output) = specialize_src(
         r#"
 contract C {
-  public function main(c: bool) -> word {
-    let x : word = if (c) then 2 else 3;
+  function main(c: bool) public returns (word) {
+    let x : word = ((c) ? 2 : 3);
     return x;
   }
 }
@@ -4217,7 +4217,7 @@ fn bool_constructors_specialize_through_pre_typeck_unit_sum_view() {
     let (_true_db, true_output) = specialize_src(
         r#"
 contract C {
-  public function main() -> bool {
+  function main() public returns (bool) {
     return true;
   }
 }
@@ -4226,7 +4226,7 @@ contract C {
     let (_false_db, false_output) = specialize_src(
         r#"
 contract C {
-  public function main() -> bool {
+  function main() public returns (bool) {
     return false;
   }
 }
@@ -4250,11 +4250,10 @@ fn unknown_match_pattern_binders_shadow_outer_constants() {
     let (_db, output) = specialize_src(
         r#"
 contract C {
-  public function main(n: word) -> word {
+  function main(n: word) public returns (word) {
     let x : word = 1;
-    match n {
-      | x => return x;
-    }
+    match (n) {
+      case x { return x; }}
   }
 }
 "#,
@@ -4272,9 +4271,9 @@ fn folds_qualified_constructor_matches_before_wildcard_defaults() {
     let repo = repo_root();
     let corpus = repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/spec");
     for (fixture, expected) in [
-        ("037dwarves.solc", "5"),
-        ("038food0.solc", "42"),
-        ("039food.solc", "42"),
+        ("037dwarves.sol", "5"),
+        ("038food0.sol", "42"),
+        ("039food.sol", "42"),
     ] {
         let output = specialize_fixture(&corpus.join(fixture));
         assert_eq!(output.diagnostics, Vec::new(), "{fixture}");
@@ -5072,7 +5071,7 @@ fn collect_module_fs_snapshot(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("solc") {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("sol") {
             if path.is_file() {
                 existing_files.insert(path.clone());
             }
@@ -5173,17 +5172,21 @@ fn repo_root() -> PathBuf {
 fn constructor_fold_is_not_confused_by_underscored_names() {
     let (_db, output) = specialize_src(
         r#"
-data D = Suf | Pre_Suf;
+enum D {Suf , Pre_Suf}
 
-function pick(d:D) -> word {
-  match d {
-  | D.Suf => return 1;
-  | D.Pre_Suf => return 2;
-  };
+function pick(d:D) returns (word) {
+  match (d) {
+    case D.Suf {
+      return 1;
+    }
+    case D.Pre_Suf {
+      return 2;
+    }
+  }
 }
 
 contract C {
-  function main() -> word {
+  function main() returns (word) {
     return pick(D.Pre_Suf);
   }
 }
@@ -5203,17 +5206,21 @@ contract C {
 fn for_loop_post_assignments_are_not_folded_to_preloop_constants() {
     let (_db, output) = specialize_src(
         r#"
-data Flag = On | Off;
+enum Flag {On , Off}
 
-function isOn(f: Flag) -> bool {
-  match f {
-  | Flag.On => return true;
-  | Flag.Off => return false;
-  };
+function isOn(f: Flag) returns (bool) {
+  match (f) {
+    case Flag.On {
+      return true;
+    }
+    case Flag.Off {
+      return false;
+    }
+  }
 }
 
 contract C {
-  function main() -> word {
+  function main() returns (word) {
     let f : Flag = Flag.On;
     for (; isOn(f); f = Flag.Off) {
     }
@@ -5248,8 +5255,8 @@ contract C {
 fn non_contract_main_survives_dead_function_elimination_after_name_mangling() {
     let (_db, output) = specialize_src(
         r#"
-function answer() -> word { return 42; }
-function main() -> word { return answer(); }
+function answer() returns (word) { return 42; }
+function main() returns (word) { return answer(); }
 "#,
     );
 
@@ -5275,12 +5282,12 @@ fn evaluator_fuel_bounds_total_inline_fanout_work() {
     let module = parse_module(
         db,
         r#"
-function g2() -> word { return 1; }
-function g1() -> word { return g2() + g2(); }
-function g0() -> word { return g1() + g1(); }
+function g2() returns (word) { return 1; }
+function g1() returns (word) { return g2() + g2(); }
+function g0() returns (word) { return g1() + g1(); }
 
 contract C {
-  function main() -> word { return g0(); }
+  function main() returns (word) { return g0(); }
 }
 "#,
     );
@@ -5307,7 +5314,7 @@ contract C {
 fn default_fuel_handles_the_e136_basic_dispatch_surface() {
     solcore_test_utils::run_in_large_stack(|| {
         let source =
-            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.solc");
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.sol");
         let output = specialize_src_with_std(source);
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 
@@ -5350,15 +5357,15 @@ fn default_fuel_handles_the_e136_basic_dispatch_surface() {
 fn dead_function_elimination_traces_calls_inside_residual_lambdas() {
     let (_db, output) = specialize_src(
         r#"
-data Box(f) = Box(f);
+enum Box<f> {Box(f)}
 
-function target(x : word) -> word {
+function target(x : word) returns (word) {
   let result : word;
   assembly { result := add(x, 1) }
   return result;
 }
 
-function main() -> Box(word -> word) {
+function main() returns (Box<function(word) returns(word)>) {
   return Box(lam (x : word) -> word { return target(x); });
 }
 "#,
@@ -5378,15 +5385,15 @@ function main() -> Box(word -> word) {
 fn dead_function_elimination_keeps_function_values_nested_in_constructors() {
     let (_db, output) = specialize_src(
         r#"
-data Box(f) = Box(f);
+enum Box<f> {Box(f)}
 
-function target(x : word) -> word {
+function target(x : word) returns (word) {
   let result : word;
   assembly { result := add(x, 1) }
   return result;
 }
 
-function main() -> Box(word -> word) {
+function main() returns (Box<function(word) returns(word)>) {
   return Box(target);
 }
 "#,
@@ -5424,15 +5431,15 @@ function main() -> Box(word -> word) {
 fn user_path_suffix_does_not_grant_std_dispatch_inlining() {
     let output = specialize_source_at_root(
         Path::new("/main"),
-        "mystd/dispatch.solc",
+        "mystd/dispatch.sol",
         r#"
-function clobber(value : word) -> () {
+function clobber(value : word) returns () {
   let observed : word;
   assembly { observed := callvalue() }
   return ();
 }
 
-function main() -> word {
+function main() returns (word) {
   clobber(0);
   return 7;
 }
@@ -5464,19 +5471,19 @@ fn std_dispatch_statement_inlining_preserves_lexical_scope() {
         db,
         [main_root.as_path(), std_root.as_path()],
     ));
-    let path = std_root.join("dispatch.solc");
+    let path = std_root.join("dispatch.sol");
     let key = module_key_for_path(LibraryId::Std, &std_root, &path).expect("std dispatch key");
     let file = source_file_at_path(
         db,
         &path,
         r#"
-function clobber() -> () {
+function clobber() returns () {
   let x : word = 1;
   assembly { mstore(x, x) }
   return ();
 }
 
-function main(x : word) -> word {
+function main(x : word) returns (word) {
   clobber();
   return x;
 }
@@ -5519,20 +5526,20 @@ function main(x : word) -> word {
 fn class_method_values_resolve_to_the_specialized_instance_method() {
     let (_db, output) = specialize_src(
         r#"
-forall t . class t:Pick {
-  function pick(x : t) -> t;
+trait Pick<t> {
+  function pick(x : t) returns (t) ;
 }
 
-instance word:Pick {
-  function pick(x : word) -> word {
+impl Pick<word> {
+  function pick(x : word) returns (word) {
     let result : word;
     assembly { result := add(x, 1) }
     return result;
   }
 }
 
-function main(x : word) -> word {
-  let f : word -> word = Pick.pick;
+function main(x : word) returns (word) {
+  let f : function(word) returns (word) = Pick.pick;
   return f(x);
 }
 "#,
@@ -5565,45 +5572,45 @@ pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 pragma no-coverage-condition;
 
-data Proxy(t) = Proxy;
-data ABIDecoder(ty, reader) = ABIDecoder(reader);
-data Reader = Reader;
+enum Proxy<t> {Proxy}
+enum ABIDecoder<ty, reader> {ABIDecoder(reader)}
+enum Reader {Reader}
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
-forall self . class self:ABIDeriving {}
-forall self . class self:ABIAttribs {
-  function headSize(ty:Proxy(self)) -> word;
-  function isStatic(ty:Proxy(self)) -> bool;
+trait ABIDeriving<self> {}
+trait ABIAttribs<self> {
+  function headSize(ty:Proxy<self>) returns (word) ;
+  function isStatic(ty:Proxy<self>) returns (bool) ;
 }
-forall decoder decoded . class decoder:ABIDecode(decoded) {
-  function decode(ptr:decoder, headOffset:word) -> decoded;
+trait ABIDecode<decoder,decoded> {
+  function decode(ptr:decoder, headOffset:word) returns (decoded) ;
 }
-forall reader . class reader:WordReader {}
+trait WordReader<reader> {}
 
-instance word:ABIAttribs {
-  function headSize(ty:Proxy(word)) -> word {
+impl ABIAttribs<word> {
+  function headSize(ty:Proxy<word>) returns (word) {
     assembly { sstore(0, 32) }
     return 32;
   }
-  function isStatic(ty:Proxy(word)) -> bool {
+  function isStatic(ty:Proxy<word>) returns (bool) {
     assembly { sstore(1, 1) }
     return true;
   }
 }
-instance Reader:WordReader {}
-instance ABIDecoder(word, Reader):ABIDecode(word) {
-  function decode(ptr:ABIDecoder(word, Reader), headOffset:word) -> word {
+impl WordReader<Reader> {}
+impl ABIDecode<ABIDecoder<word, Reader>,word> {
+  function decode(ptr:ABIDecoder<word, Reader>, headOffset:word) returns (word) {
     return headOffset;
   }
 }
 
-data Box(a) = Box(a);
+enum Box<a> {Box(a)}
 
-function main(ptr:ABIDecoder(Box(word), Reader), headOffset:word) -> Box(word) {
-  let p:Proxy(Box(word));
+function main(ptr:ABIDecoder<Box<word>, Reader>, headOffset:word) returns (Box<word>) {
+  let p:Proxy<Box<word>>;
   let first = ABIAttribs.headSize(p);
   let second = ABIAttribs.headSize(p);
   let static = ABIAttribs.isStatic(p);
@@ -5736,7 +5743,7 @@ function main(ptr:ABIDecoder(Box(word), Reader), headOffset:word) -> Box(word) {
 #[test]
 fn derived_abi_wrappers_replay_definition_side_evidence() {
     let fixture =
-        repo_root().join("crates/specialize/tests/fixtures/derived_abi_evidence_replay/main.solc");
+        repo_root().join("crates/specialize/tests/fixtures/derived_abi_evidence_replay/main.sol");
     let output = specialize_fixture(&fixture);
 
     assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
@@ -5755,21 +5762,21 @@ fn derived_abi_wrappers_replay_definition_side_evidence() {
 fn direct_adt_abi_specializations_keep_sum_representations_separate() {
     let (db, _, output) = specialize_src_with_std_and_db(
         r#"
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data D2 = L(uint256) | R(memory(bytes));
-data D3 = X(uint256) | Y(uint256) | Z(memory(bytes));
-data S2 = P(uint256) | Q(uint256);
+enum D2 {L(uint256) , R(memory<bytes>)}
+enum D3 {X(uint256) , Y(uint256) , Z(memory<bytes>)}
+enum S2 {P(uint256) , Q(uint256)}
 
 contract Sums {
   constructor() {}
-  public function makeD2(b:memory(bytes)) -> D2 { return D2.R(b); }
-  public function makeD3(b:memory(bytes)) -> D3 { return D3.Z(b); }
-  public function makeS2(n:uint256) -> S2 { return S2.P(n); }
-  public function roundtripD3(value:D3) -> D3 { return value; }
+  function makeD2(b:memory<bytes>) public returns (D2) { return D2.R(b); }
+  function makeD3(b:memory<bytes>) public returns (D3) { return D3.Z(b); }
+  function makeS2(n:uint256) public returns (S2) { return S2.P(n); }
+  function roundtripD3(value:D3) public returns (D3) { return value; }
 }
 "#,
     );
@@ -5991,49 +5998,48 @@ pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 pragma no-coverage-condition;
 
-data Proxy(t) = Proxy;
-data storage(t) = storage(word);
+enum Proxy<t> {Proxy}
+enum storage<t> {storage(word)}
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
-forall self . class self:StorageDeriving {}
-forall self . class self:StorageSize {
-  function size(x:Proxy(self)) -> word;
+trait StorageDeriving<self> {}
+trait StorageSize<self> {
+  function size(x:Proxy<self>) returns (word) ;
 }
-forall slot value . class slot:CanStore(value) {
-  function store(r:slot, v:value) -> ();
-  function load(r:slot) -> value;
+trait CanStore<slot,value> {
+  function store(r:slot, v:value) returns () ;
+  function load(r:slot) returns (value) ;
 }
 
-instance word:StorageSize {
-  function size(x:Proxy(word)) -> word {
+impl StorageSize<word> {
+  function size(x:Proxy<word>) returns (word) {
     assembly { sstore(0, 1) }
     return 1;
   }
 }
-instance storage(word):CanStore(word) {
-  function store(r:storage(word), v:word) -> () {
-    match r {
-    | storage(slot) => assembly { sstore(slot, v) }
-    }
+impl CanStore<storage<word>,word> {
+  function store(r:storage<word>, v:word) returns () {
+    match (r) {
+    case storage(slot) { assembly { sstore(slot, v) } }}
   }
-  function load(r:storage(word)) -> word {
-    match r {
-    | storage(slot) =>
-      let result:word;
+  function load(r:storage<word>) returns (word) {
+    match (r) {
+    case storage(slot) {
+let result:word;
       assembly { result := sload(slot) }
       return result;
-    }
+    }}
   }
 }
 
-data Box(a) = Box(a);
+enum Box<a> {Box(a)}
 
-function main(r:storage(Box(word)), v:Box(word)) -> Box(word) {
-  let first = StorageSize.size(Proxy:Proxy(Box(word)));
-  let second = StorageSize.size(Proxy:Proxy(Box(word)));
+function main(r:storage<Box<word>>, v:Box<word>) returns (Box<word>) {
+  let first = StorageSize.size(@Box<word>);
+  let second = StorageSize.size(@Box<word>);
   CanStore.store(r, v);
   return CanStore.load(r);
 }
@@ -6136,27 +6142,27 @@ pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 pragma no-coverage-condition;
 
-data storage(t) = storage(word);
-data mapping(k, v) = mapping(word);
+enum storage<t> {storage(word)}
+enum mapping<k, v> {mapping(word)}
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
-forall self . class self:StorageDeriving {}
-forall self . class self:StorageSize {}
-forall slot value . class slot:CanStore(value) {
-  function store(r:slot, v:value) -> ();
-  function load(r:slot) -> value;
+trait StorageDeriving<self> {}
+trait StorageSize<self> {}
+trait CanStore<slot,value> {
+  function store(r:slot, v:value) returns () ;
+  function load(r:slot) returns (value) ;
 }
 
-instance word:StorageSize {}
-forall k v . instance mapping(k, v):StorageSize {}
-forall k v . instance storage(mapping(k, v)):CanStore(storage(mapping(k, v))) {}
+impl StorageSize<word> {}
+impl<k,v> StorageSize<mapping(k => v)> {}
+impl<k,v> CanStore<storage<mapping(k => v)>,storage<mapping(k => v)>> {}
 
-data Wrapper = Wrapper(mapping(word, word));
+enum Wrapper {Wrapper(mapping(word => word))}
 
-function main(r:storage(Wrapper)) -> Wrapper {
+function main(r:storage<Wrapper>) returns (Wrapper) {
   return CanStore.load(r);
 }
 "#,
@@ -6176,7 +6182,7 @@ function main(r:storage(Wrapper)) -> Wrapper {
 #[test]
 fn derived_storage_wrappers_replay_definition_side_evidence() {
     let fixture = repo_root()
-        .join("crates/specialize/tests/fixtures/derived_storage_evidence_replay/main.solc");
+        .join("crates/specialize/tests/fixtures/derived_storage_evidence_replay/main.sol");
     let output = specialize_fixture(&fixture);
 
     assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
@@ -6200,7 +6206,7 @@ fn derived_storage_wrappers_replay_definition_side_evidence() {
 #[test]
 fn contract_field_calls_use_definition_module_evidence() {
     let fixture = repo_root()
-        .join("crates/specialize/tests/fixtures/storage_field_definition_evidence/main.solc");
+        .join("crates/specialize/tests/fixtures/storage_field_definition_evidence/main.sol");
     let output = specialize_fixture(&fixture);
 
     assert_eq!(output.diagnostics, Vec::new(), "{:#?}", output.diagnostics);
