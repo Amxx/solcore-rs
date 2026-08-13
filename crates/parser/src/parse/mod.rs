@@ -994,7 +994,11 @@ mod tests {
 
     #[test]
     fn parenthesized_single_pattern_parses_as_grouping() {
-        let source = "{ match p { | (y) => return y; | ((), (x, z)) => return x; } }";
+        let source = "\
+{ match (p) {
+  case (y) { return y; }
+  case ((), (x, z)) { return x; }
+} }";
         let body = parse_body_statements(source, (0..source.len()).into());
         assert!(body.errors.is_empty(), "body errors: {:?}", body.errors);
 
@@ -1016,10 +1020,10 @@ mod tests {
     #[test]
     fn qualified_constructor_patterns_parse() {
         let source = "\
-{ match mmx {
-| Option.None => return x;
-| Option.Some(Option.None) => return x;
-| y => return y;
+{ match (mmx) {
+case Option.None { return x; }
+case Option.Some(Option.None) { return x; }
+case y { return y; }
 } }";
         let body = parse_body_statements(source, (0..source.len()).into());
         assert!(body.errors.is_empty(), "body errors: {:?}", body.errors);
@@ -1062,7 +1066,7 @@ mod tests {
 
     #[test]
     fn import_with_alias_parses() {
-        let parsed = parse_supported_items("import math.bits as Bits;");
+        let parsed = parse_supported_items("import * as Bits from math.bits;");
         assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
 
         match parsed.output.as_slice() {
@@ -1091,7 +1095,7 @@ mod tests {
 
     #[test]
     fn import_with_selected_items_parses() {
-        let parsed = parse_supported_items("import math.words.{addWord, subWord};");
+        let parsed = parse_supported_items("import {addWord, subWord} from math.words;");
         assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
 
         match parsed.output.as_slice() {
@@ -1131,7 +1135,7 @@ mod tests {
 
     #[test]
     fn import_with_wildcard_and_hiding_parses() {
-        let parsed = parse_supported_items("import glob.{*} hiding {drop};");
+        let parsed = parse_supported_items("import * from glob hiding {drop};");
         assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
 
         match parsed.output.as_slice() {
@@ -1155,7 +1159,7 @@ mod tests {
 
     #[test]
     fn import_and_export_operator_names_parse() {
-        let parsed = parse_supported_items("import math.{pow, (^^)};\nexport { f, (^^) };");
+        let parsed = parse_supported_items("import {pow, (^^)} from math;\nexport { f, (^^) };");
         assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
 
         assert!(matches!(
@@ -1171,6 +1175,392 @@ mod tests {
             !parsed.errors.is_empty(),
             "expected parse errors for invalid import"
         );
+    }
+
+    #[test]
+    fn canonical_function_headers_and_return_shapes_parse() {
+        let source = r#"
+contract Box<T> {
+  function one<U>(value: U) public payable returns (Option<U>) where U: Eq {
+    return Option.Some(value);
+  }
+  function pair() returns (word, bool) { return (0, true); }
+  function explicitUnit() returns () { return; }
+  function implicitUnit() { return; }
+}
+"#;
+        let parsed = parse_supported_items(source);
+        assert!(parsed.errors.is_empty(), "errors: {:#?}", parsed.errors);
+
+        let [
+            ParsedTopItem::Contract {
+                ty_params, items, ..
+            },
+        ] = parsed.output.as_slice()
+        else {
+            panic!("unexpected parse output: {:#?}", parsed.output);
+        };
+        assert!(matches!(ty_params.as_slice(), [("T", _)]));
+
+        let [
+            ParsedContractItem::Function(one),
+            ParsedContractItem::Function(pair),
+            ParsedContractItem::Function(explicit_unit),
+            ParsedContractItem::Function(implicit_unit),
+        ] = items.as_slice()
+        else {
+            panic!("unexpected contract items: {items:#?}");
+        };
+
+        assert!(one.sig.public.is_some());
+        assert!(one.sig.payable.is_some());
+        assert!(matches!(one.sig.type_vars.as_slice(), [("U", _)]));
+        assert_eq!(one.sig.preds.len(), 1);
+        assert!(matches!(
+            &one.sig.ret,
+            Some(ParsedTy {
+                kind: ParsedTyKind::Named { name: ("Option", _), args, .. },
+                ..
+            }) if args.len() == 1
+        ));
+        assert!(matches!(
+            &pair.sig.ret,
+            Some(ParsedTy {
+                kind: ParsedTyKind::Tuple { elems },
+                ..
+            }) if elems.len() == 2
+        ));
+        assert!(matches!(
+            &explicit_unit.sig.ret,
+            Some(ParsedTy {
+                kind: ParsedTyKind::Tuple { elems },
+                ..
+            }) if elems.is_empty()
+        ));
+        assert!(matches!(
+            &implicit_unit.sig.ret,
+            Some(ParsedTy {
+                kind: ParsedTyKind::Tuple { elems },
+                ..
+            }) if elems.is_empty()
+        ));
+    }
+
+    #[test]
+    fn canonical_composite_and_function_types_parse() {
+        let source = r#"
+function useTypes(
+  callback: function(word) returns (bool),
+  fire: function(word),
+  table: mapping(address => memory<Option<word>>)
+) returns (bool) { return true; }
+"#;
+        let parsed = parse_supported_items(source);
+        assert!(parsed.errors.is_empty(), "errors: {:#?}", parsed.errors);
+        let [ParsedTopItem::Function { sig, .. }] = parsed.output.as_slice() else {
+            panic!("unexpected parse output: {:#?}", parsed.output);
+        };
+
+        let [
+            ParsedFuncParam::Typed { ty: callback, .. },
+            ParsedFuncParam::Typed { ty: fire, .. },
+            ParsedFuncParam::Typed { ty: table, .. },
+        ] = sig.params.as_slice()
+        else {
+            panic!("unexpected parameters: {:#?}", sig.params);
+        };
+        assert!(matches!(
+            &callback.kind,
+            ParsedTyKind::Fn { params, ret, .. }
+                if params.len() == 1
+                    && matches!(ret.kind, ParsedTyKind::Named { name: ("bool", _), .. })
+        ));
+        assert!(matches!(
+            &fire.kind,
+            ParsedTyKind::Fn { params, ret, .. }
+                if params.len() == 1
+                    && matches!(&ret.kind, ParsedTyKind::Tuple { elems } if elems.is_empty())
+        ));
+        assert!(matches!(
+            &table.kind,
+            ParsedTyKind::Named { name: ("mapping", _), args, .. }
+                if args.len() == 2
+                    && matches!(
+                        &args[1].kind,
+                        ParsedTyKind::Named { name: ("memory", _), args, .. }
+                            if args.len() == 1
+                    )
+        ));
+        assert!(matches!(
+            &sig.ret,
+            Some(ParsedTy {
+                kind: ParsedTyKind::Named {
+                    name: ("bool", _),
+                    ..
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn generic_argument_and_where_lists_require_at_least_one_entry() {
+        for source in [
+            "function value<T>(x: Box<T>) returns (T) where T: Eq { return x; }",
+            "function pair<T, U>(x: Pair<T, U>) where (T: Eq, U: Eq) {}",
+        ] {
+            let parsed = parse_supported_items(source);
+            assert!(
+                parsed.errors.is_empty(),
+                "canonical non-empty list failed to parse: {source}: {:#?}",
+                parsed.errors
+            );
+        }
+
+        // syntax-migration: preserve-literals-begin
+        for source in [
+            "function emptyArgs(x: Box<>) {}",
+            "function emptyConstraintArgs<T>(x: T) where T: Eq<> {}",
+            "function genericMapping(x: mapping<address, word>) {}",
+            "function bareMapping(x: mapping) {}",
+            "function emptyWhere<T>(x: T) where {}",
+            "function emptyParenWhere<T>(x: T) where () {}",
+        ] {
+            let parsed = parse_supported_items(source);
+            assert!(
+                !parsed.errors.is_empty(),
+                "empty generic or constraint list unexpectedly parsed: {source}: {:#?}",
+                parsed.output
+            );
+        }
+        // syntax-migration: preserve-literals-end
+    }
+
+    #[test]
+    fn enum_trait_and_impl_surface_lowers_to_existing_nodes() {
+        let source = r#"
+enum Option<T> { None, Some(T), }
+trait Eq<T> {
+  function eq(left: T, right: T) returns (bool);
+}
+impl<T> Eq<Option<T>> where T: Eq {
+  function eq(left: Option<T>, right: Option<T>) returns (bool) { return true; }
+}
+default impl ABIAttribs<word> {}
+"#;
+        let parsed = parse_supported_items(source);
+        assert!(parsed.errors.is_empty(), "errors: {:#?}", parsed.errors);
+        assert!(matches!(
+            parsed.output.as_slice(),
+            [
+                ParsedTopItem::Adt { ty_params, ctors, .. },
+                ParsedTopItem::Class { type_vars, methods, .. },
+                ParsedTopItem::Instance { type_vars: impl_vars, preds, default_kw: None, .. },
+                ParsedTopItem::Instance { default_kw: Some(_), .. },
+            ] if ty_params.len() == 1
+                && ctors.len() == 2
+                && type_vars.len() == 1
+                && methods.len() == 1
+                && impl_vars.len() == 1
+                && preds.len() == 1
+        ));
+    }
+
+    #[test]
+    fn case_default_match_and_while_lower_to_existing_statement_nodes() {
+        let source = r#"{
+while (keepGoing) { continue; }
+match (left, right) {
+  case (Option.Some(a), Option.Some(b)) { return a; }
+  default { return 0; }
+}
+}"#;
+        let body = parse_body_statements(source, (0..source.len()).into());
+        assert!(body.errors.is_empty(), "body errors: {:#?}", body.errors);
+        let [
+            ParsedStmt {
+                kind:
+                    ParsedStmtKind::For {
+                        init,
+                        post,
+                        body: loop_body,
+                        ..
+                    },
+                ..
+            },
+            ParsedStmt {
+                kind: ParsedStmtKind::Match { scrutinees, arms },
+                ..
+            },
+        ] = body.output.as_slice()
+        else {
+            panic!("unexpected body: {:#?}", body.output);
+        };
+        assert!(init.is_empty() && post.is_empty() && loop_body.len() == 1);
+        assert_eq!(scrutinees.len(), 2);
+        assert_eq!(arms.len(), 2);
+        assert_eq!(arms[0].pats.len(), 2);
+        assert!(
+            arms[1]
+                .pats
+                .iter()
+                .all(|pat| matches!(pat.kind, ParsedPatKind::Wildcard))
+        );
+    }
+
+    #[test]
+    fn named_function_like_parameters_require_explicit_types() {
+        for source in [
+            "function f(value) {}",
+            "function f(comptime value) {}",
+            "trait T<Self> { function f(value); }",
+            "impl T<word> { function f(value) {} }",
+            "contract C { constructor(value) {} }",
+        ] {
+            let parsed = parse_supported_items(source);
+            assert!(
+                parsed.errors.iter().any(|error| {
+                    error.message == "named function parameter requires an explicit type"
+                }),
+                "missing explicit-parameter-type error for `{source}`: {:#?}",
+                parsed.errors
+            );
+        }
+
+        let parsed = parse_supported_items(
+            "function f(value: word, comptime offset: word) returns (word) { return value; }",
+        );
+        assert!(parsed.errors.is_empty(), "errors: {:#?}", parsed.errors);
+
+        for source in [
+            "function f(value: comptime<word>) {}",
+            "function f(comptime value: comptime<word>) {}",
+        ] {
+            let parsed = parse_supported_items(source);
+            assert!(
+                parsed.errors.iter().any(|error| error.message
+                    == "`comptime<T>` is not a parameter type; write `comptime name: T`"),
+                "missing canonical comptime-parameter-placement error for `{source}`: {:#?}",
+                parsed.errors
+            );
+        }
+    }
+
+    #[test]
+    fn lambda_parameters_allow_inference_but_comptime_still_requires_a_type() {
+        let source = "{ let inferred = lam (value) { return value; }; }";
+        let parsed = parse_body_statements(source, (0..source.len()).into());
+        assert!(parsed.errors.is_empty(), "errors: {:#?}", parsed.errors);
+
+        let source = "{ let invalid = lam (comptime value) { return value; }; }";
+        let parsed = parse_body_statements(source, (0..source.len()).into());
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|error| { error.message == "`comptime` parameter requires an explicit type" }),
+            "missing comptime-parameter-type error: {:#?}",
+            parsed.errors
+        );
+
+        for source in [
+            "{ let invalid = lam (value: comptime<word>) { return value; }; }",
+            "{ let invalid = lam (comptime value: comptime<word>) { return value; }; }",
+        ] {
+            let parsed = parse_body_statements(source, (0..source.len()).into());
+            assert!(
+                parsed.errors.iter().any(|error| error.message
+                    == "`comptime<T>` is not a parameter type; write `comptime name: T`"),
+                "missing noncanonical comptime-parameter error for `{source}`: {:#?}",
+                parsed.errors
+            );
+        }
+    }
+
+    #[test]
+    fn if_statement_requires_a_parenthesized_condition() {
+        let source = "{ if (condition) { return 1; } else { return 0; } }";
+        let parsed = parse_body_statements(source, (0..source.len()).into());
+        assert!(parsed.errors.is_empty(), "errors: {:#?}", parsed.errors);
+        assert!(matches!(
+            parsed.output.as_slice(),
+            [ParsedStmt {
+                kind: ParsedStmtKind::If { .. },
+                ..
+            }]
+        ));
+
+        let source = "{ if condition { return 1; } }";
+        let parsed = parse_body_statements(source, (0..source.len()).into());
+        assert!(
+            !parsed.errors.is_empty(),
+            "unparenthesized legacy if statement unexpectedly parsed: {:#?}",
+            parsed.output
+        );
+    }
+
+    #[test]
+    fn only_a_root_tail_expression_may_omit_its_semicolon() {
+        let source = "{ first(); second() }";
+        let parsed = parse_body_statements(source, (0..source.len()).into());
+        assert!(parsed.errors.is_empty(), "errors: {:#?}", parsed.errors);
+
+        for source in [
+            "{ first() second(); }",
+            "{ if (condition) { branch() } }",
+            "{ { nested() } }",
+            "{ match (value) { case _ { arm() } } }",
+        ] {
+            let parsed = parse_body_statements(source, (0..source.len()).into());
+            assert!(
+                parsed.errors.iter().any(|error| error
+                    .message
+                    .starts_with("expression statement requires trailing `;`")),
+                "unterminated non-tail expression unexpectedly parsed: {source}: {:#?}",
+                parsed.errors
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_legacy_core_spellings_produce_parse_errors() {
+        // Every case below is intentionally written in a rejected legacy
+        // spelling. Keep this list as the explicit compatibility boundary.
+        // syntax-migration: preserve-literals-begin
+        for source in [
+            "data Option(T) = None;",
+            "class Eq(T) {}",
+            "instance Eq: word {}",
+            "forall T. function id(x: T) -> T { return x; }",
+            "public function exposed() -> word { return 0; }",
+            "function arrowResult() -> word { return 0; }",
+            "function oldType(value: array(word)) {}",
+            "import old.module.{item};",
+        ] {
+            let parsed = parse_supported_items(source);
+            assert!(
+                !parsed.errors.is_empty(),
+                "legacy spelling unexpectedly parsed: {source}: {:#?}",
+                parsed.output
+            );
+        }
+
+        for source in [
+            "{ return value: word; }",
+            "{ return value as word; }",
+            "{ return if true then 1 else 0; }",
+            "{ match value { | item => return item; } }",
+            "{ let value := 1; }",
+            "{ value := 1; }",
+        ] {
+            let parsed = parse_body_statements(source, (0..source.len()).into());
+            assert!(
+                !parsed.errors.is_empty(),
+                "legacy body spelling unexpectedly parsed: {source}: {:#?}",
+                parsed.output
+            );
+        }
+        // syntax-migration: preserve-literals-end
     }
 
     #[test]

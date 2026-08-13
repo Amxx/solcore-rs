@@ -37,7 +37,7 @@ struct DefIdentity {
 }
 
 fn source_file(db: &TestDb, name: &str, src: &str) -> SourceFile {
-    let url = format!("memory:///{name}.solc").parse().expect("valid url");
+    let url = format!("memory:///{name}.sol").parse().expect("valid url");
     SourceFile::new(db, url, Some(src.to_owned()))
 }
 
@@ -122,9 +122,9 @@ fn instances_of_same_class_on_different_heads_have_distinct_def_ids() {
     let file = source_file(
         &db,
         "instance-heads",
-        "class self:StorageType {}\n\n\
-         instance word:StorageType {\n  function rep(x:word) -> word { return x; }\n}\n\n\
-         instance uint:StorageType {\n  function rep(x:uint) -> uint { return x; }\n}\n",
+        "trait StorageType<self> {}\n\n\
+         impl StorageType<word> {\n  function rep(x:word) returns (word) { return x; }\n}\n\n\
+         impl StorageType<uint> {\n  function rep(x:uint) returns (uint) { return x; }\n}\n",
     );
 
     let instances = defs_by_name(&db, file, DefKind::Instance, "StorageType");
@@ -145,9 +145,9 @@ fn instances_with_same_subject_and_different_class_args_have_distinct_def_ids() 
     let file = source_file(
         &db,
         "instance-class-args",
-        "class self:Carrier(arg) {}\n\n\
-         instance word:Carrier(uint) {}\n\n\
-         instance word:Carrier(bool) {}\n",
+        "trait Carrier<self, arg> {}\n\n\
+         impl Carrier<word, uint> {}\n\n\
+         impl Carrier<word, bool> {}\n",
     );
 
     let instances = defs_by_name(&db, file, DefKind::Instance, "Carrier");
@@ -214,11 +214,11 @@ fn import_selector_fingerprints_are_structural_and_order_independent() {
     let file = source_file(
         &db,
         "imports-selector-fingerprints",
-        "import A.{x as y, (^^)} hiding {z, w};\n\
-         import A.{(^^), x as y} hiding {w, z};\n\
-         import A.{x};\n\
-         import A.{x as y};\n\
-         import A.{*};\n",
+        "import {x as y, (^^)} from A hiding {z, w};\n\
+         import {(^^), x as y} from A hiding {w, z};\n\
+         import {x} from A;\n\
+         import {x as y} from A;\n\
+         import * from A;\n",
     );
 
     let mut fingerprints = all_defs(&db, file)
@@ -243,7 +243,7 @@ fn import_selector_fingerprints_are_structural_and_order_independent() {
 #[test]
 fn inserting_preceding_lambda_keeps_existing_lambda_body_identities_stable() {
     let mut db = TestDb::default();
-    let before_src = "function f(z: word) -> word {
+    let before_src = "function f(z: word) returns (word) {
         let n = lam (x: word) { return x; };
         let m = lam (y: word) { return y; };
         return m(n(z));
@@ -254,7 +254,7 @@ fn inserting_preceding_lambda_keeps_existing_lambda_body_identities_stable() {
     assert_eq!(before.len(), 2);
 
     file.set_content(&mut db).to(Some(
-        "function f(z: word) -> word {
+        "function f(z: word) returns (word) {
             let ignored = lam (q: word) { return q + 1; };
             let n = lam (x: word) { return x; };
             let m = lam (y: word) { return y; };
@@ -280,7 +280,7 @@ fn inserting_preceding_lambda_keeps_existing_lambda_body_identities_stable() {
 #[test]
 fn lambda_body_edit_keeps_lambda_body_identity_stable() {
     let mut db = TestDb::default();
-    let before_src = "function f(z: word) -> word {
+    let before_src = "function f(z: word) returns (word) {
         let n = lam (x: word) { return x + 1; };
         return n(z);
     }";
@@ -290,7 +290,7 @@ fn lambda_body_edit_keeps_lambda_body_identity_stable() {
     assert_eq!(before.len(), 1);
 
     file.set_content(&mut db).to(Some(
-        "function f(z: word) -> word {
+        "function f(z: word) returns (word) {
             let n = lam (x: word) { return x + 2; };
             return n(z);
         }"
@@ -355,9 +355,9 @@ fn well_formed_program_defs_have_zero_disambiguators() {
     let file = source_file(
         &db,
         "zero-disambiguators",
-        "class self:StorageType {}\n\n\
-         instance word:StorageType {\n  function rep(x:word) -> word { return x; }\n}\n\n\
-         contract Counter {\n  function main() -> word { return 0; }\n}\n\n\
+        "trait StorageType<self> {}\n\n\
+         impl StorageType<word> {\n  function rep(x:word) returns (word) { return x; }\n}\n\n\
+         contract Counter {\n  function main() returns (word) { return 0; }\n}\n\n\
          function top() {}\n",
     );
 

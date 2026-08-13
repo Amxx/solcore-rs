@@ -200,7 +200,7 @@ fn nested_item_defs<'db>(
 #[test]
 fn top_level_error_item_has_recovery_span() {
     let db = TestDb::default();
-    let url = "memory:///recovery.solc".parse().expect("valid url");
+    let url = "memory:///recovery.sol".parse().expect("valid url");
     let src = "function first() {}\nunknown nonsense tokens\nfunction second() {}\n";
     let file = SourceFile::new(&db, url, Some(src.to_owned()));
 

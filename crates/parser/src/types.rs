@@ -93,21 +93,21 @@ pub(crate) struct ParseOutput<T> {
     pub(crate) errors: Vec<ParsedError>,
 }
 
-/// One class named by a `derive` attribute.
+/// One trait named by a `derive` attribute.
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedDeriveTarget<'src> {
-    /// Span covering the complete possibly-qualified class path.
+    /// Span covering the complete possibly-qualified trait path.
     pub(crate) span: LexSpan,
-    /// Class path segments in source order.
+    /// Trait path segments in source order.
     pub(crate) path: Vec<SpannedStr<'src>>,
 }
 
-/// Parsed `#[derive(...)]` attribute attached to a data declaration.
+/// Parsed `#[derive(...)]` attribute attached to an enum declaration.
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedDeriveAttr<'src> {
     /// Span covering the complete attribute, from `#` through `]`.
     pub(crate) span: LexSpan,
-    /// Classes requested by the attribute, in source order.
+    /// Traits requested by the attribute, in source order.
     pub(crate) targets: Vec<ParsedDeriveTarget<'src>>,
 }
 
@@ -164,13 +164,13 @@ pub(crate) enum ParsedTopItem<'src> {
         /// Aliased type.
         ty: ParsedTy<'src>,
     },
-    /// Algebraic data type declaration.
+    /// Enum/algebraic data type declaration.
     Adt {
         /// Span covering the declaration.
         span: LexSpan,
         /// Consecutive comments directly preceding the declaration.
         leading_comments: Vec<ParsedSourceComment<'src>>,
-        /// Optional derive attribute preceding `data`.
+        /// Optional derive attribute preceding `enum`.
         derive_attr: Option<ParsedDeriveAttr<'src>>,
         /// Type name.
         name: SpannedStr<'src>,
@@ -179,13 +179,13 @@ pub(crate) enum ParsedTopItem<'src> {
         /// Constructors.
         ctors: Vec<ParsedAdtCtor<'src>>,
     },
-    /// Class declaration.
+    /// Trait declaration, lowered to the existing class representation.
     Class {
         /// Span covering the declaration.
         span: LexSpan,
         /// Consecutive comments directly preceding the declaration.
         leading_comments: Vec<ParsedSourceComment<'src>>,
-        /// Type variables introduced by `forall`.
+        /// Type variables declared by the trait's generic parameter list.
         type_vars: Vec<SpannedStr<'src>>,
         /// Superclass predicates.
         super_preds: Vec<ParsedPred<'src>>,
@@ -194,13 +194,13 @@ pub(crate) enum ParsedTopItem<'src> {
         /// Method signature declarations.
         methods: Vec<ParsedClassMethod<'src>>,
     },
-    /// Instance declaration.
+    /// Impl declaration, lowered to the existing instance representation.
     Instance {
         /// Span covering the declaration.
         span: LexSpan,
         /// Consecutive comments directly preceding the declaration.
         leading_comments: Vec<ParsedSourceComment<'src>>,
-        /// Type variables introduced by `forall`.
+        /// Type variables declared by the impl's generic parameter list.
         type_vars: Vec<SpannedStr<'src>>,
         /// Context predicates.
         preds: Vec<ParsedPred<'src>>,
@@ -431,7 +431,7 @@ pub(crate) enum ParsedFuncParam<'src> {
 pub(crate) struct ParsedFuncSig<'src> {
     /// Span covering the signature.
     pub(crate) span: LexSpan,
-    /// Type variables from `forall`.
+    /// Type variables from the angle-bracket generic parameter list.
     pub(crate) type_vars: Vec<SpannedStr<'src>>,
     /// Qualifying predicates.
     pub(crate) preds: Vec<ParsedPred<'src>>,
@@ -445,7 +445,8 @@ pub(crate) struct ParsedFuncSig<'src> {
     pub(crate) params: Vec<ParsedFuncParam<'src>>,
     /// Span of the parameter list.
     pub(crate) params_span: LexSpan,
-    /// Optional return type.
+    /// Return type for an ordinary function, including explicit unit when
+    /// `returns` is omitted; absent only for constructor/fallback signatures.
     pub(crate) ret: Option<ParsedTy<'src>>,
 }
 
@@ -497,13 +498,13 @@ pub(crate) enum ParsedContractItem<'src> {
         /// Aliased type.
         ty: ParsedTy<'src>,
     },
-    /// Contract-local ADT.
+    /// Contract-local enum/ADT.
     Adt {
         /// Span covering the declaration.
         span: LexSpan,
         /// Consecutive comments directly preceding the declaration.
         leading_comments: Vec<ParsedSourceComment<'src>>,
-        /// Optional derive attribute preceding `data`.
+        /// Optional derive attribute preceding `enum`.
         derive_attr: Option<ParsedDeriveAttr<'src>>,
         /// ADT name.
         name: SpannedStr<'src>,
@@ -604,13 +605,6 @@ pub(crate) enum ParsedExprKind<'src> {
         base: Box<ParsedExpr<'src>>,
         /// Field name.
         field: SpannedStr<'src>,
-    },
-    /// Type annotation expression.
-    TypeAnnot {
-        /// Annotated expression.
-        expr: Box<ParsedExpr<'src>>,
-        /// Annotation type.
-        ty: ParsedTy<'src>,
     },
     /// Unary operator expression.
     UnaryOp {
@@ -738,7 +732,12 @@ pub(crate) enum ParsedStmtKind<'src> {
     /// Return statement.
     Return(Option<ParsedExpr<'src>>),
     /// Expression statement.
-    Expr(ParsedExpr<'src>),
+    Expr {
+        /// Expression payload.
+        expr: ParsedExpr<'src>,
+        /// Whether the source expression was followed by `;`.
+        trailing_semi: bool,
+    },
     /// Assignment.
     Assign {
         /// Assignment operator.

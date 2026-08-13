@@ -33,7 +33,7 @@ impl solcore_parser::Db for TestDb {}
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/corpus/fail",
-    glob: "**/*.solc"
+    glob: "**/*.sol"
 )]
 fn parser_corpus_fail_diagnostics(fixture: Fixture<&str>) {
     run_fixture_assertion(fixture, assert_fail_fixture);
@@ -55,7 +55,7 @@ fn assert_fail_fixture(path: &str, content: &str) {
         return;
     }
 
-    if path.ends_with("multiple_emitted_errors.solc") {
+    if path.ends_with("multiple_emitted_errors.sol") {
         assert!(
             diagnostics.len() > 1,
             "expected more than one diagnostic for `{}`",
@@ -69,7 +69,7 @@ fn assert_fail_fixture(path: &str, content: &str) {
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/ok",
-    glob: "**/*.solc"
+    glob: "**/*.sol"
 )]
 fn parser_ok_no_diagnostics(fixture: Fixture<&str>) {
     run_fixture_assertion(fixture, assert_ok_fixture);
@@ -77,7 +77,7 @@ fn parser_ok_no_diagnostics(fixture: Fixture<&str>) {
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/corpus/ok",
-    glob: "**/*.solc"
+    glob: "**/*.sol"
 )]
 fn parser_corpus_ok_no_diagnostics(fixture: Fixture<&str>) {
     run_fixture_assertion(fixture, assert_ok_fixture);
@@ -122,7 +122,7 @@ fn fixture_source_file(db: &TestDb, path: &str, content: &str) -> SourceFile {
     let file_name = fixture_path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("fixture.solc");
+        .unwrap_or("fixture.sol");
     let url = format!("memory:///{file_name}")
         .parse()
         .expect("valid fixture URL");
