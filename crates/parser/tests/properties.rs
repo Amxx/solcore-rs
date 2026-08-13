@@ -25,15 +25,15 @@ impl hir::Db for TestDb {
 impl solcore_parser::Db for TestDb {}
 
 const CORPUS_SEEDS: &[&str] = &[
-    include_str!("fixtures/ok/no_diagnostics.solc"),
-    include_str!("fixtures/ok/contract_modifiers_constructor_fallback.solc"),
-    include_str!("fixtures/ok/match_arm_block.solc"),
-    include_str!("fixtures/corpus/fail/test/diagnostics/parse-error.solc"),
+    include_str!("fixtures/ok/no_diagnostics.sol"),
+    include_str!("fixtures/ok/contract_modifiers_constructor_fallback.sol"),
+    include_str!("fixtures/ok/match_arm_block.sol"),
+    include_str!("fixtures/corpus/fail/test/diagnostics/parse-error.sol"),
 ];
 
 fn parse_without_large_test_stack(source: String) -> Vec<String> {
     let db = TestDb::default();
-    let url = "memory:///property.solc".parse().expect("valid test URL");
+    let url = "memory:///property.sol".parse().expect("valid test URL");
     let file = SourceFile::new(&db, url, Some(source));
     let _ = parse_file_to_hir(&db, file).module(&db);
     parse_diagnostics(&db, file)
@@ -71,10 +71,10 @@ proptest! {
 }
 
 #[test]
-fn right_nested_else_if_chain_uses_the_default_stack() {
+fn right_nested_ternary_chain_uses_the_default_stack() {
     let depth = 96;
-    let mut source = "function main() -> word { return ".to_owned();
-    source.push_str(&"if true then 0 else ".repeat(depth));
+    let mut source = "function main() returns (word) { return ".to_owned();
+    source.push_str(&"true ? 0 : ".repeat(depth));
     source.push_str("0; }");
     let diagnostics = parse_without_large_test_stack(source);
     assert!(
