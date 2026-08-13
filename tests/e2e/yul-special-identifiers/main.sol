@@ -1,5 +1,5 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract YulSpecialIdentifiers {
     constructor() {}
@@ -7,7 +7,7 @@ contract YulSpecialIdentifiers {
     // Standard Yul identifiers may start with `_` or `$` and may contain `$`.
     // This exercises those names through both executable backends.
     // #[() -> 42]
-    public function identifiers() -> uint256 {
+    function identifiers() public returns (uint256) {
         let result : word;
         assembly {
             function $add(_left, right$) -> _total {

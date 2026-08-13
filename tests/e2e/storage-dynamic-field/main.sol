@@ -1,11 +1,9 @@
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import std.StorageGeneric.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.StorageGeneric;
 
-data Blob =
-      NoBlob
-    | SomeBytes(memory(bytes));
+enum Blob { NoBlob, SomeBytes(memory<bytes>) }
 
 contract C {
     blob : Blob;
@@ -13,31 +11,39 @@ contract C {
     constructor() {
         blob = Blob.NoBlob;
         // A dynamic field occupies one slot, so the sum is 1 (tag) + max(0, 1).
-        assert(StorageSize.size(Proxy : Proxy(Blob)) == 2);
+        assert(StorageSize.size(@Blob) == 2);
     }
 
-    public function clear() -> () {
+    function clear() public {
         blob = Blob.NoBlob;
     }
 
     // Stores the memory(bytes) payload into the ADT field (round-trips the
     // dynamic leaf through storage(bytes)).
-    public function setBytes(b: memory(bytes)) -> () {
+    function setBytes(b: memory<bytes>) public {
         blob = Blob.SomeBytes(b);
     }
 
-    public function getBytes() -> memory(bytes) {
-        match blob {
-        | Blob.NoBlob => revertEmpty(); return memory(0);
-        | Blob.SomeBytes(b) => return b;
-        }
+    function getBytes() public returns (memory<bytes>) {
+        match (blob) {
+case Blob.NoBlob {
+revertEmpty(); return memory(0);
+}
+case Blob.SomeBytes(b) {
+return b;
+}
+}
     }
 
     // Loads the whole ADT back from storage and inspects its tag.
-    public function isEmpty() -> bool {
-        match blob {
-        | Blob.NoBlob       => return true;
-        | Blob.SomeBytes(_) => return false;
-        }
+    function isEmpty() public returns (bool) {
+        match (blob) {
+case Blob.NoBlob {
+return true;
+}
+case Blob.SomeBytes(_) {
+return false;
+}
+}
     }
 }

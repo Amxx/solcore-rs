@@ -77,17 +77,25 @@ return b;
 
     // Distinguishes Off from On(false): both leave a zero payload slot, so only
     // the tag can tell them apart.
-    public function isOn() -> bool {
-        match toggle {
-        | Toggle.Off   => return false;
-        | Toggle.On(_) => return true;
-        }
+    function isOn() public returns (bool) {
+        match (toggle) {
+case Toggle.Off {
+return false;
+}
+case Toggle.On(_) {
+return true;
+}
+}
     }
 
-    public function toggleValue() -> bool {
-        match toggle {
-        | Toggle.Off   => revertEmpty(); return false;
-        | Toggle.On(b) => return b;
-        }
+    function toggleValue() public returns (bool) {
+        match (toggle) {
+case Toggle.Off {
+revertEmpty(); return false;
+}
+case Toggle.On(b) {
+return b;
+}
+}
     }
 }

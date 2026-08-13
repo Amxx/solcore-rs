@@ -1,11 +1,11 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract StorageIndexOrder {
   counter: word;
-  m: mapping(word, word);
+  m: mapping(word => word);
 
-  function next() -> word {
+  function next() returns (word) {
     let cur: word = counter;
     let res: word;
     assembly {
@@ -16,7 +16,7 @@ contract StorageIndexOrder {
   }
 
   // #[() -> 2]
-  public function run() -> uint256 {
+  function run() public returns (uint256) {
     counter = 0;
     m[1] = 0;
     m[2] = 0;
@@ -31,7 +31,7 @@ contract StorageIndexOrder {
     return uint256(packed);
   }
 
-  function get(k: word) -> word {
+  function get(k: word) returns (word) {
     return m[k];
   }
 }
