@@ -50,29 +50,29 @@ impl BitOr<word> {
   }
 }
 
-instance word:BitXor {
-  function bxor(l:word, r:word) -> word {
+impl BitXor<word> {
+  function bxor(l: word, r: word) returns (word) {
     return l;
   }
 }
 
-instance word:Ord {
-  function gt(l:word, r:word) -> bool {
+impl Ord<word> {
+  function gt(l: word, r: word) returns (bool) {
     return true;
   }
 }
 
-instance word:Eq {
-  function eq(l:word, r:word) -> bool {
+impl Eq<word> {
+  function eq(l: word, r: word) returns (bool) {
     return true;
   }
 }
 
-function lt(l:word, r:word) -> bool {
+function lt(l: word, r: word) returns (bool) {
   return Ord.gt(r, l);
 }
 
-function main() -> word {
+function main() returns (word) {
   let f = lam(x: word) { return x; };
   let acc : word = 0;
   for (let i : word = 0; i < 3; i = i + 1) {
@@ -83,7 +83,9 @@ function main() -> word {
     acc %= 5;
   }
   let t : (word, word) = (acc, 1);
-  match t {
-  | (x, _) => return if x == 0 then 1 else x;
-  }
+  match (t) {
+case (x, _) {
+return  x == 0  ?  1  :  x;
+}
+}
 }

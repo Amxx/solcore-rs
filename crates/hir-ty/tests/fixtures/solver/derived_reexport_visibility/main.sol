@@ -1,6 +1,6 @@
-import api.{Reexported};
-import classes.{Visible};
+import {Reexported} from api;
+import {Visible} from classes;
 
-function keepTypeVisible(x: Reexported) -> Reexported {
+function keepTypeVisible(x: Reexported) returns (Reexported) {
   return x;
 }

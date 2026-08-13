@@ -1,6 +1,6 @@
-import generic.{Generic};
+import {Generic} from generic;
 
 export { Box(*) };
 
 // Generic is visible here, but StorageDeriving deliberately is not.
-data Box(a) = Box(a);
+enum Box<a> { Box(a) }

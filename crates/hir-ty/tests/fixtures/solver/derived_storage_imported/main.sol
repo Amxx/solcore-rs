@@ -1,2 +1,2 @@
-import storage_support.{StorageSize, CanStore, storage};
+import {StorageSize, CanStore, storage} from storage_support;
 import types;

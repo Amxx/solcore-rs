@@ -1,2 +1,2 @@
-import api.{Box};
-import storage_support.{StorageSize, CanStore, storage};
+import {Box} from api;
+import {StorageSize, CanStore, storage} from storage_support;

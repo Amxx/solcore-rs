@@ -1,5 +1,5 @@
-import classes.{Visible};
+import {Visible} from classes;
 
 export { Reexported };
 
-#[derive(Visible)] data Reexported;
+#[derive(Visible)] enum Reexported {}

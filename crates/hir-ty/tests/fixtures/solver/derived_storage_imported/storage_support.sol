@@ -4,12 +4,12 @@ pragma no-coverage-condition;
 
 export { Generic, StorageDeriving, StorageSize, CanStore, storage(*) };
 
-forall a rep . class a:Generic(rep) {}
-forall self . class self:StorageDeriving {}
-forall self . class self:StorageSize {}
-forall slot value . class slot:CanStore(value) {}
+trait Generic<a, rep> {}
+trait StorageDeriving<self> {}
+trait StorageSize<self> {}
+trait CanStore<slot, value> {}
 
-data storage(ty) = storage(word);
+enum storage<ty> { storage(word) }
 
-instance word:StorageSize {}
-instance storage(word):CanStore(word) {}
+impl StorageSize<word> {}
+impl CanStore<storage<word>, word> {}

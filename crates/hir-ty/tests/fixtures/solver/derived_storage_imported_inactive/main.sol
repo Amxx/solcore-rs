@@ -1,3 +1,3 @@
-import generic.{Generic};
-import storage_support.{*};
-import types.{Box};
+import {Generic} from generic;
+import * from storage_support;
+import {Box} from types;

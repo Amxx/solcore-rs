@@ -1,3 +1,3 @@
 export { Visible };
 
-forall a . class a:Visible {}
+trait Visible<a> {}

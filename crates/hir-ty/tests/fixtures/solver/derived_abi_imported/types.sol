@@ -1,5 +1,5 @@
-import abi.{*};
+import * from abi;
 
 export { Box(*) };
 
-data Box(a) = Box(a);
+enum Box<a> { Box(a) }

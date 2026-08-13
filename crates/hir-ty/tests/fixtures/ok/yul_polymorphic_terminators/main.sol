@@ -1,31 +1,31 @@
-forall a . function viaStop() -> a {
+function viaStop<a>() returns (a) {
   assembly {
     stop()
   }
 }
 
-forall a . function viaInvalid() -> a {
+function viaInvalid<a>() returns (a) {
   assembly {
     invalid()
   }
 }
 
-forall a . function viaSelfdestruct(beneficiary : word) -> a {
+function viaSelfdestruct<a>(beneficiary: word) returns (a) {
   assembly {
     selfdestruct(beneficiary)
   }
 }
 
-forall a . function viaRevert() -> a {
+function viaRevert<a>() returns (a) {
   assembly {
     revert(0, 0)
   }
 }
 
-function useWord(value : word) -> () {}
+function useWord(value: word) {}
 
 contract Terminators {
-  public function main() -> () {
+  function main() public {
     useWord(viaStop());
     useWord(viaInvalid());
     useWord(viaSelfdestruct(0));
