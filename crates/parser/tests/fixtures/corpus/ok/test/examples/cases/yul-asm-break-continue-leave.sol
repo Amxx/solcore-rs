@@ -1,6 +1,6 @@
-import std.{*};
+import * from std;
 
-function yul_asm_break_continue_leave() -> () {
+function yul_asm_break_continue_leave() {
     let result : word = 0;
     assembly {
         function clamp(x) -> y {
@@ -23,7 +23,7 @@ function yul_asm_break_continue_leave() -> () {
 }
 
 contract Foo {
-    public function main() -> () {
+    function main() public {
         yul_asm_break_continue_leave()
     }
 }

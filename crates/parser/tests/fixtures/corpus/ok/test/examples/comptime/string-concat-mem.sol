@@ -11,19 +11,19 @@
 //   d — A2: a `string`-typed let, then convert (dead-let substitution)
 
 import std;
-import std.{*};
+import * from std;
 
 contract StringConcat {
-  function viaLet() -> memory(string) {
+  function viaLet() returns (memory<string>) {
     let s : string = "Hello, " + "world!";
     return Str.fromString(s);
   }
 
-  public function main() -> word {
-    let a : memory(string) = Str.fromString("Hello, " + "world!");
-    let b : memory(string) = concatLit("Hello, ", "world!");
-    let c : memory(string) = concatLit(concatLit("Hello", ", "), "world!");
-    let d : memory(string) = viaLet();
+  function main() public returns (word) {
+    let a : memory<string> = Str.fromString("Hello, " + "world!");
+    let b : memory<string> = concatLit("Hello, ", "world!");
+    let c : memory<string> = concatLit(concatLit("Hello", ", "), "world!");
+    let d : memory<string> = viaLet();
     return strlen(a) + strlen(b) + strlen(c) + strlen(d);
   }
 }

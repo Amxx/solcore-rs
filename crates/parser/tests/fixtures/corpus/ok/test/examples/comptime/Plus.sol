@@ -1,16 +1,16 @@
-import std.{*};
+import * from std;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
-  function zero () -> word {
+  function zero() returns (word) {
     return 0;
   }
 
-function one() -> word {
+function one() returns (word) {
     return 1 + zero() ;
   }
 
-function two () -> word {
+function two() returns (word) {
   let x = zero();
   x = x + one();
   x =  x + x ;
@@ -18,5 +18,5 @@ function two () -> word {
 }
 
 contract Plus {
-  public function main() -> word { return two() + two(); }
+  function main() public returns (word) { return two() + two(); }
 }

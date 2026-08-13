@@ -1,7 +1,7 @@
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
 // calldata(array(address)) — a dynamic array of a STATIC value type. Unlike
 // bytes[] (dynamic elements, offset table), address is static, so elements sit
@@ -12,12 +12,12 @@ contract AddressArr {
   constructor() {}
 
   // The i-th address.
-  public function at(items : calldata(array(address)), i : uint256) -> address {
+  function at(items: calldata<array<address>>, i: uint256) public returns (address) {
     return items[i];
   }
 
   // Number of elements.
-  public function count(items : calldata(array(address))) -> uint256 {
+  function count(items: calldata<array<address>>) public returns (uint256) {
     return items.length();
   }
 }

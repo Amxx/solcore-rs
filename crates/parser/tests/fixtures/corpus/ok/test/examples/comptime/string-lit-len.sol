@@ -4,7 +4,7 @@ pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
 
 contract StringLitLen {
-  public function main() -> word {
+  function main() public returns (word) {
     // strlenLit folds to a word
     return std.strlenLit("hello");
   }

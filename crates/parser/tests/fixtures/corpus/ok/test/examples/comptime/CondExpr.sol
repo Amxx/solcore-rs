@@ -1,12 +1,12 @@
-import std.{*};
+import * from std;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
 
-function notAnswer(n : word) -> word { if(n == 42) then 0 else 42 }
+function notAnswer(n: word) returns (word) { (n == 42)  ?  0  :  42 }
 
-function answer(n:word) -> word { notAnswer(notAnswer(42)) }
+function answer(n: word) returns (word) { notAnswer(notAnswer(42)) }
 
 contract Fib {
-  public function main() -> word { answer(42) }
+  function main() public returns (word) { answer(42) }
 }

@@ -1,6 +1,6 @@
-import std.{*};
-import std.{uint256, address};
-import std.dispatch.{*};
+import * from std;
+import {uint256, address} from std;
+import * from std.dispatch;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
@@ -18,7 +18,7 @@ contract Counter {
     fld0 = 7;
   }
   
-  public function main() -> word {
+  function main() public returns (word) {
     counter = counter + 1;
     return counter;
   }
