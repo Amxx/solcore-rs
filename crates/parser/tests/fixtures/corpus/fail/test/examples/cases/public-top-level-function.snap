@@ -1,14 +1,14 @@
 ---
 source: crates/parser/tests/diagnostics.rs
 expression: value
-input_file: crates/parser/tests/fixtures/corpus/fail/test/examples/cases/public-top-level-function.solc
+input_file: crates/parser/tests/fixtures/corpus/fail/test/examples/cases/public-top-level-function.sol
 ---
 error[SC0001]: 'public' is only allowed on functions declared inside a contract
- --> /public-top-level-function.solc:6:1
+ --> /public-top-level-function.sol:6:19
   |
 5 | // top-level function (outside any `contract { … }` body) must be rejected.
-6 | public function answer() -> uint256 {
-  | ^^^^^^
+6 | function answer() public returns (uint256) {
+  |                   ^^^^^^
 7 |     return uint256(42);
   |
   = note: while parsing function signature

@@ -1,14 +1,14 @@
 ---
 source: crates/parser/tests/diagnostics.rs
 expression: value
-input_file: crates/parser/tests/fixtures/corpus/fail/test/examples/cases/public-fallback.solc
+input_file: crates/parser/tests/fixtures/corpus/fail/test/examples/cases/public-fallback.sol
 ---
 error[SC0001]: fallback is implicitly public; remove the 'public' keyword
- --> /public-fallback.solc:7:5
+ --> /public-fallback.sol:7:16
   |
 6 |
-7 |     public fallback() -> () {
-  |     ^^^^^^
+7 |     fallback() public {
+  |                ^^^^^^
 8 |         revert("fallback-was-called");
   |
   = note: while parsing fallback definition
