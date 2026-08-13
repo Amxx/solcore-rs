@@ -34,9 +34,9 @@ fi
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/solcore-perf-guard.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
 
-large_body="$work_dir/large-body.solc"
+large_body="$work_dir/large-body.sol"
 {
-  echo 'function main() -> word {'
+  echo 'function main() returns (word) {'
   echo '  let value0: word = 0;'
   for index in $(seq 1 2000); do
     previous=$((index - 1))
@@ -46,13 +46,13 @@ large_body="$work_dir/large-body.solc"
   echo '}'
 } > "$large_body"
 
-instance_heavy="$work_dir/instance-heavy.solc"
+instance_heavy="$work_dir/instance-heavy.sol"
 {
   for index in $(seq 0 499); do
-    echo "forall a . class a:AuditClass${index} {}"
-    echo "instance word:AuditClass${index} {}"
+    echo "trait AuditClass${index}<a> {}"
+    echo "impl AuditClass${index}<word> {}"
   done
-  echo 'function main() -> word { return 0; }'
+  echo 'function main() returns (word) { return 0; }'
 } > "$instance_heavy"
 
 run_with_deadline() {

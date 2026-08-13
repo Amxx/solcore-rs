@@ -109,7 +109,7 @@ compilation stopped before that backend ran, or (for ABI) the workspace contains
 
 ## File key contract
 
-The canonical file key is always a workspace-relative path string, for example `main.solc` or `sub/Foo.solc`.
+The canonical file key is always a workspace-relative path string, for example `main.sol` or `sub/Foo.sol`.
 
 Use that exact key everywhere:
 

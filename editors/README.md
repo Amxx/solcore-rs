@@ -25,7 +25,7 @@ Every editor integration can start the same stdio server. By default they use
 `solcore-lsp` on `PATH`. VS Code and Neovim also expose editor-specific command
 overrides for local development.
 
-On initialization, the native server indexes `.solc` files below every
+On initialization, the native server indexes `.sol` files below every
 workspace folder. Each root has an isolated compiler namespace, and dynamic
 workspace-folder and watched-file changes keep unopened import targets and
 workspace symbols up to date.
@@ -44,5 +44,5 @@ smart selection ranges, semantic tokens, and inlay hints.
 ## Packages
 
 - `vscode-solcore`: VS Code extension with TextMate highlighting and LSP client.
-- `vim-solcore`: Vim/Neovim package with `.solc` highlighting and LSP setup.
+- `vim-solcore`: Vim/Neovim package with `.sol` highlighting and LSP setup.
 - `emacs-solcore`: Emacs major mode plus eglot/lsp-mode setup.

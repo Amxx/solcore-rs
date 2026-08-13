@@ -10,7 +10,7 @@ The LSP runs in `src/languageServer/lsp.worker.ts`, separate from `src/compiler/
 
 The language worker speaks standard LSP JSON-RPC 2.0 over `postMessage`, with standard LSP positions: 0-based line/character and UTF-16 character offsets.
 
-Canonical workspace file keys are relative paths such as `main.solc` and `sub/Foo.solc`. These exact strings are used as Zustand keys, tab ids, and compile request `path` values. The LSP URI mapping is:
+Canonical workspace file keys are relative paths such as `main.sol` and `sub/Foo.sol`. These exact strings are used as Zustand keys, tab ids, and compile request `path` values. The LSP URI mapping is:
 
 ```text
 file:///main/<relpath> <-> <relpath>

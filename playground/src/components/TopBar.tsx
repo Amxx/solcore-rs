@@ -36,7 +36,7 @@ export function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps): JSX.Eleme
   const loadExample = useWorkspaceStore((state) => state.loadExample);
   const [selectedExample, setSelectedExample] = useState(examples[0]?.id ?? "hello");
   const [compilerVersion, setCompilerVersion] = useState<string | null>(null);
-  const solcFiles = order.filter((path) => path.endsWith(".solc"));
+  const solFiles = order.filter((path) => path.endsWith(".sol"));
   const compileElapsedMs = useCompileElapsed();
   const compileIsOutdated =
     lastCompiledVersion !== null && lastCompiledVersion !== workspaceVersion;
@@ -114,7 +114,7 @@ export function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps): JSX.Eleme
           <span>Entry</span>
           <span className="select-control__shell">
             <select value={entry} onChange={(event) => setEntry(event.target.value)}>
-              {solcFiles.map((path) => (
+              {solFiles.map((path) => (
                 <option key={path} value={path}>
                   {path}
                 </option>

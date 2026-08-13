@@ -11,7 +11,7 @@
 ;;; Commentary:
 
 ;; Major mode, font-lock highlighting, and optional LSP client registration for
-;; Solcore `.solc' files.
+;; Solcore `.sol' files.
 ;;
 ;; The LSP server command is resolved from SOLCORE_LSP_SERVER when that
 ;; environment variable is non-empty.  Otherwise `solcore-lsp-server-command'
@@ -55,19 +55,21 @@ program name followed by arguments."
   "Characters that keep a Solcore identifier or keyword going.")
 
 (defconst solcore--control-keywords
-  '("if" "else" "for" "switch" "case" "default" "match" "return"
+  '("if" "else" "for" "while" "switch" "case" "default" "match" "return"
     "leave" "continue" "break"))
 
 (defconst solcore--declaration-keywords
-  '("contract" "import" "export" "as" "let" "data" "class" "forall"
-    "instance" "type" "function" "constructor" "fallback" "assembly"
-    "pragma" "lam"))
+  '("contract" "import" "from" "hiding" "export" "as" "let" "enum" "trait"
+    "impl" "where" "type" "function" "returns" "constructor" "fallback"
+    "assembly" "pragma" "lam" "comptime" "derive"))
 
 (defconst solcore--modifier-keywords
   '("public" "payable"))
 
 (defconst solcore--primitive-types
-  '("word" "bool" "unit"))
+  '("word" "bool" "string" "integer" "pair" "sum" "uint256" "address"
+    "byte" "bytes" "bytes4" "bytes32" "memory" "storage" "calldata"
+    "returndata" "mapping" "array"))
 
 (defconst solcore--constants
   '("true" "false" "_"))
@@ -95,7 +97,7 @@ left to the caller so declaration patterns can consume whitespace once."
               "\\s-+\\(" solcore--identifier-re "\\)")
      (1 font-lock-keyword-face)
      (2 font-lock-function-name-face nil t))
-    (,(concat (solcore--keyword-prefix-regexp '("data" "class" "type"))
+    (,(concat (solcore--keyword-prefix-regexp '("enum" "trait" "type"))
               "\\s-+\\(" solcore--identifier-re "\\)")
      (1 font-lock-keyword-face)
      (2 font-lock-type-face nil t))
@@ -128,9 +130,9 @@ left to the caller so declaration patterns can consume whitespace once."
               "\\(?:\\'\\|[^[:alpha:][:digit:]_]\\)")
      1 font-lock-constant-face)
     (,(concat "\\("
-              (regexp-opt '(":=" "+=" "-=" "^=" "&=" "|=" "%=" "->" "=>"
+              (regexp-opt '(":=" "+=" "-=" "*=" "/=" "^=" "&=" "|=" "%=" "~=" "->" "=>"
                             "==" "!=" ">=" "<=" "&&" "||"))
-              "\\|[+*/%!?=<>|&^@-]\\)")
+              "\\|[+*/%!?=<>|&^@~-]\\)")
      1 font-lock-builtin-face))
   "Font-lock rules for `solcore-mode'.")
 
@@ -148,7 +150,7 @@ left to the caller so declaration patterns can consume whitespace once."
 (defvar solcore-imenu-generic-expression
   `((nil ,(concat "^\\s-*function\\s-+\\(" solcore--identifier-re "\\)") 1)
     ("Contracts" ,(concat "^\\s-*contract\\s-+\\(" solcore--identifier-re "\\)") 1)
-    ("Types" ,(concat "^\\s-*\\(?:data\\|class\\|type\\)\\s-+\\("
+    ("Types" ,(concat "^\\s-*\\(?:enum\\|trait\\|type\\)\\s-+\\("
                        solcore--identifier-re "\\)") 1))
   "Imenu expressions for `solcore-mode'.")
 
@@ -193,7 +195,7 @@ left to the caller so declaration patterns can consume whitespace once."
 
 ;;;###autoload
 (define-derived-mode solcore-mode prog-mode "Solcore"
-  "Major mode for editing Solcore `.solc' files."
+  "Major mode for editing Solcore `.sol' files."
   :syntax-table solcore-mode-syntax-table
   (setq-local font-lock-defaults '(solcore-font-lock-keywords))
   (setq-local comment-start "// ")
@@ -207,7 +209,7 @@ left to the caller so declaration patterns can consume whitespace once."
               (append "{}();," electric-indent-chars)))
 
 ;;;###autoload
-(add-to-list 'auto-mode-alist '("\\.solc\\'" . solcore-mode))
+(add-to-list 'auto-mode-alist '("\\.sol\\'" . solcore-mode))
 
 (defvar lsp-language-id-configuration)
 (declare-function lsp-activate-on "lsp-mode")

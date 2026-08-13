@@ -1,7 +1,7 @@
 {
   "name": "solcore-language",
   "displayName": "Solcore Language",
-  "description": "Syntax highlighting and editor configuration for Solcore .solc files.",
+  "description": "Syntax highlighting and editor configuration for Solcore .sol files.",
   "version": "0.0.0",
   "publisher": "solcore",
   "license": "Apache-2.0",
@@ -19,8 +19,8 @@
     "languages": [
       {
         "id": "solcore",
-        "aliases": ["Solcore", "solc"],
-        "extensions": [".solc"],
+        "aliases": ["Solcore", "Core Solidity"],
+        "extensions": [".sol"],
         "configuration": "./language-configuration.json"
       }
     ],

@@ -10,7 +10,7 @@ The fixed cases cover distinct compiler workloads:
 
 | Case | Fixture | Purpose |
 | --- | --- | --- |
-| `std-free` | `SingleFun.solc` | Small frontend run without reachable std/runtime |
+| `std-free` | `SingleFun.sol` | Small frontend run without reachable std/runtime |
 | `dispatch-small` | `tests/e2e/022add` | Small contract with compiler-owned dispatch |
 | `erc20-large` | `tests/e2e/128minierc20` | Larger std- and storage-heavy contract |
 | `multi-file` | `tests/e2e/ltimp` | Main module plus a local import |

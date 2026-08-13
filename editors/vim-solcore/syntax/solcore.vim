@@ -15,18 +15,18 @@ syntax region solcoreString start=+"+ skip=+\\\\\|\\"+ end=+"+ contains=solcoreE
 
 syntax match solcoreContractDeclaration #\v(^|[^[:alnum:]_-])contract\s+\zs[[:alpha:]][[:alnum:]_]*(-[[:alpha:]][[:alnum:]_]*)*#
 syntax match solcoreFunctionDeclaration #\v(^|[^[:alnum:]_-])function\s+\zs[[:alpha:]][[:alnum:]_]*(-[[:alpha:]][[:alnum:]_]*)*#
-syntax match solcoreTypeDeclaration #\v(^|[^[:alnum:]_-])(data|class|type)\s+\zs[[:alpha:]][[:alnum:]_]*(-[[:alpha:]][[:alnum:]_]*)*#
+syntax match solcoreTypeDeclaration #\v(^|[^[:alnum:]_-])(enum|trait|type)\s+\zs[[:alpha:]][[:alnum:]_]*(-[[:alpha:]][[:alnum:]_]*)*#
 syntax match solcoreVariableDeclaration #\v(^|[^[:alnum:]_-])let\s+\zs[[:alpha:]][[:alnum:]_]*(-[[:alpha:]][[:alnum:]_]*)*#
 syntax match solcorePragmaDeclaration #\v(^|[^[:alnum:]_-])pragma\s+\zs[[:alpha:]][[:alnum:]_]*(-[[:alpha:]][[:alnum:]_]*)*#
 
-syntax match solcoreControlKeyword #\v(^|[^[:alnum:]_-])\zs(if|else|for|switch|case|default|match|return|leave|continue|break)\ze([^[:alnum:]_-]|$)#
-syntax match solcoreDeclarationKeyword #\v(^|[^[:alnum:]_-])\zs(contract|import|export|as|let|data|class|forall|instance|type|function|constructor|fallback|assembly|pragma|lam)\ze([^[:alnum:]_-]|$)#
+syntax match solcoreControlKeyword #\v(^|[^[:alnum:]_-])\zs(if|else|for|while|switch|case|default|match|return|leave|continue|break)\ze([^[:alnum:]_-]|$)#
+syntax match solcoreDeclarationKeyword #\v(^|[^[:alnum:]_-])\zs(contract|import|from|hiding|export|as|let|enum|trait|impl|where|type|function|returns|constructor|fallback|assembly|pragma|lam|comptime|derive)\ze([^[:alnum:]_-]|$)#
 syntax match solcoreStorageModifier #\v(^|[^[:alnum:]_-])\zs(public|payable)\ze([^[:alnum:]_-]|$)#
 
 syntax match solcoreBoolean #\v(^|[^[:alnum:]_-])\zs(true|false)\ze([^[:alnum:]_-]|$)#
 syntax match solcoreWildcard #\v(^|[^[:alnum:]_-])\zs_\ze([^[:alnum:]_-]|$)#
 
-syntax match solcorePrimitiveType #\v(^|[^[:alnum:]_-])\zs(word|bool|unit)\ze([^[:alnum:]_-]|$)#
+syntax match solcorePrimitiveType #\v(^|[^[:alnum:]_-])\zs(word|bool|string|integer|pair|sum|uint256|address|byte|bytes|bytes4|bytes32|memory|storage|calldata|returndata|mapping|array)\ze([^[:alnum:]_-]|$)#
 syntax match solcoreTypeIdentifier #\v(^|[^[:alnum:]_-])\zs[A-Z][[:alnum:]_]*(-[[:alpha:]][[:alnum:]_]*)*#
 
 syntax match solcoreHexNumber #\v(^|[^[:alnum:]_])\zs0x[0-9a-fA-F]+\ze([^[:alnum:]_]|$)#
@@ -37,10 +37,13 @@ syntax match solcoreFunctionCall #\v[[:alpha:]][[:alnum:]_]*(-[[:alpha:]][[:alnu
 syntax match solcoreOperator #:=#
 syntax match solcoreOperator #+=#
 syntax match solcoreOperator #-=#
+syntax match solcoreOperator #\*=#
+syntax match solcoreOperator #/=#
 syntax match solcoreOperator #\^=#
 syntax match solcoreOperator #&=#
 syntax match solcoreOperator #|=#
 syntax match solcoreOperator #%=#
+syntax match solcoreOperator #\~=#
 syntax match solcoreOperator #->#
 syntax match solcoreOperator #=>#
 syntax match solcoreOperator #==#
@@ -60,6 +63,7 @@ syntax match solcoreOperator #%#
 syntax match solcoreOperator #|#
 syntax match solcoreOperator #&#
 syntax match solcoreOperator #\^#
+syntax match solcoreOperator #\~#
 syntax match solcoreOperator #@#
 syntax match solcoreOperator #?#
 syntax match solcoreOperator #=#

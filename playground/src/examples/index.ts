@@ -16,15 +16,15 @@ export const examples: PlaygroundExample[] = [
     id: "contract-output",
     name: "Contract output",
     description: "A small contract that emits Hull, Yul, Sonatina IR, and ABI JSON.",
-    entry: "main.solc",
+    entry: "main.sol",
     files: [
       {
-        path: "main.solc",
-        content: `import std.{*};
-import std.dispatch.{*};
+        path: "main.sol",
+        content: `import * from std;
+import * from std.dispatch;
 
 contract Answer {
-  public function main() -> uint256 {
+  function main() public returns (uint256) {
     return uint256(42);
   }
 }
@@ -36,11 +36,11 @@ contract Answer {
     id: "hello",
     name: "Hello",
     description: "A minimal function returning a word literal.",
-    entry: "main.solc",
+    entry: "main.sol",
     files: [
       {
-        path: "main.solc",
-        content: `function main() -> word {
+        path: "main.sol",
+        content: `function main() returns (word) {
   return 42;
 }
 `,
@@ -51,13 +51,13 @@ contract Answer {
     id: "std-usage",
     name: "Std usage",
     description: "Imports a helper from the embedded standard library.",
-    entry: "main.solc",
+    entry: "main.sol",
     files: [
       {
-        path: "main.solc",
-        content: `import std.{addWord};
+        path: "main.sol",
+        content: `import {addWord} from std;
 
-function main() -> word {
+function main() returns (word) {
   return addWord(1, 2);
 }
 `,
@@ -68,20 +68,20 @@ function main() -> word {
     id: "multi-file",
     name: "Multi-file",
     description: "Imports a sibling module and calls an exported function.",
-    entry: "main.solc",
+    entry: "main.sol",
     files: [
       {
-        path: "main.solc",
-        content: `import math.{double};
+        path: "main.sol",
+        content: `import {double} from math;
 
-function main() -> word {
+function main() returns (word) {
   return double(21);
 }
 `,
       },
       {
-        path: "math.solc",
-        content: `function double(x: word) -> word {
+        path: "math.sol",
+        content: `function double(x: word) returns (word) {
   let res: word;
   assembly {
     res := add(x, x)

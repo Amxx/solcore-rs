@@ -6,7 +6,7 @@ is no `Content-Length` framing because worker messages are already discrete.
 
 - Positions are the LSP-standard 0-based UTF-16 line and character offsets.
 - Source files use `file:///main/<relpath>` URIs, for example
-  `file:///main/main.solc`.
+  `file:///main/main.sol`.
 - Incoming worker messages should be JSON-RPC objects. Outgoing worker messages
   are JSON-RPC objects, including responses and
   `textDocument/publishDiagnostics` notifications.

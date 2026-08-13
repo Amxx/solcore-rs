@@ -68,7 +68,7 @@ fn backend(source: &str) {
 
     let entry_file = workspace
         .db()
-        .source_file(Path::new(vfs::MAIN_ROOT).join("main.solc"))
+        .source_file(Path::new(vfs::MAIN_ROOT).join("main.sol"))
         .expect("fuzz entry file was inserted into the VFS");
     let _ = compiler::build_checked_hull(
         workspace.db(),
@@ -79,8 +79,8 @@ fn backend(source: &str) {
 
 fn workspace_with_entry(source: &str) -> Workspace {
     let mut workspace = Workspace::new();
-    workspace.set_file("main.solc", source.to_owned());
-    workspace.set_entry("main.solc");
+    workspace.set_file("main.sol", source.to_owned());
+    workspace.set_entry("main.sol");
     workspace
 }
 
@@ -107,7 +107,7 @@ impl hir::Db for ParserDb {
 impl parser::Db for ParserDb {}
 
 fn source_file(db: &ParserDb, source: &str) -> SourceFile {
-    let url = url::Url::parse("memory:///fuzz/main.solc").expect("constant URL is valid");
+    let url = url::Url::parse("memory:///fuzz/main.sol").expect("constant URL is valid");
     SourceFile::new(db, url, Some(source.to_owned()))
 }
 
@@ -115,8 +115,8 @@ fn source_file(db: &ParserDb, source: &str) -> SourceFile {
 mod tests {
     use super::*;
 
-    const ACCEPTED: &[u8] = b"function id(x: word) -> word { return x; }\n";
-    const REJECTED: &[u8] = b"function main() -> word { return true; }\n";
+    const ACCEPTED: &[u8] = b"function id(x: word) returns (word) { return x; }\n";
+    const REJECTED: &[u8] = b"function main() returns (word) { return true; }\n";
 
     #[test]
     fn every_target_accepts_compiler_diagnostics_normally() {

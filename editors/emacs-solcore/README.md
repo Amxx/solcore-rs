@@ -1,9 +1,9 @@
 # Solcore Emacs mode
 
-This directory contains Emacs support for Solcore `.solc` files:
+This directory contains Emacs support for Solcore `.sol` files:
 
 - `solcore-mode.el` provides a `prog-mode`-derived major mode.
-- `.solc` files are added to `auto-mode-alist`.
+- `.sol` files are added to `auto-mode-alist`.
 - Syntax highlighting uses Emacs font-lock for Solcore keywords, declarations,
   primitive types, constants, numbers, operators, and function calls.
 - Optional LSP registration is provided for both `lsp-mode` and Eglot.
@@ -22,7 +22,7 @@ With `use-package`:
 ```elisp
 (use-package solcore-mode
   :load-path "/path/to/solcore-rs/editors/emacs-solcore"
-  :mode ("\\.solc\\'" . solcore-mode))
+  :mode ("\\.sol\\'" . solcore-mode))
 ```
 
 ## LSP server command
@@ -63,7 +63,7 @@ Enable it with a hook:
 
 (use-package solcore-mode
   :load-path "/path/to/solcore-rs/editors/emacs-solcore"
-  :mode ("\\.solc\\'" . solcore-mode)
+  :mode ("\\.sol\\'" . solcore-mode)
   :hook (solcore-mode . lsp-deferred))
 ```
 
@@ -78,7 +78,7 @@ with a hook:
 
 (use-package solcore-mode
   :load-path "/path/to/solcore-rs/editors/emacs-solcore"
-  :mode ("\\.solc\\'" . solcore-mode))
+  :mode ("\\.sol\\'" . solcore-mode))
 ```
 
 For non-`use-package` setups:
@@ -91,7 +91,7 @@ For non-`use-package` setups:
 
 ## Manual checks
 
-Open any `.solc` file and run:
+Open any `.sol` file and run:
 
 ```elisp
 M-x solcore-mode

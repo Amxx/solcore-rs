@@ -57,11 +57,11 @@ function isBrowser(): boolean {
 
 function normalizePath(path: string): string {
   const normalized = path.trim().replace(/\\/g, "/").replace(/^\/+/, "");
-  return normalized.length > 0 ? normalized : "untitled.solc";
+  return normalized.length > 0 ? normalized : "untitled.sol";
 }
 
-function ensureSolcExtension(path: string): string {
-  return path.includes(".") ? path : `${path}.solc`;
+function ensureSolExtension(path: string): string {
+  return path.includes(".") ? path : `${path}.sol`;
 }
 
 function createFileMap(files: WorkspaceFile[]): Record<string, WorkspaceFile> {
@@ -92,7 +92,7 @@ function workspaceFromExample(example: PlaygroundExample): Pick<
 }
 
 function makeUniquePath(path: string, existing: Record<string, WorkspaceFile>): string {
-  const normalized = ensureSolcExtension(normalizePath(path));
+  const normalized = ensureSolExtension(normalizePath(path));
 
   if (!existing[normalized]) {
     return normalized;

@@ -16,7 +16,7 @@ export function FileExplorer(): JSX.Element {
   const problemsByFile = useMemo(() => fileProblemSummaries(result), [result]);
 
   const handleAdd = (): void => {
-    const path = window.prompt("New file path", "untitled.solc");
+    const path = window.prompt("New file path", "untitled.sol");
     if (path) {
       createFile(path);
     }

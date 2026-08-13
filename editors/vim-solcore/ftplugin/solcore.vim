@@ -8,7 +8,7 @@ let b:undo_ftplugin = 'setlocal commentstring< comments< formatoptions< include<
 setlocal commentstring=//\ %s
 setlocal comments=s1:/*,mb:*,ex:*/,://
 let &l:include = '^\s*\%(import\|export\)\s\+'
-setlocal suffixesadd=.solc
+setlocal suffixesadd=.sol
 
 setlocal formatoptions-=t
 setlocal formatoptions+=croql
