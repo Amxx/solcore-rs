@@ -1241,218 +1241,233 @@ mcopy(dst, ptr, cnt);
 // WordReader for calldata
 enum CalldataWordReader { CalldataWordReader(word) }
 
-instance CalldataWordReader : Typedef(word) {
-  function abs(a:word) -> CalldataWordReader { return CalldataWordReader(a); }
-  function rep(r:CalldataWordReader) -> word {
-    match r {
-      | CalldataWordReader(a) => return a;
-    }
+impl Typedef<CalldataWordReader, word> {
+  function abs(a: word) returns (CalldataWordReader) { return CalldataWordReader(a); }
+  function rep(r: CalldataWordReader) returns (word) {
+    match (r) {
+case CalldataWordReader(a) {
+return a;
+}
+}
   }
 }
 
-instance CalldataWordReader:WordReader {
-    function read(reader:CalldataWordReader) -> word {
-        match reader {
-          | CalldataWordReader(ptr) => return calldataload(ptr);
-        }
+impl WordReader<CalldataWordReader> {
+    function read(reader: CalldataWordReader) returns (word) {
+        match (reader) {
+case CalldataWordReader(ptr) {
+return calldataload(ptr);
+}
+}
     }
-    function advance(reader:CalldataWordReader, offset:word) -> CalldataWordReader {
-        match reader {
-        | CalldataWordReader(ptr) => return CalldataWordReader(ptr + offset);
-        }
+    function advance(reader: CalldataWordReader, offset: word) returns (CalldataWordReader) {
+        match (reader) {
+case CalldataWordReader(ptr) {
+return CalldataWordReader(ptr + offset);
+}
+}
     }
-    function copyToMem(reader:CalldataWordReader, dst:word, cnt: word) -> () {
-        match reader {
-        | CalldataWordReader(ptr) => calldatacopy(dst, ptr, cnt);
-        }
+    function copyToMem(reader: CalldataWordReader, dst: word, cnt: word) {
+        match (reader) {
+case CalldataWordReader(ptr) {
+calldatacopy(dst, ptr, cnt);
+}
+}
     }
 }
 
 // --- HasWordReader ---
 
-// The HasWordReader class defines the types for which a WordReader can be produced
-// We define instances for memory(bytes) and calldata(bytes)
-forall self reader . class self:HasWordReader(reader) {
-    function getWordReader(x:self) -> reader;
+// The HasWordReader trait defines the types for which a WordReader can be produced.
+// We define impls for memory<bytes> and calldata<bytes>.
+trait HasWordReader<self, reader> {
+    function getWordReader(x: self) returns (reader) ;
 }
 
-instance memory(bytes):HasWordReader(MemoryWordReader) {
-    function getWordReader(x:memory(bytes)) -> MemoryWordReader {
+impl HasWordReader<memory<bytes>, MemoryWordReader> {
+    function getWordReader(x: memory<bytes>) returns (MemoryWordReader) {
         return MemoryWordReader(Typedef.rep(x));
     }
 }
 
-instance calldata(bytes):HasWordReader(CalldataWordReader) {
-    function getWordReader(x:calldata(bytes)) -> CalldataWordReader {
+impl HasWordReader<calldata<bytes>, CalldataWordReader> {
+    function getWordReader(x: calldata<bytes>) returns (CalldataWordReader) {
         return CalldataWordReader(Typedef.rep(x));
     }
 }
 
 // --- MemoryType ---
 
-// A MemoryType instance abstracts over type specific logic related to memory
-// layout, allowing us to write code that is generic over which type is held in memory
-forall self loadedType. class self:MemoryType(loadedType) {
-    // Proxy needed becaused class methods must mention strong type params
-    // loads an instance of `loadedType` from an instance of `self` located at `loc` in memory
-    function loadFromMemory(p:Proxy(self), loc:word) -> loadedType;
+// A MemoryType impl abstracts over type-specific memory layout, allowing us to
+// write code that is generic over the type held in memory.
+trait MemoryType<self, loadedType> {
+    // Proxy is needed because trait methods must mention strong type parameters.
+    // Loads a `loadedType` value from a `self` value located at `loc` in memory.
+    function loadFromMemory(p: Proxy<self>, loc: word) returns (loadedType) ;
 }
 
 // A uint256 can be loaded from memory and pushed straight onto the stack
-instance uint256:MemoryType(uint256) {
-    function loadFromMemory(p:Proxy(uint256), loc:word) -> uint256 {
+impl MemoryType<uint256, uint256> {
+    function loadFromMemory(p: Proxy<uint256>, loc: word) returns (uint256) {
         return uint256(mload(loc));
     }
 }
 
 // We load a DynArray into a sized pointer to the first element
 /*
-forall ty ret . ty:MemoryType(ret) => instance DynArray(ty):MemoryType(slice(memory(ret))) {
-    function loadFromMemory(p : Proxy (DynArray(ty)), loc:word) -> slice(memory(ret)) {
+impl<ty, ret> MemoryType<DynArray<ty>, slice<memory<ret>>> where ty: MemoryType<ret> {
+    function loadFromMemory(p: Proxy<DynArray<ty>>, loc: word) returns (slice<memory<ret>>) {
         let length = mload(loc);
-        return slice(Typedef.abs(loc) : memory(ret), length);
+        let ptr: memory<ret> = memory(Typedef.abs(loc));
+        return slice(ptr, length);
     }
 }
 */
 
 // FAIL: patterson
 // FAIL: bound variable
-// if we ty is a MemoryType that returns deref and deref is ABIEncode, then we can encode a memory(ty)
+// If `ty: MemoryType<deref>` and `deref: ABIEncode`, then memory<ty> can be
+// encoded by loading and encoding its dereferenced value.
 // by loading it and then running the ABI encoding for the loaded value
 /*
-forall ty deref . ty:MemoryType(deref), deref:ABIEncode => instance memory(ty):ABIEncode {
-    function encodeInto(x:memory(ty), basePtr:word, offset:word, tail:word) -> word {
-        let prx : Proxy(ty); // FIXED: before was Proxy(deref)
-        return ABIEncode.encodeInto(MemoryType.loadFromMemory(prx, Typedef.rep(x)) : deref, basePtr, offset, tail);
+impl<ty, deref> ABIEncode<memory<ty>> where ty: MemoryType<deref>, deref: ABIEncode {
+    function encodeInto(x: memory<ty>, basePtr: word, offset: word, tail: word) returns (word) {
+        let prx: Proxy<ty>; // FIXED: before was Proxy<deref>
+        return ABIEncode.encodeInto(MemoryType.loadFromMemory(prx, Typedef.rep(x)): deref, basePtr, offset, tail);
     }
 }
 */
 // --- ABI Tuples ---
 
 // Tuples in Solidity are always desugared to nested pairs (to allow for
-// inductive typeclass instance constructions) .
+// inductive trait-impl constructions).
 // This is an issue for the ABI routines since the ABI spec differentiates
 // between `(1,1,1)` and `(1,(1,1))`, but the language treats both identically.
 // The ABITuple type lets us reiintroduce this distinction:
 // `ABITuple((1,(1,1))` should be treated as `(1,1,1)`  for the purposes of ABI
 // encoding / decoding.
-data ABITuple(tuple) = ABITuple(tuple);
+enum ABITuple<tuple> { ABITuple(tuple) }
 
-forall t . instance ABITuple(t):Typedef(t) {
-    function abs(t: t) -> ABITuple(t) {
+impl<t> Typedef<ABITuple<t>, t> {
+    function abs(t: t) returns (ABITuple<t>) {
         return ABITuple(t);
     }
 
-    function rep(x: ABITuple(t)) -> t {
-        match x {
-        | ABITuple(v) => return v;
-        }
+    function rep(x: ABITuple<t>) returns (t) {
+        match (x) {
+case ABITuple(v) {
+return v;
+}
+}
     }
 }
 
 // --- ABI Metadata ---
 
 // Statically knowable ABI related metadata about `self`
-forall self . class self:ABIAttribs {
+trait ABIAttribs<self> {
     // how many bytes should be used for the head portion of the abi encoding of `self`
-    function headSize(ty:Proxy(self)) -> word;
+    function headSize(ty: Proxy<self>) returns (word) ;
     // whether or not `self` is a fully static type
-    function isStatic(ty:Proxy(self)) -> bool;
+    function isStatic(ty: Proxy<self>) returns (bool) ;
 }
 
-forall t.
-default instance t:ABIAttribs {
-    function headSize(ty : Proxy(t)) -> word { return 32; }
-    function isStatic(ty : Proxy(t)) -> bool { return true; }
+default impl<t> ABIAttribs<t> {
+    function headSize(ty: Proxy<t>) returns (word) { return 32; }
+    function isStatic(ty: Proxy<t>) returns (bool) { return true; }
 }
 
-instance ():ABIAttribs {
-    function headSize(ty : Proxy(())) -> word { return 0; }
-    function isStatic(ty : Proxy(())) -> bool { return true; }
+impl ABIAttribs<()> {
+    function headSize(ty: Proxy<()>) returns (word) { return 0; }
+    function isStatic(ty: Proxy<()>) returns (bool) { return true; }
 }
-instance uint256:ABIAttribs {
-    function headSize(ty : Proxy(uint256)) -> word { return 32; }
-    function isStatic(ty : Proxy(uint256)) -> bool { return true; }
+impl ABIAttribs<uint256> {
+    function headSize(ty: Proxy<uint256>) returns (word) { return 32; }
+    function isStatic(ty: Proxy<uint256>) returns (bool) { return true; }
 }
-instance address:ABIAttribs {
-    function headSize(ty : Proxy(address)) -> word { return 32; }
-    function isStatic(ty : Proxy(address)) -> bool { return true; }
+impl ABIAttribs<address> {
+    function headSize(ty: Proxy<address>) returns (word) { return 32; }
+    function isStatic(ty: Proxy<address>) returns (bool) { return true; }
 }
-forall t . instance DynArray(t):ABIAttribs {
-    function headSize(ty : Proxy(DynArray(t))) -> word { return 32; }
-    function isStatic(ty : Proxy(DynArray(t))) -> bool { return false; }
+impl<t> ABIAttribs<DynArray<t>> {
+    function headSize(ty: Proxy<DynArray<t>>) returns (word) { return 32; }
+    function isStatic(ty: Proxy<DynArray<t>>) returns (bool) { return false; }
 }
 // A dynamic array is encoded head-first as a 32-byte offset into the tail, so
 // its head is one word and it is never static (matching DynArray above). This
-// covers `array(t)` under any location qualifier via the `calldata(ty)` /
-// `memory(ty)` ABIAttribs bridges.
-forall t . instance array(t):ABIAttribs {
-    function headSize(ty : Proxy(array(t))) -> word { return 32; }
-    function isStatic(ty : Proxy(array(t))) -> bool { return false; }
+// covers `array<t>` under any location qualifier via the `calldata<ty>` /
+// `memory<ty>` ABIAttribs bridges.
+impl<t> ABIAttribs<array<t>> {
+    function headSize(ty: Proxy<array<t>>) returns (word) { return 32; }
+    function isStatic(ty: Proxy<array<t>>) returns (bool) { return false; }
 }
-instance string:ABIAttribs {
-    function headSize(ty: Proxy(string)) -> word { return 32; }
-    function isStatic(ty : Proxy(string)) -> bool { return false; }
+impl ABIAttribs<string> {
+    function headSize(ty: Proxy<string>) returns (word) { return 32; }
+    function isStatic(ty: Proxy<string>) returns (bool) { return false; }
 }
-// bytes is dynamic, exactly like string — without this instance it falls to the
-// default (isStatic = true), which wrongly marks memory(bytes) (and any ADT
+// bytes is dynamic, exactly like string — without this impl it falls to the
+// default (isStatic = true), which wrongly marks memory<bytes> (and any ADT
 // carrying it) static, so calldata arrays/sums take the inline decode path over
 // what is really an offset-referenced value.
-instance bytes:ABIAttribs {
-    function headSize(ty: Proxy(bytes)) -> word { return 32; }
-    function isStatic(ty : Proxy(bytes)) -> bool { return false; }
+impl ABIAttribs<bytes> {
+    function headSize(ty: Proxy<bytes>) returns (word) { return 32; }
+    function isStatic(ty: Proxy<bytes>) returns (bool) { return false; }
 }
 
 // computes the attribs for a pair of two types that implement attribs
-forall a b . a:ABIAttribs, b:ABIAttribs => instance (a,b):ABIAttribs {
-    function headSize(ty : Proxy((a,b))) -> word {
-        let pa : Proxy(a);
-        let pb : Proxy(b);
+impl<a, b> ABIAttribs<(a, b)> where a: ABIAttribs, b: ABIAttribs {
+    function headSize(ty: Proxy<(a, b)>) returns (word) {
+        let pa : Proxy<a>;
+        let pb : Proxy<b>;
         let sza = ABIAttribs.headSize(pa);
         let szb = ABIAttribs.headSize(pb);
         return sza + szb;
     }
-    function isStatic(ty : Proxy((a,b))) -> bool {
-        let pa : Proxy(a);
-        let pb : Proxy(b);
+    function isStatic(ty: Proxy<(a, b)>) returns (bool) {
+        let pa : Proxy<a>;
+        let pb : Proxy<b>;
         return and(ABIAttribs.isStatic(pa), ABIAttribs.isStatic(pb));
     }
 }
 
 // if an abi tuple contains dynamic elems we store it in the tail, otherwise we
 // treat it the same as a series of nested pairs
-forall tuple . tuple:ABIAttribs => instance ABITuple(tuple):ABIAttribs {
-    function headSize(ty : Proxy(ABITuple(tuple))) -> word {
-        let px : Proxy(tuple);
-        match ABIAttribs.isStatic(px) {
-        | true => return ABIAttribs.headSize(px);
-        | false => return 32;
-        }
+impl<tuple> ABIAttribs<ABITuple<tuple>> where tuple: ABIAttribs {
+    function headSize(ty: Proxy<ABITuple<tuple>>) returns (word) {
+        let px : Proxy<tuple>;
+        match (ABIAttribs.isStatic(px)) {
+case true {
+return ABIAttribs.headSize(px);
+}
+case false {
+return 32;
+}
+}
     }
-    function isStatic(ty : Proxy(ABITuple(tuple))) -> bool {
-        let px : Proxy(tuple);
+    function isStatic(ty: Proxy<ABITuple<tuple>>) returns (bool) {
+        let px : Proxy<tuple>;
         return ABIAttribs.isStatic(px);
     }
 }
 
 // for pointer types we fetch the attribs of the pointed to type, not the pointer itself
-forall ty . ty:ABIAttribs => instance memory(ty):ABIAttribs {
-    function headSize(p : Proxy(memory(ty))) -> word {
-        let px : Proxy(ty);
+impl<ty> ABIAttribs<memory<ty>> where ty: ABIAttribs {
+    function headSize(p: Proxy<memory<ty>>) returns (word) {
+        let px : Proxy<ty>;
         return ABIAttribs.headSize(px);
     }
-    function isStatic(p : Proxy(memory(ty))) -> bool {
-        let px : Proxy(ty);
+    function isStatic(p: Proxy<memory<ty>>) returns (bool) {
+        let px : Proxy<ty>;
         return ABIAttribs.isStatic(px);
     }
 }
-forall ty . ty:ABIAttribs => instance calldata(ty):ABIAttribs {
-    function headSize(p : Proxy(calldata(ty))) -> word {
-        let px : Proxy(ty);
+impl<ty> ABIAttribs<calldata<ty>> where ty: ABIAttribs {
+    function headSize(p: Proxy<calldata<ty>>) returns (word) {
+        let px : Proxy<ty>;
         return ABIAttribs.headSize(px);
     }
-    function isStatic(ty : Proxy(calldata(ty))) -> bool {
-        let px : Proxy(ty);
+    function isStatic(ty: Proxy<calldata<ty>>) returns (bool) {
+        let px : Proxy<ty>;
         return ABIAttribs.isStatic(px);
     }
 }
@@ -1461,74 +1476,74 @@ forall ty . ty:ABIAttribs => instance calldata(ty):ABIAttribs {
 // TODO: make these generic over the location being written to (i.e. memory or returndata)
 
 // top level encoding function.
-// abi encodes an instance of `ty` and returns a pointer to the result
-forall ty . ty:ABIAttribs, ty:ABIEncode => function abi_encode(val : ty) -> memory(bytes) {
+// ABI-encodes a `ty` value and returns a pointer to the result.
+function abi_encode<ty>(val: ty) returns (memory<bytes>) where ty: ABIAttribs, ty: ABIEncode {
     let ret = get_free_memory();
     let start = ret + 32;
-    let tail = ABIEncode.encodeInto(val, start, 0, start + ABIAttribs.headSize(Proxy : Proxy(ty)));
+    let tail = ABIEncode.encodeInto(val, start, 0, start + ABIAttribs.headSize(@ty));
     mstore(ret, tail - start);
     set_free_memory(tail);
     return memory(ret);
 }
 
 // types that can be abi encoded
-forall self . class self:ABIEncode {
-    // abi encodes an instance of self into a memory region starting at basePtr
+trait ABIEncode<self> {
+    // ABI-encodes a `self` value into a memory region starting at basePtr.
     // offset gives the offset in memory from basePtr to the first empty byte of the head
     // tail gives the index in memory of the first empty byte of the tail
-    function encodeInto(x:self, basePtr:word, offset:word, tail:word) -> word /* newTail */;
+    function encodeInto(x: self, basePtr: word, offset: word, tail: word) returns (word) ;
 }
 
-instance uint256:ABIEncode {
+impl ABIEncode<uint256> {
     // a unit256 is written directly into the head
-    function encodeInto(x:uint256, basePtr:word, offset:word, tail:word) -> word {
+    function encodeInto(x: uint256, basePtr: word, offset: word, tail: word) returns (word) {
         let repx : word = Typedef.rep(x);
         mstore(basePtr + offset, repx);
         return tail;
     }
 }
 
-instance address:ABIEncode {
+impl ABIEncode<address> {
     // an address is written directly into the head (into a full 32-byte slot)
-    function encodeInto(x:address, basePtr:word, offset:word, tail:word) -> word {
+    function encodeInto(x: address, basePtr: word, offset: word, tail: word) returns (word) {
         let repx : word = Typedef.rep(x);
         mstore(basePtr + offset, repx);
         return tail;
     }
 }
 
-instance bytes32:ABIEncode {
+impl ABIEncode<bytes32> {
     // a bytes32 is written directly into the head
-    function encodeInto(x:bytes32, basePtr:word, offset:word, tail:word) -> word {
+    function encodeInto(x: bytes32, basePtr: word, offset: word, tail: word) returns (word) {
         let repx : word = Typedef.rep(x);
         mstore(basePtr + offset, repx);
         return tail;
     }
 }
 
-instance bytes4:ABIEncode {
+impl ABIEncode<bytes4> {
     // bytes4's word rep is right-aligned (e.g. `bytes4(shr(224, h))`),
     // so it is written directly into the head like bytes32
-    function encodeInto(x:bytes4, basePtr:word, offset:word, tail:word) -> word {
+    function encodeInto(x: bytes4, basePtr: word, offset: word, tail: word) returns (word) {
         let repx : word = Typedef.rep(x);
         mstore(basePtr + offset, repx);
         return tail;
     }
 }
 
-instance bool:ABIEncode {
-    function encodeInto(x:bool, basePtr:word, offset:word, tail:word) -> word {
+impl ABIEncode<bool> {
+    function encodeInto(x: bool, basePtr: word, offset: word, tail: word) returns (word) {
         let repx : word = frombool(x);
         mstore(basePtr + offset, repx);
         return tail;
     }
 }
 
-function round_up_to_mul_of_32(value:word) -> word {
+function round_up_to_mul_of_32(value: word) returns (word) {
     return (value + 31) & ~31;
 }
 
-function encodeIntoFromBytesLike(srcPtr:word, basePtr:word, offset:word, tail:word) -> word {
+function encodeIntoFromBytesLike(srcPtr: word, basePtr: word, offset: word, tail: word) returns (word) {
     let length = mload(srcPtr);
     let total = length + 32;
     mstore(basePtr + offset, tail - basePtr);
@@ -1538,14 +1553,14 @@ function encodeIntoFromBytesLike(srcPtr:word, basePtr:word, offset:word, tail:wo
     return tail + rounded;
 }
 
-instance memory(string):ABIEncode {
-    function encodeInto(x:memory(string), basePtr:word, offset:word, tail:word) -> word {
+impl ABIEncode<memory<string>> {
+    function encodeInto(x: memory<string>, basePtr: word, offset: word, tail: word) returns (word) {
       return encodeIntoFromBytesLike(Typedef.rep(x), basePtr, offset, tail);
     }
 }
 
-instance memory(bytes):ABIEncode {
-    function encodeInto(x:memory(bytes), basePtr:word, offset:word, tail:word) -> word {
+impl ABIEncode<memory<bytes>> {
+    function encodeInto(x: memory<bytes>, basePtr: word, offset: word, tail: word) returns (word) {
       return encodeIntoFromBytesLike(Typedef.rep(x), basePtr, offset, tail);
     }
 }
@@ -1553,11 +1568,10 @@ instance memory(bytes):ABIEncode {
 // ABI encoding for a memory dynamic array whose elements fit in a single word.
 // Assumes memory layout `[ length | elem_0 | elem_1 | ... ]`, which matches the
 // on-the-wire tail of `t[]` so the body can be `mcopy`d verbatim.
-// `memory(DynArray(t)):ABIAttribs` is already derivable from the generic
-// `memory(ty):ABIAttribs` + `DynArray(t):ABIAttribs` instances above.
-forall t . t:Typedef(word) =>
-instance memory(DynArray(t)):ABIEncode {
-    function encodeInto(x:memory(DynArray(t)), basePtr:word, offset:word, tail:word) -> word {
+// `memory<DynArray<t>>: ABIAttribs` is already derivable from the generic
+// `memory<ty>: ABIAttribs` + `DynArray<t>: ABIAttribs` impls above.
+impl<t> ABIEncode<memory<DynArray<t>>> where t: Typedef<word> {
+    function encodeInto(x: memory<DynArray<t>>, basePtr: word, offset: word, tail: word) returns (word) {
         let srcPtr : word = Typedef.rep(x);
         let len : word = mload(srcPtr);
         let totalBytes : word = (len + 1) * 32;
@@ -1574,114 +1588,123 @@ instance memory(DynArray(t)):ABIEncode {
     }
 }
 
-instance ():ABIEncode {
+impl ABIEncode<()> {
     // a unit256 is written directly into the head
-    function encodeInto(x:(), basePtr:word, offset:word, tail:word) -> word {
+    function encodeInto(x: (), basePtr: word, offset: word, tail: word) returns (word) {
         return tail;
     }
 }
 
 // abi encoding for a pair of two encodable types
-forall a b . a:ABIAttribs, a:ABIEncode, b:ABIEncode => instance (a,b):ABIEncode {
-    function encodeInto(x: (a,b), basePtr: word, offset: word, tail: word) -> word {
-        match x {
-        | (l,r) =>
-            let newTail = ABIEncode.encodeInto(l, basePtr, offset, tail);
-            let pa : Proxy(a);
+impl<a, b> ABIEncode<(a, b)> where a: ABIAttribs, a: ABIEncode, b: ABIEncode {
+    function encodeInto(x: (a, b), basePtr: word, offset: word, tail: word) returns (word) {
+        match (x) {
+case (l,r) {
+let newTail = ABIEncode.encodeInto(l, basePtr, offset, tail);
+            let pa : Proxy<a>;
             let a_sz = ABIAttribs.headSize(pa);
             return ABIEncode.encodeInto(r, basePtr, offset + a_sz, newTail);
-        }
+}
+}
     }
 }
 
 
 // abi encoding for an ABITuple of encodable types
 // TODO: is this correct?
-forall tuple . tuple:ABIEncode, tuple:ABIAttribs => instance ABITuple(tuple):ABIEncode {
-    function encodeInto(x:ABITuple(tuple), basePtr:word, offset:word, tail:word) -> word {
-        let prx : Proxy(tuple);
-        match ABIAttribs.isStatic(prx) {
-        // if the tuple contains only static elements then we encode it in the head
-        | true => return ABIEncode.encodeInto(Typedef.rep(x), basePtr, offset, tail);
+impl<tuple> ABIEncode<ABITuple<tuple>> where tuple: ABIEncode, tuple: ABIAttribs {
+    function encodeInto(x: ABITuple<tuple>, basePtr: word, offset: word, tail: word) returns (word) {
+        let prx : Proxy<tuple>;
+        match (ABIAttribs.isStatic(prx)) {
+// if the tuple contains only static elements then we encode it in the head
+case true {
+return ABIEncode.encodeInto(Typedef.rep(x), basePtr, offset, tail);
         // if the tuple contains dynamically sized elements then we store a
         // pointer in the head, and encode the tuple into the tail
-        | false =>
-            // store the length of the head in basePtr
+}
+case false {
+// store the length of the head in basePtr
             mstore(basePtr, tail - basePtr);
 
             // encode the underlying tuple into the tail
-            let headSize = ABIAttribs.headSize(Proxy : Proxy(tuple));
+            let headSize = ABIAttribs.headSize(@tuple);
             basePtr = tail;
             tail += headSize;
             return ABIEncode.encodeInto(Typedef.rep(x), basePtr, 0, tail);
-        }
+}
+}
     }
 }
 
 // --- ABI Decoding ---
 
 // Top level decoding function.
-// abi decodes an instance of `decodable` into a `ty`
-forall decodable reader ty decoded . decodable:HasWordReader(reader), ABIDecoder(ty, reader):ABIDecode(decoded) =>
-function abi_decode(decodable:decodable, pty:Proxy(ty), prdr:Proxy(reader)) -> decoded {
-    let decoder : ABIDecoder(ty, reader) = ABIDecoder(HasWordReader.getWordReader(decodable));
+// ABI-decodes a `decodable` value into a `ty` value.
+function abi_decode<decodable, reader, ty, decoded>(decodable: decodable, pty: Proxy<ty>, prdr: Proxy<reader>) returns (decoded) where decodable: HasWordReader<reader>, ABIDecoder<ty, reader>: ABIDecode<decoded> {
+    let decoder : ABIDecoder<ty, reader> = ABIDecoder(HasWordReader.getWordReader(decodable));
     return ABIDecode.decode(decoder, 0);
 }
 
 
-forall decoder decoded . class decoder:ABIDecode(decoded) {
-    function decode(ptr:decoder, currentHeadOffset:word) -> decoded;
+trait ABIDecode<decoder, decoded> {
+    function decode(ptr: decoder, currentHeadOffset: word) returns (decoded) ;
 }
 
 // An ABI Decoder for `ty` from `reader`
 // This lets us abstract over memory and calldata when decoding
-data ABIDecoder(ty, reader) = ABIDecoder(reader);
+enum ABIDecoder<ty, reader> { ABIDecoder(reader) }
 
 // If `reader` is a `WordReader` then so is our `ABIDecoder`
-forall ty reader . reader:WordReader => instance ABIDecoder(ty, reader):WordReader {
-    function read(decoder:ABIDecoder(ty, reader)) -> word {
-        match decoder {
-        | ABIDecoder(ptr) => return WordReader.read(ptr);
-        }
+impl<ty, reader> WordReader<ABIDecoder<ty, reader>> where reader: WordReader {
+    function read(decoder: ABIDecoder<ty, reader>) returns (word) {
+        match (decoder) {
+case ABIDecoder(ptr) {
+return WordReader.read(ptr);
+}
+}
     }
-    function advance(decoder:ABIDecoder(ty, reader), offset:word) -> ABIDecoder(ty, reader) {
-        match decoder {
-        | ABIDecoder(ptr) => return ABIDecoder(WordReader.advance(ptr, offset));
-        }
+    function advance(decoder: ABIDecoder<ty, reader>, offset: word) returns (ABIDecoder<ty, reader>) {
+        match (decoder) {
+case ABIDecoder(ptr) {
+return ABIDecoder(WordReader.advance(ptr, offset));
+}
+}
     }
-    function copyToMem(decoder:ABIDecoder(ty, reader), dst:word, cnt: word) -> () {
-        match decoder {
-        | ABIDecoder(ptr) => WordReader.copyToMem(ptr, dst, cnt);
-        }
+    function copyToMem(decoder: ABIDecoder<ty, reader>, dst: word, cnt: word) {
+        match (decoder) {
+case ABIDecoder(ptr) {
+WordReader.copyToMem(ptr, dst, cnt);
+}
+}
     }
 }
 
 // ABI Decoding for uint256
-forall reader . reader:WordReader => instance ABIDecoder(uint256, reader):ABIDecode(uint256) {
-    function decode(ptr:ABIDecoder(uint256, reader), currentHeadOffset:word) -> uint256 {
-        return Typedef.abs(WordReader.read(WordReader.advance(ptr, currentHeadOffset))) : uint256;
+impl<reader> ABIDecode<ABIDecoder<uint256, reader>, uint256> where reader: WordReader {
+    function decode(ptr: ABIDecoder<uint256, reader>, currentHeadOffset: word) returns (uint256) {
+        return Typedef.abs(WordReader.read(WordReader.advance(ptr, currentHeadOffset))) ;
     }
 }
 
 // ABI Decoding for bytes32
-forall reader . reader:WordReader => instance ABIDecoder(bytes32, reader):ABIDecode(bytes32) {
-    function decode(ptr:ABIDecoder(bytes32, reader), currentHeadOffset:word) -> bytes32 {
-        return Typedef.abs(WordReader.read(WordReader.advance(ptr, currentHeadOffset))) : bytes32;
+impl<reader> ABIDecode<ABIDecoder<bytes32, reader>, bytes32> where reader: WordReader {
+    function decode(ptr: ABIDecoder<bytes32, reader>, currentHeadOffset: word) returns (bytes32) {
+        return Typedef.abs(WordReader.read(WordReader.advance(ptr, currentHeadOffset))) ;
     }
 }
 
 // ABI Decoding for bytes4
-forall reader . reader:WordReader => instance ABIDecoder(bytes4, reader):ABIDecode(bytes4) {
-    function decode(ptr:ABIDecoder(bytes4, reader), currentHeadOffset:word) -> bytes4 {
-        return Typedef.abs(WordReader.read(WordReader.advance(ptr, currentHeadOffset))) : bytes4;
+impl<reader> ABIDecode<ABIDecoder<bytes4, reader>, bytes4> where reader: WordReader {
+    function decode(ptr: ABIDecoder<bytes4, reader>, currentHeadOffset: word) returns (bytes4) {
+        return Typedef.abs(WordReader.read(WordReader.advance(ptr, currentHeadOffset))) ;
     }
 }
 
 // ABI Decoding for bool
 // bool is a builtin (not a Typedef(word)), so it round-trips through word via
-// tobool, mirroring the bool:ABIEncode instance which uses frombool.
-forall reader . reader:WordReader => instance ABIDecoder(bool, reader):ABIDecode(bool) {
-    function decode(ptr:ABIDecoder(bool, reader), currentHeadOffset:word) -> bool {
+// tobool, mirroring the `bool: ABIEncode` impl which uses frombool.
+impl<reader> ABIDecode<ABIDecoder<bool, reader>, bool> where reader: WordReader {
+    function decode(ptr: ABIDecoder<bool, reader>, currentHeadOffset: word) returns (bool) {
         let v = WordReader.read(WordReader.advance(ptr, currentHeadOffset));
         require(v <= 1, Error(0x0557dbbf)); // DirtyHigherBitsForBool()
         return tobool(v);
@@ -1689,23 +1712,22 @@ forall reader . reader:WordReader => instance ABIDecoder(bool, reader):ABIDecode
 }
 
 // ABI Decoding for address
-forall reader . reader:WordReader => instance ABIDecoder(address, reader):ABIDecode(address) {
-    function decode(ptr:ABIDecoder(address, reader), currentHeadOffset:word) -> address {
+impl<reader> ABIDecode<ABIDecoder<address, reader>, address> where reader: WordReader {
+    function decode(ptr: ABIDecoder<address, reader>, currentHeadOffset: word) returns (address) {
         let raw = WordReader.read(WordReader.advance(ptr, currentHeadOffset));
         require(shr(160, raw) == 0, Error(0x7cc04fa7)); // DirtyHigherBitsForAddress()
-        return Typedef.abs(raw) : address;
+        return Typedef.abs(raw) ;
     }
 }
 
-forall reader . reader:WordReader => instance ABIDecoder((), reader):ABIDecode(()) {
-    function decode(ptr:ABIDecoder((), reader), currentHeadOffset:word) -> () {
+impl<reader> ABIDecode<ABIDecoder<(), reader>, ()> where reader: WordReader {
+    function decode(ptr: ABIDecoder<(), reader>, currentHeadOffset: word) {
         return ();
     }
 }
 
 // ABI decoding for bytes/strings (only in memory)
-forall a ptrtype reader. reader:WordReader =>
-function decodeBytesLike(ptr:ABIDecoder(memory(a), reader), currentHeadOffset:word) -> memory(a) {
+function decodeBytesLike<a, ptrtype, reader>(ptr: ABIDecoder<memory<a>, reader>, currentHeadOffset: word) returns (memory<a>) where reader: WordReader {
         let tmp:word;
         let headRdr = WordReader.advance(ptr, currentHeadOffset);
         let tailPtr : word = WordReader.read(headRdr);
@@ -1721,82 +1743,78 @@ function decodeBytesLike(ptr:ABIDecoder(memory(a), reader), currentHeadOffset:wo
 }
 
 // ABI decoding for strings (only in memory)
-forall reader. reader : WordReader =>
-instance ABIDecoder(memory(string), reader):ABIDecode(memory(string))
-{
-    function decode(ptr:ABIDecoder(memory(string), reader), currentHeadOffset:word) -> memory(string) {
+impl<reader> ABIDecode<ABIDecoder<memory<string>, reader>, memory<string>> where reader: WordReader {
+    function decode(ptr: ABIDecoder<memory<string>, reader>, currentHeadOffset: word) returns (memory<string>) {
       return decodeBytesLike(ptr, currentHeadOffset);
     }
 }
 
 // ABI decoding for bytes (only in memory)
-forall reader. reader : WordReader =>
-instance ABIDecoder(memory(bytes), reader):ABIDecode(memory(bytes))
-{
-    function decode(ptr:ABIDecoder(memory(bytes), reader), currentHeadOffset:word) -> memory(bytes) {
+impl<reader> ABIDecode<ABIDecoder<memory<bytes>, reader>, memory<bytes>> where reader: WordReader {
+    function decode(ptr: ABIDecoder<memory<bytes>, reader>, currentHeadOffset: word) returns (memory<bytes>) {
       return decodeBytesLike(ptr, currentHeadOffset);
     }
 }
 
 // ABI decoding for a pair of decodable values
 // FAIL: Coverage
-forall a b a_decoded b_decoded reader . reader:WordReader, ABIDecoder(b,reader):ABIDecode(b_decoded), ABIDecoder(a,reader):ABIDecode(a_decoded), a:ABIAttribs => instance ABIDecoder((a,b), reader):ABIDecode((a_decoded,b_decoded))
-{
-    function decode(ptr:ABIDecoder((a,b), reader), currentHeadOffset:word) -> (a_decoded, b_decoded) {
-        match ptr {
-        | ABIDecoder(rdr) =>
-            let prx : Proxy(a);
-            let decoder_a : ABIDecoder(a, reader) = ABIDecoder(rdr);
-            let decoder_b : ABIDecoder(b, reader) = ABIDecoder(rdr);
+impl<a, b, a_decoded, b_decoded, reader> ABIDecode<ABIDecoder<(a, b), reader>, (a_decoded, b_decoded)> where reader: WordReader, ABIDecoder<b, reader>: ABIDecode<b_decoded>, ABIDecoder<a, reader>: ABIDecode<a_decoded>, a: ABIAttribs {
+    function decode(ptr: ABIDecoder<(a, b), reader>, currentHeadOffset: word) returns (a_decoded, b_decoded) {
+        match (ptr) {
+case ABIDecoder(rdr) {
+let prx : Proxy<a>;
+            let decoder_a : ABIDecoder<a, reader> = ABIDecoder(rdr);
+            let decoder_b : ABIDecoder<b, reader> = ABIDecoder(rdr);
             let a_val : a_decoded = ABIDecode.decode(decoder_a, currentHeadOffset);
             let b_val : b_decoded = ABIDecode.decode(decoder_b, currentHeadOffset + ABIAttribs.headSize(prx));
             return (a_val, b_val);
-        }
+}
+}
     }
 }
 
-forall reader tuple tuple_decoded . reader:WordReader, tuple:ABIDecode(tuple_decoded), tuple:ABIAttribs =>
-    instance ABIDecoder(ABITuple(tuple), reader):ABIDecode(tuple_decoded)
-{
-    function decode(ptr:ABIDecoder(ABITuple(tuple), reader), currentHeadOffset:word) -> tuple_decoded {
-        let prx : Proxy(tuple);
-        match ABIAttribs.isStatic(prx) {
-        | true => return ABIDecode.decode(WordReader.advance(ptr, currentHeadOffset), 0);
-        | false =>
-            let tailPtr = WordReader.read(ptr);
+impl<reader, tuple, tuple_decoded> ABIDecode<ABIDecoder<ABITuple<tuple>, reader>, tuple_decoded> where reader: WordReader, tuple: ABIDecode<tuple_decoded>, tuple: ABIAttribs {
+    function decode(ptr: ABIDecoder<ABITuple<tuple>, reader>, currentHeadOffset: word) returns (tuple_decoded) {
+        let prx : Proxy<tuple>;
+        match (ABIAttribs.isStatic(prx)) {
+case true {
+return ABIDecode.decode(WordReader.advance(ptr, currentHeadOffset), 0);
+}
+case false {
+let tailPtr = WordReader.read(ptr);
             return ABIDecode.decode(WordReader.advance(ptr, tailPtr), 0);
-       }
+}
+}
     }
 }
 
 
-forall reader tuple tuple_decoded . reader:WordReader, tuple:ABIDecode(tuple_decoded), tuple:ABIAttribs =>
-    instance ABIDecoder(memory(ABITuple(tuple)), reader):ABIDecode(memory(tuple_decoded))
-{
-    function decode(ptr:ABIDecoder(memory(ABITuple(tuple)), reader), currentHeadOffset:word) -> memory(tuple_decoded) {
-        let prx : Proxy(tuple);
-        match ABIAttribs.isStatic(prx) {
-        | true => return ABIDecode.decode(WordReader.advance(ptr, currentHeadOffset), 0);
-        | false =>
-            let tailPtr = WordReader.read(ptr);
+impl<reader, tuple, tuple_decoded> ABIDecode<ABIDecoder<memory<ABITuple<tuple>>, reader>, memory<tuple_decoded>> where reader: WordReader, tuple: ABIDecode<tuple_decoded>, tuple: ABIAttribs {
+    function decode(ptr: ABIDecoder<memory<ABITuple<tuple>>, reader>, currentHeadOffset: word) returns (memory<tuple_decoded>) {
+        let prx : Proxy<tuple>;
+        match (ABIAttribs.isStatic(prx)) {
+case true {
+return ABIDecode.decode(WordReader.advance(ptr, currentHeadOffset), 0);
+}
+case false {
+let tailPtr = WordReader.read(ptr);
             return ABIDecode.decode(WordReader.advance(ptr, tailPtr), 0);
-        }
+}
+}
     }
 }
 
-forall reader baseType baseType_decoded .baseType : ABIAttribs, reader:WordReader, ABIDecoder(baseType, reader):ABIDecode(baseType_decoded) =>
-    instance ABIDecoder(memory(DynArray(baseType)), reader):ABIDecode(memory(DynArray(baseType_decoded)))
-{
-    function decode(ptr:ABIDecoder(memory(DynArray(baseType)), reader), currentHeadOffset:word) -> memory(DynArray(baseType_decoded)) {
+impl<reader, baseType, baseType_decoded> ABIDecode<ABIDecoder<memory<DynArray<baseType>>, reader>, memory<DynArray<baseType_decoded>>> where baseType: ABIAttribs, reader: WordReader, ABIDecoder<baseType, reader>: ABIDecode<baseType_decoded> {
+    function decode(ptr: ABIDecoder<memory<DynArray<baseType>>, reader>, currentHeadOffset: word) returns (memory<DynArray<baseType_decoded>>) {
         let arrayPtr = WordReader.advance(ptr, currentHeadOffset);
         let length = WordReader.read(arrayPtr);
         // this trigger a missing typedef constraint
         // let elementPtr:ABIDecoder(baseType, reader) = Typedef.abs(WordReader.advance(arrayPtr, 32));
         arrayPtr = WordReader.advance(arrayPtr, 32);
-        let prx : Proxy(baseType_decoded);
-        let result : memory(DynArray(baseType_decoded)) = allocateDynamicArray(prx, length);
+        let prx : Proxy<baseType_decoded>;
+        let result : memory<DynArray<baseType_decoded>> = allocateDynamicArray(prx, length);
         let offset : word = 0;
-        let prx : Proxy(baseType);
+        let prx : Proxy<baseType>;
         let elementHeadSize : word = ABIAttribs.headSize(prx);
 
         // TODO: surface level loops
@@ -1810,18 +1828,16 @@ forall reader baseType baseType_decoded .baseType : ABIAttribs, reader:WordReade
     }
 }
 
-forall ty reader.
-function getReader(d:ABIDecoder(ty, reader)) -> reader {
-    match d {
-      | ABIDecoder(rdr) => return rdr;
-    }
+function getReader<ty, reader>(d: ABIDecoder<ty, reader>) returns (reader) {
+    match (d) {
+case ABIDecoder(rdr) {
+return rdr;
+}
+}
 }
 
-forall baseType baseType_decoded . ABIDecoder(baseType, CalldataWordReader):ABIDecode(baseType_decoded),
-     baseType : WordReader =>
-     instance ABIDecoder(calldata(DynArray(baseType)), CalldataWordReader):ABIDecode(calldata(DynArray(baseType_decoded)))
- {
-     function decode(ptr:ABIDecoder(calldata(DynArray(baseType)), CalldataWordReader), currentHeadOffset:word) -> calldata(DynArray(baseType_decoded)) {
+impl<baseType, baseType_decoded> ABIDecode<ABIDecoder<calldata<DynArray<baseType>>, CalldataWordReader>, calldata<DynArray<baseType_decoded>>> where ABIDecoder<baseType, CalldataWordReader>: ABIDecode<baseType_decoded>, baseType: WordReader {
+     function decode(ptr: ABIDecoder<calldata<DynArray<baseType>>, CalldataWordReader>, currentHeadOffset: word) returns (calldata<DynArray<baseType_decoded>>) {
           let newptr = WordReader.advance(ptr, currentHeadOffset);
           let reader: CalldataWordReader = getReader(newptr);
           let addr: word = Typedef.rep(reader);
@@ -1835,12 +1851,9 @@ forall baseType baseType_decoded . ABIDecoder(baseType, CalldataWordReader):ABID
 // to that length word, so the elements are left in calldata and decoded on
 // demand (abiArrayLength / abiArrayGet). Because nothing is materialised here,
 // this works for any decodable element type — including multi-word ADTs such as
-// a sum(...) — which the word-per-slot memory(DynArray(...)) path cannot hold.
-forall baseType baseType_decoded .
-     ABIDecoder(baseType, CalldataWordReader):ABIDecode(baseType_decoded) =>
-     instance ABIDecoder(calldata(array(baseType)), CalldataWordReader):ABIDecode(calldata(array(baseType_decoded)))
- {
-     function decode(ptr:ABIDecoder(calldata(array(baseType)), CalldataWordReader), currentHeadOffset:word) -> calldata(array(baseType_decoded)) {
+// a `sum<...>` — which the word-per-slot `memory<DynArray<...>>` path cannot hold.
+impl<baseType, baseType_decoded> ABIDecode<ABIDecoder<calldata<array<baseType>>, CalldataWordReader>, calldata<array<baseType_decoded>>> where ABIDecoder<baseType, CalldataWordReader>: ABIDecode<baseType_decoded> {
+     function decode(ptr: ABIDecoder<calldata<array<baseType>>, CalldataWordReader>, currentHeadOffset: word) returns (calldata<array<baseType_decoded>>) {
           let headRdr = WordReader.advance(ptr, currentHeadOffset);
           let dataOffset : word = WordReader.read(headRdr);
           let dataRdr = WordReader.advance(ptr, dataOffset);
@@ -1851,7 +1864,7 @@ forall baseType baseType_decoded .
  }
 
 // Length of a decoded calldata array: the handle points at the length word.
-forall t . function abiArrayLength(a : calldata(array(t))) -> uint256 {
+function abiArrayLength<t>(a: calldata<array<t>>) returns (uint256) {
     let rdr : CalldataWordReader = CalldataWordReader(Typedef.rep(a));
     return uint256(WordReader.read(rdr));
 }
@@ -1871,32 +1884,31 @@ forall t . function abiArrayLength(a : calldata(array(t))) -> uint256 {
 //     head offset; the element's own dynamic decoder follows that offset. This
 //     is uniform across element kinds: a dynamic sum follows it and rebases to
 //     the element start, a bare bytes/string leaf follows it to its length word.
-forall t t_decoded .
-    t : ABIAttribs,
-    ABIDecoder(t, CalldataWordReader):ABIDecode(t_decoded) =>
-function abiArrayGet(a : calldata(array(t)), i : uint256) -> t_decoded {
+function abiArrayGet<t, t_decoded>(a: calldata<array<t>>, i: uint256) returns (t_decoded) where t: ABIAttribs, ABIDecoder<t, CalldataWordReader>: ABIDecode<t_decoded> {
     // Bounds check: valid indices are [0, length); i == length is already past
     // the last element, so reject i >= length (mirrors the storage-array guard).
     require(i < abiArrayLength(a), Error(0x7f52b2bf)); // ArrayOutOfBounds()
     let base : word = Typedef.rep(a);
     let elemRegion : word = base + 32;
-    let prx : Proxy(t);
+    let prx : Proxy<t>;
     let idx : word = Typedef.rep(i);
-    match ABIAttribs.isStatic(prx) {
-    | true =>
-        let elemRdr : CalldataWordReader = CalldataWordReader(elemRegion);
-        let dec : ABIDecoder(t, CalldataWordReader) = ABIDecoder(elemRdr);
+    match (ABIAttribs.isStatic(prx)) {
+case true {
+let elemRdr : CalldataWordReader = CalldataWordReader(elemRegion);
+        let dec : ABIDecoder<t, CalldataWordReader> = ABIDecoder(elemRdr);
         return ABIDecode.decode(dec, idx * ABIAttribs.headSize(prx));
-    | false =>
-        // Dynamic elements: the region is a table of 32-byte offsets (relative
+}
+case false {
+// Dynamic elements: the region is a table of 32-byte offsets (relative
         // to the region base), one per element. Hand the element decoder the
         // region base and element i's slot as its head offset; the element's own
         // (dynamic) decoder follows that offset — uniformly for a dynamic sum
-        // element or a bare bytes/string element (calldata(array(bytes))).
+        // element or a bare bytes/string element (`calldata<array<bytes>>`).
         let elemRdr : CalldataWordReader = CalldataWordReader(elemRegion);
-        let dec : ABIDecoder(t, CalldataWordReader) = ABIDecoder(elemRdr);
+        let dec : ABIDecoder<t, CalldataWordReader> = ABIDecoder(elemRdr);
         return ABIDecode.decode(dec, idx * 32);
-    }
+}
+}
 }
 
 
@@ -1919,149 +1931,145 @@ pragma no-bounded-variable-condition LVA, RVA;
 // Zeroes the storage slots in [start, endSlot). Mirrors solc's
 // clear_storage_range, used when a dynamic array shrinks so that regrowing it
 // cannot resurrect the old elements.
-function clearStorageRange(start: word, endSlot: word) -> () {
+function clearStorageRange(start: word, endSlot: word) {
     for (; start < endSlot; start += 1) {
         sstore(start, 0);
     }
 }
 
-forall self.
-class self:StorageSize {
-    function size(x:Proxy(self)) -> word;
+trait StorageSize<self> {
+    function size(x: Proxy<self>) returns (word) ;
 }
 
 
-forall self.
-default instance self:StorageSize {
-    function size(x:Proxy(self)) -> word {
+default impl<self> StorageSize<self> {
+    function size(x: Proxy<self>) returns (word) {
         return 1;
     }
 }
 
-instance ():StorageSize {
-    function size(x:Proxy(())) -> word {
+impl StorageSize<()> {
+    function size(x: Proxy<()>) returns (word) {
         return 0;
     }
 }
 
-instance word:StorageSize {
-    function size(x:Proxy(word)) -> word {
+impl StorageSize<word> {
+    function size(x: Proxy<word>) returns (word) {
         return 1;
     }
 }
 /*
-instance uint:StorageSize {
-    function size(x:Proxy(uint)) -> word {
+impl StorageSize<uint> {
+    function size(x: Proxy<uint>) returns (word) {
         return 1;
     }
 }
 */
-instance uint256:StorageSize {
-    function size(x:Proxy(uint256)) -> word {
+impl StorageSize<uint256> {
+    function size(x: Proxy<uint256>) returns (word) {
         return 1;
     }
 }
 
-instance bytes32:StorageSize {
-    function size(x:Proxy(bytes32)) -> word {
+impl StorageSize<bytes32> {
+    function size(x: Proxy<bytes32>) returns (word) {
         return 1;
     }
 }
 
-instance address:StorageSize {
-    function size(x:Proxy(address)) -> word {
+impl StorageSize<address> {
+    function size(x: Proxy<address>) returns (word) {
         return 1;
     }
 }
 
-instance string:StorageSize {
-    function size(x:Proxy(string)) -> word {
+impl StorageSize<string> {
+    function size(x: Proxy<string>) returns (word) {
         return 1;
     }
 }
 
-instance memory(string):StorageSize {
-    function size(x:Proxy(memory(string))) -> word {
+impl StorageSize<memory<string>> {
+    function size(x: Proxy<memory<string>>) returns (word) {
         return 1;
     }
 }
 
-instance bytes:StorageSize {
-    function size(x:Proxy(bytes)) -> word {
+impl StorageSize<bytes> {
+    function size(x: Proxy<bytes>) returns (word) {
         return 1;
     }
 }
 
-instance memory(bytes):StorageSize {
-    function size(x:Proxy(memory(bytes))) -> word {
+impl StorageSize<memory<bytes>> {
+    function size(x: Proxy<memory<bytes>>) returns (word) {
         return 1;
     }
 }
 
-forall a b. a:StorageSize, b:StorageSize => instance (a,b):StorageSize {
-    function size(x:Proxy((a,b))) -> word {
-        let a_sz:word = StorageSize.size(Proxy:Proxy(a));
-        let b_sz:word = StorageSize.size(Proxy:Proxy(b));
+impl<a, b> StorageSize<(a, b)> where a: StorageSize, b: StorageSize {
+    function size(x: Proxy<(a, b)>) returns (word) {
+        let a_sz:word = StorageSize.size(@a);
+        let b_sz:word = StorageSize.size(@b);
         return a_sz + b_sz;
     }
 }
 
-forall self.
-class self:StorageType {
-    function load(ptr:word) -> self;
-    function store(ptr:word, value:self) -> ();
+trait StorageType<self> {
+    function load(ptr: word) returns (self) ;
+    function store(ptr: word, value: self) ;
 }
 
 // How to copy one element of type self from one storage slot to another.
-// Whole-array assignment (a = b) copies element by element through this class,
+// Whole-array assignment (a = b) copies element by element through this trait,
 // the way solc's copy_array_to_storage calls the element's own copy routine.
 // The constraint lives on the *element* type, so it can gate CanStore.store for
-// storage(array(self)) without also gating CanStore.load, which must stay
+// storage<array<self>> without also gating CanStore.load, which must stay
 // unconstrained, a field read has to yield the array's storage reference.
-// Instances live below, next to the CanStore instances the dynamic ones rely on.
-forall self.
-class self:StorageCopy {
-    function copySlot(dst:storage(self), src:storage(self)) -> ();
+// Impls live below, next to the CanStore impls the dynamic ones rely on.
+trait StorageCopy<self> {
+    function copySlot(dst: storage<self>, src: storage<self>) ;
 }
 
-instance word:StorageType {
-    function load(ptr:word) -> word {
+impl StorageType<word> {
+    function load(ptr: word) returns (word) {
         return sload(ptr);
     }
-    function store(ptr:word, value:word) -> () {
+    function store(ptr: word, value: word) {
         sstore(ptr, value);
     }
 }
 
-instance uint256:StorageType {
-  function load(ptr:word) -> uint256 { return uint256(StorageType.load(ptr):word); }
-  function store(ptr:word, value:uint256) -> () { StorageType.store(ptr, Typedef.rep(value):word); }
+impl StorageType<uint256> {
+  function load(ptr: word) returns (uint256) { return uint256(StorageType.load(ptr)); }
+  function store(ptr: word, value: uint256) { StorageType.store(ptr, Typedef.rep(value)); }
 }
 
-instance bytes32:StorageType {
-  function load(ptr:word) -> bytes32 { return bytes32(StorageType.load(ptr):word); }
-  function store(ptr:word, value:bytes32) -> () { StorageType.store(ptr, Typedef.rep(value):word); }
+impl StorageType<bytes32> {
+  function load(ptr: word) returns (bytes32) { return bytes32(StorageType.load(ptr)); }
+  function store(ptr: word, value: bytes32) { StorageType.store(ptr, Typedef.rep(value)); }
 }
 
-instance address:StorageType {
-  function load(ptr:word) -> address { return address(StorageType.load(ptr):word); }
-  function store(ptr:word, value:address) -> () { StorageType.store(ptr, Typedef.rep(value):word); }
+impl StorageType<address> {
+  function load(ptr: word) returns (address) { return address(StorageType.load(ptr)); }
+  function store(ptr: word, value: address) { StorageType.store(ptr, Typedef.rep(value)); }
 }
 
 // -- structure fields (including contract fields)
 
-forall self fieldType offsetType.
-class self:CStructField(fieldType, offsetType) {}
-data StructField(structType, fieldSelector) = StructField(structType);
+trait CStructField<self, fieldType, offsetType> {}
+enum StructField<structType, fieldSelector> { StructField(structType) }
 
 
-data MemberAccessProxy(a, field, fieldtype, offset) = MemberAccessProxy(a, field);
+enum MemberAccessProxy<a, field, fieldtype, offset> { MemberAccessProxy(a, field) }
 
-forall a field fieldType storageType offset .
-function memberAccessBase(x:MemberAccessProxy(a, field, fieldType,  offset)) -> a {
-    match x {
-        | MemberAccessProxy(y,z) => return y;
-    }
+function memberAccessBase<a, field, fieldType, storageType, offset>(x: MemberAccessProxy<a, field, fieldType, offset>) returns (a) {
+    match (x) {
+case MemberAccessProxy(y,z) {
+return y;
+}
+}
 }
 
 
@@ -2069,141 +2077,135 @@ function memberAccessBase(x:MemberAccessProxy(a, field, fieldType,  offset)) -> 
 // Contract field access
 // ------------------------------------------------------------------
 
-forall cxt fieldSelector loadType offsetType storageType
-. StructField(ContractStorage(cxt), fieldSelector) :CStructField(storage(storageType), offsetType)
-, offsetType : StorageSize
-, storage(storageType): CanStore(loadType)
-=> instance MemberAccessProxy(ContractStorage(cxt), fieldSelector, loadType,  offsetType) : LVA (storage(storageType)) {
-   function acc (x : MemberAccessProxy(ContractStorage(cxt), fieldSelector, loadType,  offsetType)) -> storage(storageType) {
-      let offset : word = StorageSize.size(Proxy : Proxy(offsetType)) ;
-      return storage(offset):storage(storageType);
+impl<cxt, fieldSelector, loadType, offsetType, storageType> LVA<MemberAccessProxy<ContractStorage<cxt>, fieldSelector, loadType, offsetType>, storage<storageType>> where StructField<ContractStorage<cxt>, fieldSelector>: CStructField<storage<storageType>, offsetType>, offsetType: StorageSize, storage<storageType>: CanStore<loadType> {
+   function acc(x: MemberAccessProxy<ContractStorage<cxt>, fieldSelector, loadType, offsetType>) returns (storage<storageType>) {
+      let offset : word = StorageSize.size(@offsetType) ;
+      let result : storage<storageType> = storage(offset);
+      return result;
    }
 }
 
-forall cxt fieldSelector loadType offsetType storageType
-  . StructField(ContractStorage(cxt), fieldSelector):CStructField(storage(storageType), offsetType)
-  , storage(storageType):CanStore(loadType)
-  , offsetType:StorageSize
-  => instance MemberAccessProxy(ContractStorage(cxt), fieldSelector, loadType,  offsetType):RVA(loadType) {
-    function acc(x:MemberAccessProxy(ContractStorage(cxt), fieldSelector, loadType,  offsetType)) -> loadType {
-        let offset:word = StorageSize.size(Proxy:Proxy(offsetType));
-        return CanStore.load(storage(offset):storage(storageType)):loadType;
+impl<cxt, fieldSelector, loadType, offsetType, storageType> RVA<MemberAccessProxy<ContractStorage<cxt>, fieldSelector, loadType, offsetType>, loadType> where StructField<ContractStorage<cxt>, fieldSelector>: CStructField<storage<storageType>, offsetType>, storage<storageType>: CanStore<loadType>, offsetType: StorageSize {
+    function acc(x: MemberAccessProxy<ContractStorage<cxt>, fieldSelector, loadType, offsetType>) returns (loadType) {
+        let offset:word = StorageSize.size(@offsetType);
+        let slot : storage<storageType> = storage(offset);
+        return CanStore.load(slot);
     }
 }
 
 // TODO: structures other than contract context
 /*
-forall structType fieldSelector fieldType storageType offsetType
-  . StructField(structType, fieldSelector):CStructField(fieldType, offsetType)
-  , offsetType:StorageSize
-  => instance MemberAccessProxy(storage(structType), fieldSelector, fieldType,  offsetType):LVA(storage(fieldType)) {
-    function acc(x:MemberAccessProxy(storage(structType), fieldSelector, fieldType,  offsetType)) -> storage(fieldType) {
+impl<structType, fieldSelector, fieldType, offsetType>
+  LVA<MemberAccessProxy<storage<structType>, fieldSelector, fieldType, offsetType>, storage<fieldType>>
+  where StructField<structType, fieldSelector>: CStructField<fieldType, offsetType>,
+        offsetType: StorageSize {
+    function acc(x: MemberAccessProxy<storage<structType>, fieldSelector, fieldType, offsetType>) returns (storage<fieldType>) {
         let ptr:word = Typedef.rep(memberAccessBase(x));
-        let size:word = StorageSize.size(Proxy:Proxy(offsetType));
+        let size:word = StorageSize.size(@offsetType);
         return storage(ptr + size);
     }
 }
 
-forall structType fieldSelector fieldType storageType offsetType
-  . StructField(structType, fieldSelector):CStructField(fieldType, offsetType)
-  , offsetType:StorageSize
-  , fieldType:StorageType
-  => instance MemberAccessProxy(storage(structType), fieldSelector, fieldType,  offsetType):RVA(fieldType) {
-    function acc(x:MemberAccessProxy(storage(structType), fieldSelector, fieldType,  offsetType)) -> fieldType {
+impl<structType, fieldSelector, fieldType, offsetType>
+  RVA<MemberAccessProxy<storage<structType>, fieldSelector, fieldType, offsetType>, fieldType>
+  where StructField<structType, fieldSelector>: CStructField<fieldType, offsetType>,
+        offsetType: StorageSize,
+        fieldType: StorageType {
+    function acc(x: MemberAccessProxy<storage<structType>, fieldSelector, fieldType, offsetType>) returns (fieldType) {
         let ptr:word = Typedef.rep(memberAccessBase(x));
-        let size:word = StorageSize.size(Proxy:Proxy(offsetType));
-        return CanStore.load(ptr + size);
+        let size:word = StorageSize.size(@offsetType);
+        let field: storage<fieldType> = storage(ptr + size);
+        return CanStore.load(field);
     }
 }
 */
 
 
 
-data ContractStorage(cxt) = ContractStorage(cxt);
+enum ContractStorage<cxt> { ContractStorage(cxt) }
 
 
-forall member index . instance mapping(index, member):Typedef(word) {
-    function rep(x:mapping(index, member)) -> word {
-        match x {
-            | mapping(y) => return y;
-        }
+impl<member, index> Typedef<mapping(index => member), word> {
+    function rep(x: mapping(index => member)) returns (word) {
+        match (x) {
+case mapping(y) {
+return y;
+}
+}
     }
-    function abs(x:word) -> mapping(index,member) {
+    function abs(x: word) returns (mapping(index => member)) {
         return mapping(x);
     }
 }
 
 
 // cf https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html#mappings-and-dynamic-arrays
-forall index member .
-instance mapping(index, member):StorageSize {
-    function size(x:Proxy(mapping(index, member))) -> word {
+impl<index, member> StorageSize<mapping(index => member)> {
+    function size(x: Proxy<mapping(index => member)>) returns (word) {
         return 1;
     }
 }
 
-forall member . instance array(member):Typedef(word) {
-    function rep(x:array(member)) -> word {
-        match x {
-            | array(y) => return y;
-        }
+impl<member> Typedef<array<member>, word> {
+    function rep(x: array<member>) returns (word) {
+        match (x) {
+case array(y) {
+return y;
+}
+}
     }
-    function abs(x:word) -> array(member) {
+    function abs(x: word) returns (array<member>) {
         return array(x);
     }
 }
 
 // cf https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html#mappings-and-dynamic-arrays
 // the slot itself stores the array length; elements live at keccak256(slot) + i
-forall member .
-instance array(member):StorageSize {
-    function size(x:Proxy(array(member))) -> word {
+impl<member> StorageSize<array<member>> {
+    function size(x: Proxy<array<member>>) returns (word) {
         return 1;
     }
 }
 
-forall self . class self:Length {
-    function length(arr:self) -> uint256;
+trait Length<self> {
+    function length(arr: self) returns (uint256) ;
 }
 
 // Dynamic storage arrays carry their length at the slot itself (matching the
 // Solidity convention) while elements live at keccak256(slot) + i.
-forall self . class self:Array {
-    function setLength(arr:self, n:uint256) -> ();
-    function pop(arr:self) -> ();
+trait Array<self> {
+    function setLength(arr: self, n: uint256) ;
+    function pop(arr: self) ;
 }
 
 // push is split into its own MPTC so its element type only shows up where it
 // actually matters (the value being appended), without forcing `length`/
 // `setLength`/`pop` to drag along an unconstrained `elem` parameter.
-forall self elem . class self:ArrayPush(elem) {
-    function push(arr:self, val:elem) -> ();
+trait ArrayPush<self, elem> {
+    function push(arr: self, val: elem) ;
 }
 
-forall t .
-instance storage(array(t)):Length {
-    function length(arr:storage(array(t))) -> uint256 {
+impl<t> Length<storage<array<t>>> {
+    function length(arr: storage<array<t>>) returns (uint256) {
         return uint256(sload(Typedef.rep(arr)));
     }
 }
 
 // A lazily-decoded calldata array reports its length from the head length-word
 // of its handle (see abiArrayLength), so `arr.length()` resolves through the
-// same Length class / UFCS as storage arrays.
-forall t .
-instance calldata(array(t)):Length {
-    function length(arr:calldata(array(t))) -> uint256 {
+// same Length trait / UFCS as storage arrays.
+impl<t> Length<calldata<array<t>>> {
+    function length(arr: calldata<array<t>>) returns (uint256) {
         return abiArrayLength(arr);
     }
 }
 
-forall t .
-instance storage(array(t)):Array {
+impl<t> Array<storage<array<t>>> {
     // Shrinking clears the abandoned slots, matching solc's resize_array.
     // For string/bytes elements this zeroes the inline slot, which makes any
     // keccak-derived tail unreachable (reads are governed by the length word) but
     // does not reclaim it.
-    function setLength(arr:storage(array(t)), n:uint256) -> () {
+    function setLength(arr: storage<array<t>>, n: uint256) {
         let slot : word = Typedef.rep(arr);
         let oldLen : word = sload(slot);
         let newLen : word = Typedef.rep(n);
@@ -2214,7 +2216,7 @@ instance storage(array(t)):Array {
         sstore(slot, newLen);
     }
     // Zeroes the removed element before decrementing, as solc's array_pop does.
-    function pop(arr:storage(array(t))) -> () {
+    function pop(arr: storage<array<t>>) {
         let slot : word = Typedef.rep(arr);
         let n : word = sload(slot);
         if (n == 0) { out_of_bounds(); }
@@ -2224,138 +2226,129 @@ instance storage(array(t)):Array {
 }
 
 // The value pushed is whatever the element's storage reference can store, rather
-// than the element tag type itself. That is what lets array(string) accept a
-// memory(string), via storage(string):CanStore(memory(string)). For word-sized
+// than the element tag type itself. That is what lets array<string> accept a
+// memory<string>, via `storage<string>: CanStore<memory<string>>`. For word-sized
 // elements v collapses to the element type and CanStore.store delegates to
 // StorageType.store, so the generated code is unchanged.
-forall t v . storage(t):CanStore(v) =>
-instance storage(array(t)):ArrayPush(v) {
-    function push(arr:storage(array(t)), val:v) -> () {
+impl<t, v> ArrayPush<storage<array<t>>, v> where storage<t>: CanStore<v> {
+    function push(arr: storage<array<t>>, val: v) {
         let slot : word = Typedef.rep(arr);
         let n : word = sload(slot);
-        CanStore.store(storage(hash1(slot) + n):storage(t), val);
+        let element : storage<t> = storage(hash1(slot) + n);
+        CanStore.store(element, val);
         sstore(slot, n + 1);
     }
 }
 
-forall self memberRefType.
-class self:LVA(memberRefType) {
-    function acc(x:self) -> memberRefType;
+trait LVA<self, memberRefType> {
+    function acc(x: self) returns (memberRefType) ;
 }
 
 
-forall self member.
-class self:RVA(member) {
-    function acc(x:self) -> member;
+trait RVA<self, member> {
+    function acc(x: self) returns (member) ;
 }
 
-forall a b. a:RVA(b) =>
-function rval(x:a) -> b {
+function rval<a, b>(x: a) returns (b) where a: RVA<b> {
   return RVA.acc(x);
 }
 
 
 // TODO: consider merging CanStore and Assign
-forall lhs rhs.
-class lhs:Assign(rhs) {
-    function assign(l:lhs, r:rhs) -> ();
+trait Assign<lhs, rhs> {
+    function assign(l: lhs, r: rhs) ;
 }
 
 
-// a can store b; e.g. storage(string) : memory(string)
-forall a b.
-class a:CanStore(b) {
-  function store(r:a, v:b) -> ();
-  function load(r:a) -> b;
+// `a` can store `b`; e.g. `storage<string>: CanStore<memory<string>>`.
+trait CanStore<a, b> {
+  function store(r: a, v: b) ;
+  function load(r: a) returns (b) ;
 }
 
 
-forall a b. a:CanStore(b) =>
-instance a:Assign(b) {
-    function assign(l:a, r:b) -> () {
+impl<a, b> Assign<a, b> where a: CanStore<b> {
+    function assign(l: a, r: b) {
       CanStore.store(l, r);
     }
 }
 
 /*
-forall a. a:StorageType =>
-default instance a:CanStore(a) {
-    function store(l:storage(a), r:a) -> () {
+default impl<a> CanStore<storage<a>, a> where a: StorageType {
+    function store(l: storage<a>, r: a) {
       StorageType.store(Typedef.rep(l), r);
     }
-    function load(l:storage(a)) -> a {
+    function load(l: storage<a>) returns (a) {
       return StorageType.load(Typedef.rep(l));
     }
 }
 */
 
- instance storage(word):CanStore(word) {
-    function store(l:storage(word), r:word) -> () {
+ impl CanStore<storage<word>, word> {
+    function store(l: storage<word>, r: word) {
       StorageType.store(Typedef.rep(l), r);
     }
-    function load(l:storage(word)) -> word {
+    function load(l: storage<word>) returns (word) {
       return StorageType.load(Typedef.rep(l));
     }
 }
 
- instance storage(uint256):CanStore(uint256) {
-    function store(l:storage(uint256), r:uint256) -> () {
+ impl CanStore<storage<uint256>, uint256> {
+    function store(l: storage<uint256>, r: uint256) {
       StorageType.store(Typedef.rep(l), r);
     }
-    function load(l:storage(uint256)) -> uint256 {
+    function load(l: storage<uint256>) returns (uint256) {
       return StorageType.load(Typedef.rep(l));
     }
 }
 
- instance storage(bytes32):CanStore(bytes32) {
-    function store(l:storage(bytes32), r:bytes32) -> () {
+ impl CanStore<storage<bytes32>, bytes32> {
+    function store(l: storage<bytes32>, r: bytes32) {
       StorageType.store(Typedef.rep(l), r);
     }
-    function load(l:storage(bytes32)) -> bytes32 {
+    function load(l: storage<bytes32>) returns (bytes32) {
       return StorageType.load(Typedef.rep(l));
     }
 }
 
- instance storage(address):CanStore(address) {
-    function store(l:storage(address), r:address) -> () {
+ impl CanStore<storage<address>, address> {
+    function store(l: storage<address>, r: address) {
       StorageType.store(Typedef.rep(l), r);
     }
-    function load(l:storage(address)) -> address {
+    function load(l: storage<address>) returns (address) {
       return StorageType.load(Typedef.rep(l));
     }
 }
 
-// bool has no StorageType instance (it is a builtin, not a Typedef(word)), but it
+// bool has no StorageType impl (it is a builtin, not a Typedef<word>), but it
 // round-trips through word via frombool / tobool, so it can still be stored.
-instance storage(bool):CanStore(bool) {
-    function store(l:storage(bool), r:bool) -> () {
+impl CanStore<storage<bool>, bool> {
+    function store(l: storage<bool>, r: bool) {
       StorageType.store(Typedef.rep(l), frombool(r));
     }
-    function load(l:storage(bool)) -> bool {
+    function load(l: storage<bool>) returns (bool) {
       return tobool(StorageType.load(Typedef.rep(l)));
     }
 }
 
-forall k v.
- instance storage(mapping(k,v)):CanStore(storage(mapping(k,v))) {
-    function store(l:storage(mapping(k,v)), r:storage(mapping(k,v))) -> () {
+impl<k, v> CanStore<storage<mapping(k => v)>, storage<mapping(k => v)>> {
+    function store(l: storage<mapping(k => v)>, r: storage<mapping(k => v)>) {
       // StorageType.store(Typedef.rep(l), r);
       unimplemented();
     }
-    function load(l:storage(mapping(k,v))) -> storage(mapping(k,v)) {
+    function load(l: storage<mapping(k => v)>) returns (storage<mapping(k => v)>) {
       // "Loading" a storage mapping field yields its storage reference (the
       // slot); indexed access / method calls consume that reference directly.
       return l;
     }
 }
 
-forall v. v:StorageCopy =>
- instance storage(array(v)):CanStore(storage(array(v))) {
+impl<v> CanStore<storage<array<v>>, storage<array<v>>> where v: StorageCopy {
     // Whole-array assignment is a deep copy, as in Solidity: a = b resizes a
     // to b's length and then copies every
     // element. Assigning an array to itself is a no-op. A *local* bound to an
     // array field stays an alias, because a let is not an Assign.assign.
-    function store(l:storage(array(v)), r:storage(array(v))) -> () {
+    function store(l: storage<array<v>>, r: storage<array<v>>) {
       let dst : word = Typedef.rep(l);
       let src : word = Typedef.rep(r);
       if (dst != src) {
@@ -2368,11 +2361,13 @@ forall v. v:StorageCopy =>
         sstore(dst, newLen);
         let srcBase : word = hash1(src);
         for (let i = 0; i < newLen; i += 1) {
-          StorageCopy.copySlot(storage(dstBase + i):storage(v), storage(srcBase + i):storage(v));
+          let dstSlot : storage<v> = storage(dstBase + i);
+          let srcSlot : storage<v> = storage(srcBase + i);
+          StorageCopy.copySlot(dstSlot, srcSlot);
         }
       }
     }
-    function load(l:storage(array(v))) -> storage(array(v)) {
+    function load(l: storage<array<v>>) returns (storage<array<v>>) {
       // "Loading" a storage array field yields its storage reference (the
       // slot). push / pop / length / arr[i] all consume that reference, so a
       // field read like `ArrayPush.push(members, x)` must return the slot,
