@@ -1,17 +1,17 @@
 pragma no-patterson-condition A;
 
-data Wrap(a) = Wrap(a);
+enum Wrap<a> { Wrap(a) }
 
-forall a . Wrap(a):A => class a:A {}
+trait A<a> where Wrap<a>: A {}
 
-forall a . Wrap(a):A => function needsWrappedA(x:a) -> () {
+function needsWrappedA<a>(x: a) where Wrap<a>: A {
   return ();
 }
 
-forall a . a:A => function shouldUseSuperclass(x:a) -> () {
+function shouldUseSuperclass<a>(x: a) where a: A {
   return needsWrappedA(x);
 }
 
-function main() -> () {
+function main() {
   return ();
 }

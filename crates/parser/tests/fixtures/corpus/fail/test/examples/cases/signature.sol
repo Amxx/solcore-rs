@@ -1,8 +1,8 @@
-class self:Typedef(underlyingType) {
-    function rep(x:self) -> underlyingType;
+trait Typedef<self, underlyingType> {
+    function rep(x: self) returns (underlyingType) ;
 }
 
 
-forall t:Typedef(word) . function tripleFun(x:t) {
+function tripleFun<t>(x: t) returns (word) where t: Typedef<word> {
   return Typedef.rep(x);
 }

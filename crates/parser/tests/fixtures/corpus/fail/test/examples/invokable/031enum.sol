@@ -1,4 +1,4 @@
-function addW(x: Word, y:Word) -> Word {
+function addW(x: Word, y: Word) returns (Word) {
    let res : Word;
    assembly {
        res := add(x, y)
@@ -6,23 +6,29 @@ function addW(x: Word, y:Word) -> Word {
     return res;
 }
 
-class a:Enum {
-    function fromEnum(x:a) -> Word;
+trait Enum<a> {
+    function fromEnum(x: a) returns (Word) ;
   }
 
-  data Color = R | G | B
+  enum Color { R, G, B }
 
-instance Color : Enum {
-  function fromEnum(c) {
-    match c {
-      | R => return 1;
-      | Color.G => return 2;
-      | Color.B => return 3;
-    };
+impl Enum<Color> {
+  function fromEnum(c: Color) returns (Word) {
+    match (c) {
+case R {
+return 1;
+}
+case Color.G {
+return 2;
+}
+case Color.B {
+return 3;
+}
+}
   }
 }
 
-data Bool = False | True
+enum Bool { False, True }
 
 instance Bool : Enum {
   function fromEnum(b) {

@@ -1,13 +1,13 @@
 
-forall a. function fromWord(x: word) -> a {
+function fromWord<a>(x: word) returns (a) {
       let result : a;
       assembly { result := x } 
       return result;
   }
 
 contract Unsafe {
-  public function main() {
-    fromWord(7):();
+  function main() public returns (word) {
+    fromWord(7);
     return 42;
   }
 }

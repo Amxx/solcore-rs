@@ -1,0 +1,14 @@
+---
+source: crates/parser/tests/diagnostics.rs
+expression: value
+input_file: crates/parser/tests/fixtures/corpus/fail/test/examples/cases/require-annotation-missing-both.sol
+---
+error[SC0001]: named function parameter requires an explicit type
+ --> /require-annotation-missing-both.sol:2:13
+  |
+1 | // Error: top-level free function with no annotations at all
+2 | function id(x) {
+  |             ^
+3 |   return x;
+  |
+  = note: while parsing function signature

@@ -2,7 +2,7 @@ type A = B;
 type B = A;
 
 contract RecursiveTest {
-    public function main() -> word {
+    function main() public returns (word) {
         return 0;
     }
 }

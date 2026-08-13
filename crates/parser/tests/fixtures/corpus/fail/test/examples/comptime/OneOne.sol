@@ -1,4 +1,4 @@
-function addWord(l: word, r: word) -> word {
+function addWord(l: word, r: word) returns (word) {
   let rw : word;
   assembly {
       rw := add(l,r);
@@ -6,9 +6,9 @@ function addWord(l: word, r: word) -> word {
   return rw;
 }
 
-function zero () { 0 }
-function one() { addWord(1, zero()) }
+function zero () returns (word) { 0 }
+function one() returns (word) { addWord(1, zero()) }
 
 contract OneOne {
-    function main() -> word { addWord(one(), one()) }
+    function main() returns (word) { addWord(one(), one()) }
 }

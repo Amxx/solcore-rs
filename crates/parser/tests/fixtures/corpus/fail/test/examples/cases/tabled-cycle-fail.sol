@@ -1,16 +1,16 @@
 pragma no-patterson-condition A;
 pragma no-patterson-condition B;
 
-forall a . class a:A {}
-forall a . class a:B {}
+trait A<a> {}
+trait B<a> {}
 
-forall a . a:B => instance a:A {}
-forall a . a:A => instance a:B {}
+impl<a> A<a> where a: B {}
+impl<a> B<a> where a: A {}
 
-forall a . a:A => function needsA(x:a) -> () {
+function needsA<a>(x: a) where a: A {
   return ();
 }
 
-function main() -> () {
+function main() {
   return needsA(0);
 }

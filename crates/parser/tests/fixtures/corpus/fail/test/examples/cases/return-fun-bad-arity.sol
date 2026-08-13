@@ -1,6 +1,6 @@
 // INCORRECT: the signature promises a one-argument function (word) -> word,
 // but the returned lambda takes two arguments.
-function makeF(x : word) -> ((word) -> word) {
+function makeF(x: word) returns (function(word) returns (word)) {
   return lam (y : word, z : word) -> word {
     let res : word;
     assembly {

@@ -1,13 +1,13 @@
 pragma no-patterson-condition Loop;
 
-forall a . class a:Loop {}
+trait Loop<a> {}
 
-forall a . a:Loop => instance a:Loop {}
+impl<a> Loop<a> where a: Loop {}
 
-forall a . a:Loop => function needsLoop(x:a) -> () {
+function needsLoop<a>(x: a) where a: Loop {
   return ();
 }
 
-function main() -> () {
+function main() {
   return needsLoop(0);
 }
