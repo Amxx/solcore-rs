@@ -31,7 +31,7 @@ type CompiledFixture = (Vec<(OptLevel, Vec<u8>)>, E2eExecution);
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/../../tests/e2e",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn sonatina_evm_e2e(fixture: Fixture<&str>) {
     if !e2e_enabled() {
@@ -245,7 +245,7 @@ fn resolve_fixture_directives(
             }
             Item::InstanceDef(instance) => {
                 for function in instance.methods(db) {
-                    reject_non_dispatch_directives(db, *function, "instance method")?;
+                    reject_non_dispatch_directives(db, *function, "impl method")?;
                 }
             }
             Item::ContractDef(contract) => {
