@@ -12,19 +12,19 @@ export {
   ABIDecoder(*)
 };
 
-data Proxy(t) = Proxy;
-data ABIDecoder(ty, reader) = ABIDecoder(reader);
+enum Proxy<t> { Proxy }
+enum ABIDecoder<ty, reader> { ABIDecoder(reader) }
 
-forall a rep . class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a, rep> {
+  function from(x: a) returns (rep) ;
+  function to(x: rep) returns (a) ;
 }
-forall self . class self:ABIDeriving {}
-forall self . class self:ABIAttribs {
-  function headSize(ty:Proxy(self)) -> word;
-  function isStatic(ty:Proxy(self)) -> bool;
+trait ABIDeriving<self> {}
+trait ABIAttribs<self> {
+  function headSize(ty: Proxy<self>) returns (word) ;
+  function isStatic(ty: Proxy<self>) returns (bool) ;
 }
-forall decoder decoded . class decoder:ABIDecode(decoded) {
-  function decode(ptr:decoder, headOffset:word) -> decoded;
+trait ABIDecode<decoder, decoded> {
+  function decode(ptr: decoder, headOffset: word) returns (decoded) ;
 }
-forall reader . class reader:WordReader {}
+trait WordReader<reader> {}

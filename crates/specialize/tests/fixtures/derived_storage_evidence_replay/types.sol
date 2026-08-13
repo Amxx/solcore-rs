@@ -1,5 +1,5 @@
-import storage_support.{*};
+import * from storage_support;
 
 export { Box(*) };
 
-data Box(a) = Box(a);
+enum Box<a> { Box(a) }

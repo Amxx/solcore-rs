@@ -1,14 +1,14 @@
-import abi.{*};
-import reexport.{Leaf};
+import * from abi;
+import {Leaf} from reexport;
 
 export { keepCompetitorReachable };
 
 // This orphan is reachable from the entry module but is not visible in the
 // module that defines Box. A derived wrapper must replay definition-side
 // evidence rather than scanning every reachable environment.
-instance Leaf:ABIAttribs {
-  function headSize(ty:Proxy(Leaf)) -> word { return 64; }
-  function isStatic(ty:Proxy(Leaf)) -> bool { return true; }
+impl ABIAttribs<Leaf> {
+  function headSize(ty: Proxy<Leaf>) returns (word) { return 64; }
+  function isStatic(ty: Proxy<Leaf>) returns (bool) { return true; }
 }
 
-function keepCompetitorReachable() -> word { return 0; }
+function keepCompetitorReachable() returns (word) { return 0; }
