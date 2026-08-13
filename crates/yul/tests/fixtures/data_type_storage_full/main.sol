@@ -1,25 +1,27 @@
-import std.{*};
+import * from std;
 
-data Box = Box(word);
+enum Box { Box(word) }
 
-instance Box : StorageType {
-  function load(ptr : word) -> Box {
-    return Box(StorageType.load(ptr):word);
+impl StorageType<Box> {
+  function load(ptr: word) returns (Box) {
+    return Box(StorageType.load(ptr));
   }
 
-  function store(ptr : word, value : Box) -> () {
-    match value {
-      | Box(inner) => StorageType.store(ptr, inner);
-    }
+  function store(ptr: word, value: Box) {
+    match (value) {
+case Box(inner) {
+StorageType.store(ptr, inner);
+}
+}
   }
 }
 
-instance storage(Box) : CanStore(Box) {
-  function load(ptr : storage(Box)) -> Box {
-    return StorageType.load(Typedef.rep(ptr)):Box;
+impl CanStore<storage<Box>, Box> {
+  function load(ptr: storage<Box>) returns (Box) {
+    return StorageType.load(Typedef.rep(ptr));
   }
 
-  function store(ptr : storage(Box), value : Box) -> () {
+  function store(ptr: storage<Box>, value: Box) {
     StorageType.store(Typedef.rep(ptr), value);
   }
 }
@@ -27,9 +29,11 @@ instance storage(Box) : CanStore(Box) {
 contract DataTypeStorageFull {
   box : Box;
 
-  public function main() -> word {
-    match box {
-      | Box(inner) => return inner;
-    }
+  function main() public returns (word) {
+    match (box) {
+case Box(inner) {
+return inner;
+}
+}
   }
 }
