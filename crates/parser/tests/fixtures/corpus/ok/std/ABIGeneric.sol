@@ -8,46 +8,49 @@ export {
     decode
 };
 
-import std.{*};
-import std.opcodes.{mstore};
-import std.Generic.{*};
+import * from std;
+import {mstore} from std.opcodes;
+import * from std.Generic;
 
-// Marker class. Importing this module brings ABIDeriving into scope, which is
+// Marker trait. Importing this module brings ABIDeriving into scope, which is
 // the signal DeriveGeneric looks for to auto-derive a per-type ABIDecode
-// instance for local data types. ABIAttribs / ABIEncode are provided generically
+// impl for local data types. ABIAttribs / ABIEncode are provided generically
 // via the default Generic bridges below, but ABIDecode cannot be a default
-// instance (its decode returns the head variable `a` via Generic.to, a
+// impl (its decode returns the head variable `a` via Generic.to, a
 // result-position type variable the specializer cannot monomorphize), so a
-// concrete per-type instance is emitted instead — exactly as for storage.
-forall self. class self : ABIDeriving {}
+// concrete per-type impl is emitted instead — exactly as for storage.
+trait ABIDeriving<self> {}
 
 // ─── ABIAttribs for the primitive sum(f, g) type ─────────────────────────
 // headSize = 32 (tag word) + max(headSize(f), headSize(g))
 
-forall f g . f:ABIAttribs, g:ABIAttribs =>
-instance sum(f, g) : ABIAttribs {
+impl<f, g> ABIAttribs<sum<f, g>> where f: ABIAttribs, g: ABIAttribs {
     // Head footprint. A *dynamic* sum occupies a single offset word in the head
     // (its tag + branch payload live in the tail), exactly like any other
     // dynamic type. Only a fully *static* sum is laid out inline as
     // tag + widest branch; there both branches are static, so their headSize is
     // their full size and 32 + max(...) is the correct inline footprint.
-    function headSize(ty : Proxy(sum(f, g))) -> word {
-        let pf : Proxy(f);
-        let pg : Proxy(g);
-        match and(ABIAttribs.isStatic(pf), ABIAttribs.isStatic(pg)) {
-        | false => return 32;
-        | true  => return 32 + maxWord(ABIAttribs.headSize(pf), ABIAttribs.headSize(pg));
-        }
+    function headSize(ty: Proxy<sum<f, g>>) returns (word) {
+        let pf : Proxy<f>;
+        let pg : Proxy<g>;
+        match (and(ABIAttribs.isStatic(pf), ABIAttribs.isStatic(pg))) {
+case false {
+return 32;
+}
+case true {
+return 32 + maxWord(ABIAttribs.headSize(pf), ABIAttribs.headSize(pg));
+}
+}
     }
-    function isStatic(ty : Proxy(sum(f, g))) -> bool {
-        let pf : Proxy(f);
-        let pg : Proxy(g);
+    function isStatic(ty: Proxy<sum<f, g>>) returns (bool) {
+        let pf : Proxy<f>;
+        let pg : Proxy<g>;
         return and(ABIAttribs.isStatic(pf), ABIAttribs.isStatic(pg));
     }
 }
 
 // ─── ABIEncode for sum(f, g) ─────────────────────────────────────────────
-// This is the exact mirror of `ABIDecoder(sum(f, g), reader):ABIDecode` below.
+// This is the exact mirror of `ABIDecoder<sum<f, g>, reader>: ABIDecode` below.
 //
 // A STATIC sum is laid out inline in the head:
 //   [offset +  0 .. offset + 31] : tag word (0 = inl, 1 = inr)
@@ -61,41 +64,46 @@ instance sum(f, g) : ABIAttribs {
 // The tail body is itself an inline [tag][branch] sum, so decode follows the
 // offset and reads it exactly as it reads a static sum.
 
-forall f g . f:ABIAttribs, f:ABIEncode, g:ABIAttribs, g:ABIEncode =>
-instance sum(f, g) : ABIEncode {
-    function encodeInto(x : sum(f, g), basePtr : word, offset : word, tail : word) -> word {
-        let prx : Proxy(sum(f, g));
-        match ABIAttribs.isStatic(prx) {
-        // STATIC sum: inline tag at basePtr+offset, branch at offset + 32.
-        | true =>
-            match x {
-            | inl(v) =>
-                mstore(basePtr + offset, 0);
+impl<f, g> ABIEncode<sum<f, g>> where f: ABIAttribs, f: ABIEncode, g: ABIAttribs, g: ABIEncode {
+    function encodeInto(x: sum<f, g>, basePtr: word, offset: word, tail: word) returns (word) {
+        let prx : Proxy<sum<f, g>>;
+        match (ABIAttribs.isStatic(prx)) {
+// STATIC sum: inline tag at basePtr+offset, branch at offset + 32.
+case true {
+match (x) {
+case inl(v) {
+mstore(basePtr + offset, 0);
                 return ABIEncode.encodeInto(v, basePtr, offset + 32, tail);
-            | inr(v) =>
-                mstore(basePtr + offset, 1);
+}
+case inr(v) {
+mstore(basePtr + offset, 1);
                 return ABIEncode.encodeInto(v, basePtr, offset + 32, tail);
-            }
+}
+}
         // DYNAMIC sum: head slot holds a relative offset to the sum body, which
         // is laid out inline in the tail. headSize(prx) is 32 here (the offset
         // word), so the inline head footprint is computed from the branches:
         // 32 (tag) + max(headSize(f), headSize(g)).
-        | false =>
-            let pf : Proxy(f);
-            let pg : Proxy(g);
+}
+case false {
+let pf : Proxy<f>;
+            let pg : Proxy<g>;
             mstore(basePtr + offset, tail - basePtr);
             let newBase = tail;
             let innerHead = 32 + maxWord(ABIAttribs.headSize(pf), ABIAttribs.headSize(pg));
             let newTail = tail + innerHead;
-            match x {
-            | inl(v) =>
-                mstore(newBase, 0);
+            match (x) {
+case inl(v) {
+mstore(newBase, 0);
                 return ABIEncode.encodeInto(v, newBase, 32, newTail);
-            | inr(v) =>
-                mstore(newBase, 1);
+}
+case inr(v) {
+mstore(newBase, 1);
                 return ABIEncode.encodeInto(v, newBase, 32, newTail);
-            }
-        }
+}
+}
+}
+}
     }
 }
 
@@ -111,85 +119,80 @@ instance sum(f, g) : ABIEncode {
 // field, or as a `T[]` element alongside a bare `bytes`/`string` leaf, which
 // follows its offset the same way.
 
-forall f g reader .
-    reader : WordReader,
-    f : ABIAttribs,
-    g : ABIAttribs,
-    ABIDecoder(f, reader) : ABIDecode(f),
-    ABIDecoder(g, reader) : ABIDecode(g) =>
-instance ABIDecoder(sum(f, g), reader) : ABIDecode(sum(f, g)) {
-    function decode(ptr : ABIDecoder(sum(f, g), reader), headOffset : word) -> sum(f, g) {
-        match ptr {
-        | ABIDecoder(rdr) =>
-            let prx : Proxy(sum(f, g));
+impl<f, g, reader> ABIDecode<ABIDecoder<sum<f, g>, reader>, sum<f, g>> where reader: WordReader, f: ABIAttribs, g: ABIAttribs, ABIDecoder<f, reader>: ABIDecode<f>, ABIDecoder<g, reader>: ABIDecode<g> {
+    function decode(ptr: ABIDecoder<sum<f, g>, reader>, headOffset: word) returns (sum<f, g>) {
+        match (ptr) {
+case ABIDecoder(rdr) {
+let prx : Proxy<sum<f, g>>;
             // Byte offset (relative to rdr) of this sum's own start. A static sum
             // is inline at headOffset; a dynamic sum's head slot holds a 32-byte
             // offset to it, which we follow. We then rebase a decoder onto the
             // sum start and read [tag][branch] inline — so the tag match (and its
             // inl/inr) has a single, uniform shape regardless of static/dynamic.
             let sumStartOff : word;
-            match ABIAttribs.isStatic(prx) {
-            | true  => sumStartOff = headOffset;
-            | false => sumStartOff = WordReader.read(WordReader.advance(rdr, headOffset));
-            }
+            match (ABIAttribs.isStatic(prx)) {
+case true {
+sumStartOff = headOffset;
+}
+case false {
+sumStartOff = WordReader.read(WordReader.advance(rdr, headOffset));
+}
+}
             let sumRdr = WordReader.advance(rdr, sumStartOff);
             let tag = WordReader.read(sumRdr);
-            match tag {
-            | 0 =>
-                let dec_f : ABIDecoder(f, reader) = ABIDecoder(sumRdr);
+            match (tag) {
+case 0 {
+let dec_f : ABIDecoder<f, reader> = ABIDecoder(sumRdr);
                 return inl(ABIDecode.decode(dec_f, 32));
-            | _ =>
-                let dec_g : ABIDecoder(g, reader) = ABIDecoder(sumRdr);
+}
+default {
+let dec_g : ABIDecoder<g, reader> = ABIDecoder(sumRdr);
                 return inr(ABIDecode.decode(dec_g, 32));
-            }
-        }
+}
+}
+}
+}
     }
 }
 
 // ─── Default bridges: ABIAttribs and ABIEncode via Generic ───────────────
-// Any type 'a' with Generic(rep) inherits its ABI layout from rep.
+// Any type `a` with `a: Generic<rep>` inherits its ABI layout from `rep`.
 
-forall a rep . a:Generic(rep), rep:ABIAttribs =>
-default instance a : ABIAttribs {
-    function headSize(ty : Proxy(a)) -> word {
-        let prx : Proxy(rep);
+default impl<a, rep> ABIAttribs<a> where a: Generic<rep>, rep: ABIAttribs {
+    function headSize(ty: Proxy<a>) returns (word) {
+        let prx : Proxy<rep>;
         return ABIAttribs.headSize(prx);
     }
-    function isStatic(ty : Proxy(a)) -> bool {
-        let prx : Proxy(rep);
+    function isStatic(ty: Proxy<a>) returns (bool) {
+        let prx : Proxy<rep>;
         return ABIAttribs.isStatic(prx);
     }
 }
 
-forall a rep . a:Generic(rep), rep:ABIAttribs, rep:ABIEncode =>
-default instance a : ABIEncode {
-    function encodeInto(x : a, basePtr : word, offset : word, tail : word) -> word {
+default impl<a, rep> ABIEncode<a> where a: Generic<rep>, rep: ABIAttribs, rep: ABIEncode {
+    function encodeInto(x: a, basePtr: word, offset: word, tail: word) returns (word) {
         return ABIEncode.encodeInto(Generic.from(x), basePtr, offset, tail);
     }
 }
 
 // ─── Top-level generic encode function ───────────────────────────────────
-// Serialises any 'a' that has a Generic(rep) instance.
-// Only the Generic instance is required — ABIEncode is resolved via the bridge.
+// Serialises any `a` that has a `Generic<rep>` impl.
+// Only the Generic impl is required — ABIEncode is resolved via the bridge.
 
-forall a rep . a:Generic(rep), rep:ABIAttribs, rep:ABIEncode =>
-function encode(x : a, basePtr : word, offset : word, tail : word) -> word {
+function encode<a, rep>(x: a, basePtr: word, offset: word, tail: word) returns (word) where a: Generic<rep>, rep: ABIAttribs, rep: ABIEncode {
     let xrep : rep = Generic.from(x);
     return ABIEncode.encodeInto(xrep, basePtr, offset, tail);
 }
 
 // ─── Top-level generic decode function ───────────────────────────────────
-// Deserialises any 'a' that has a Generic(rep) instance.
-// Only the Generic instance is required — ABIDecode is resolved via the bridge.
+// Deserialises any `a` that has a `Generic<rep>` impl.
+// Only the Generic impl is required — ABIDecode is resolved via the bridge.
 
-forall a rep reader .
-    a : Generic(rep),
-    reader : WordReader,
-    ABIDecoder(rep, reader) : ABIDecode(rep) =>
-function decode(ptr : ABIDecoder(a, reader), headOffset : word) -> a {
-    match ptr {
-    | ABIDecoder(rdr) =>
-        let rep_ptr : ABIDecoder(rep, reader) = ABIDecoder(rdr);
+function decode<a, rep, reader>(ptr: ABIDecoder<a, reader>, headOffset: word) returns (a) where a: Generic<rep>, reader: WordReader, ABIDecoder<rep, reader>: ABIDecode<rep> {
+    match (ptr) {
+case ABIDecoder(rdr) {
+let rep_ptr : ABIDecoder<rep, reader> = ABIDecoder(rdr);
         return Generic.to(ABIDecode.decode(rep_ptr, headOffset));
-    }
+}
+}
 }
