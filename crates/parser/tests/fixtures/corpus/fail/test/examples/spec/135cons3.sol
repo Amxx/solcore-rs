@@ -1,10 +1,9 @@
 // test constructor with multiple args
-import std.{*};
+import * from std;
 // import prelude;
 
 
-forall t.t:Typedef(word) =>
-function log1(v:t, topic:word) -> () {
+function log1<t>(v: t, topic: word) where t: Typedef<word> {
   let w : word = Typedef.rep(v);
   assembly {
     mstore(0,w)
@@ -15,15 +14,17 @@ function log1(v:t, topic:word) -> () {
 contract Counter {
 
   // setCounter & getCounter are intentionally low-level to avoid clutter
-  public function setCounter(v: uint256) -> () {
-    match v { | uint256(w) =>
-      assembly {
+  function setCounter(v: uint256) public {
+    match (v) {
+case uint256(w) {
+assembly {
 	sstore(0x00, w)
       }
-    }
+}
+}
   }
 
-  public function getCounter() -> uint256 {
+  function getCounter() public returns (uint256) {
     let res;
     assembly {
       res := sload(0x00)
@@ -90,7 +91,7 @@ contract Counter {
  */
 
  // TODO: remove main, use dispatch instead
-  function main() -> uint256 {
+  function main() returns (uint256) {
     return getCounter();
   }
 
