@@ -350,14 +350,14 @@ mod tests {
 
     fn world_with_main(source: &str) -> (WorldState, Url) {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         (world, uri)
     }
 
     #[test]
     fn folds_imports_comments_items_and_nested_blocks() {
-        let source = "// first\n// second\nimport alpha;\nimport beta;\n\n/* block\n   comment */\ncontract Box {\n  function get() -> word {\n    if true {\n      return 1;\n    }\n  }\n}\n";
+        let source = "// first\n// second\nimport alpha;\nimport beta;\n\n/* block\n   comment */\ncontract Box {\n  function get() returns (word) {\n    if (true) {\n      return 1;\n    }\n  }\n}\n";
         let (world, uri) = world_with_main(source);
         let folds = handle_folding_range(&world, &uri).expect("folding ranges");
 
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn lexical_folding_ignores_delimiters_in_unicode_strings_and_comments() {
-        let source = "function main() {\n  let label = \"😀 { not a block }\";\n  /* { ignored } */\n  {\n    return 1;\n  }\n}\n";
+        let source = "function main() returns (word) {\n  let label = \"😀 { not a block }\";\n  /* { ignored } */\n  {\n    return 1;\n  }\n}\n";
         let (world, uri) = world_with_main(source);
         let folds = handle_folding_range(&world, &uri).expect("folding ranges");
 
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn malformed_source_still_returns_balanced_inner_blocks() {
-        let source = "function main() {\n  {\n    return 1;\n  }\n";
+        let source = "function main() returns (word) {\n  {\n    return 1;\n  }\n";
         let (world, uri) = world_with_main(source);
         let folds = handle_folding_range(&world, &uri).expect("folding ranges");
 
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn nested_blocks_with_the_same_line_extent_remain_distinct() {
-        let source = "function main() { if true {\n  return 1;\n} }\n";
+        let source = "function main() returns (word) { if (true) {\n  return 1;\n} }\n";
         let (world, uri) = world_with_main(source);
         let folds = handle_folding_range(&world, &uri).expect("folding ranges");
         let structural = folds
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn unknown_document_has_no_folding_result() {
         let world = WorldState::new();
-        let uri = Url::parse("file:///main/missing.solc").expect("uri");
+        let uri = Url::parse("file:///main/missing.sol").expect("uri");
         assert_eq!(handle_folding_range(&world, &uri), None);
     }
 }

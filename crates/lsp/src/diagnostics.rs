@@ -164,7 +164,7 @@ mod tests {
 
     fn world_with_main(source: &str) -> (WorldState, Url) {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         (world, uri)
     }
@@ -208,14 +208,14 @@ mod tests {
 
     #[test]
     fn clean_program_has_no_diagnostics() {
-        let (world, uri) = world_with_main("function main() -> word {\n  return 1;\n}\n");
+        let (world, uri) = world_with_main("function main() returns (word) {\n  return 1;\n}\n");
 
         assert!(compute_diagnostics(&world, &uri).is_empty());
     }
 
     #[test]
     fn type_error_maps_to_lsp_error_with_range() {
-        let source = "function f() -> word {\n  return true;\n}\n";
+        let source = "function f() returns (word) {\n  return true;\n}\n";
         let (world, uri) = world_with_main(source);
 
         let diagnostics = compute_diagnostics(&world, &uri);
@@ -234,10 +234,10 @@ mod tests {
     #[test]
     fn sibling_import_open_in_workspace_has_no_module_not_found_diagnostic() {
         let mut world = WorldState::new();
-        let main_uri = Url::parse("file:///main/main.solc").expect("main uri");
-        let math_uri = Url::parse("file:///main/math.solc").expect("math uri");
-        let main = "import math.{double};\n\nfunction main() -> word {\n  return double(21);\n}\n";
-        let math = "function double(x: word) -> word {\n  let res: word;\n  assembly {\n    res := add(x, x)\n  }\n  return res;\n}\n\nexport { double };\n";
+        let main_uri = Url::parse("file:///main/main.sol").expect("main uri");
+        let math_uri = Url::parse("file:///main/math.sol").expect("math uri");
+        let main = "import {double} from math;\n\nfunction main() returns (word) {\n  return double(21);\n}\n";
+        let math = "function double(x: word) returns (word) {\n  let res: word;\n  assembly {\n    res := add(x, x)\n  }\n  return res;\n}\n\nexport { double };\n";
 
         assert!(world.open_document(main_uri.clone(), main.to_owned()));
         let _ = compute_diagnostics(&world, &main_uri);
@@ -250,10 +250,10 @@ mod tests {
     #[test]
     fn sibling_import_opened_before_importer_has_no_module_not_found_diagnostic() {
         let mut world = WorldState::new();
-        let math_uri = Url::parse("file:///main/math.solc").expect("math uri");
-        let main_uri = Url::parse("file:///main/main.solc").expect("main uri");
-        let math = "function double(x: word) -> word { return x; }\n\nexport { double };\n";
-        let main = "import math.{double};\n\nfunction main() -> word {\n  return double(21);\n}\n";
+        let math_uri = Url::parse("file:///main/math.sol").expect("math uri");
+        let main_uri = Url::parse("file:///main/main.sol").expect("main uri");
+        let math = "function double(x: word) returns (word) { return x; }\n\nexport { double };\n";
+        let main = "import {double} from math;\n\nfunction main() returns (word) {\n  return double(21);\n}\n";
 
         assert!(world.open_document(math_uri, math.to_owned()));
         assert!(world.open_document(main_uri.clone(), main.to_owned()));
@@ -265,12 +265,12 @@ mod tests {
     #[test]
     fn fallback_diagnostics_for_unreachable_importer_update_after_sibling_opens() {
         let mut world = WorldState::new();
-        let entry_uri = Url::parse("file:///main/entry.solc").expect("entry uri");
-        let main_uri = Url::parse("file:///main/main.solc").expect("main uri");
-        let math_uri = Url::parse("file:///main/math.solc").expect("math uri");
-        let entry = "function entry() -> word { return 0; }\n";
-        let main = "import math.{double};\n\nfunction main() -> word {\n  return double(21);\n}\n";
-        let math = "function double(x: word) -> word { return x; }\n\nexport { double };\n";
+        let entry_uri = Url::parse("file:///main/entry.sol").expect("entry uri");
+        let main_uri = Url::parse("file:///main/main.sol").expect("main uri");
+        let math_uri = Url::parse("file:///main/math.sol").expect("math uri");
+        let entry = "function entry() returns (word) { return 0; }\n";
+        let main = "import {double} from math;\n\nfunction main() returns (word) {\n  return double(21);\n}\n";
+        let math = "function double(x: word) returns (word) { return x; }\n\nexport { double };\n";
 
         assert!(world.open_document(entry_uri, entry.to_owned()));
         assert!(world.open_document(main_uri.clone(), main.to_owned()));
@@ -295,13 +295,14 @@ mod tests {
         use std::{sync::mpsc, time::Duration};
 
         let mut world = WorldState::new();
-        let entry_uri = Url::parse("file:///main/entry.solc").expect("entry uri");
-        let main_uri = Url::parse("file:///main/main.solc").expect("main uri");
-        let math_uri = Url::parse("file:///main/math.solc").expect("math uri");
+        let entry_uri = Url::parse("file:///main/entry.sol").expect("entry uri");
+        let main_uri = Url::parse("file:///main/main.sol").expect("main uri");
+        let math_uri = Url::parse("file:///main/math.sol").expect("math uri");
         let shadow_uri = Url::parse("file:///main/math.txt").expect("shadow uri");
-        let entry = "function entry() -> word { return 0; }\n";
-        let main = "import math.{double};\nfunction main() -> word { return double(21); }\n";
-        let math = "function double(x: word) -> word { return x; }\nexport { double };\n";
+        let entry = "function entry() returns (word) { return 0; }\n";
+        let main =
+            "import {double} from math;\nfunction main() returns (word) { return double(21); }\n";
+        let math = "function double(x: word) returns (word) { return x; }\nexport { double };\n";
 
         assert!(world.open_document(entry_uri, entry.to_owned()));
         assert!(world.open_document(main_uri.clone(), main.to_owned()));
@@ -326,8 +327,8 @@ mod tests {
         let result = std::thread::Builder::new()
             .stack_size(1024 * 1024)
             .spawn(|| {
-                let mut source = "function main() -> word { return ".to_owned();
-                source.push_str(&"if true then 0 else ".repeat(130));
+                let mut source = "function main() returns (word) { return ".to_owned();
+                source.push_str(&"true ? 0 : ".repeat(130));
                 source.push_str("0; }\n");
                 let (world, uri) = world_with_main(&source);
 
@@ -349,14 +350,14 @@ mod tests {
     #[test]
     fn open_document_diagnostics_refresh_importer_when_sibling_changes() {
         let mut world = WorldState::new();
-        let entry_uri = Url::parse("file:///main/entry.solc").expect("entry uri");
-        let main_uri = Url::parse("file:///main/main.solc").expect("main uri");
-        let math_uri = Url::parse("file:///main/math.solc").expect("math uri");
-        let entry = "function entry() -> word { return 0; }\n";
-        let main = "import math.{double};\n\nfunction main() -> word {\n  return double(21);\n}\n";
-        let math_no_export = "function double(x: word) -> word { return x; }\n";
+        let entry_uri = Url::parse("file:///main/entry.sol").expect("entry uri");
+        let main_uri = Url::parse("file:///main/main.sol").expect("main uri");
+        let math_uri = Url::parse("file:///main/math.sol").expect("math uri");
+        let entry = "function entry() returns (word) { return 0; }\n";
+        let main = "import {double} from math;\n\nfunction main() returns (word) {\n  return double(21);\n}\n";
+        let math_no_export = "function double(x: word) returns (word) { return x; }\n";
         let math_with_export =
-            "function double(x: word) -> word { return x; }\n\nexport { double };\n";
+            "function double(x: word) returns (word) { return x; }\n\nexport { double };\n";
 
         assert!(world.open_document(entry_uri, entry.to_owned()));
         assert!(world.open_document(main_uri.clone(), main.to_owned()));
@@ -387,12 +388,12 @@ mod tests {
     #[test]
     fn adding_export_via_change_clears_unknown_import_item() {
         let mut world = WorldState::new();
-        let main_uri = Url::parse("file:///main/main.solc").expect("main uri");
-        let math_uri = Url::parse("file:///main/math.solc").expect("math uri");
-        let main = "import math.{double};\n\nfunction main() -> word {\n  return double(21);\n}\n";
-        let math_no_export = "function double(x: word) -> word { return x; }\n";
+        let main_uri = Url::parse("file:///main/main.sol").expect("main uri");
+        let math_uri = Url::parse("file:///main/math.sol").expect("math uri");
+        let main = "import {double} from math;\n\nfunction main() returns (word) {\n  return double(21);\n}\n";
+        let math_no_export = "function double(x: word) returns (word) { return x; }\n";
         let math_with_export =
-            "function double(x: word) -> word { return x; }\n\nexport { double };\n";
+            "function double(x: word) returns (word) { return x; }\n\nexport { double };\n";
 
         assert!(world.open_document(main_uri.clone(), main.to_owned()));
         assert!(world.open_document(math_uri.clone(), math_no_export.to_owned()));
@@ -417,14 +418,14 @@ mod tests {
     #[test]
     fn adding_export_via_change_clears_unknown_import_item_entry_drift() {
         let mut world = WorldState::new();
-        let entry_uri = Url::parse("file:///main/entry.solc").expect("entry uri");
-        let main_uri = Url::parse("file:///main/main.solc").expect("main uri");
-        let math_uri = Url::parse("file:///main/math.solc").expect("math uri");
-        let entry = "function entry() -> word { return 0; }\n";
-        let main = "import math.{double};\n\nfunction main() -> word {\n  return double(21);\n}\n";
-        let math_no_export = "function double(x: word) -> word { return x; }\n";
+        let entry_uri = Url::parse("file:///main/entry.sol").expect("entry uri");
+        let main_uri = Url::parse("file:///main/main.sol").expect("main uri");
+        let math_uri = Url::parse("file:///main/math.sol").expect("math uri");
+        let entry = "function entry() returns (word) { return 0; }\n";
+        let main = "import {double} from math;\n\nfunction main() returns (word) {\n  return double(21);\n}\n";
+        let math_no_export = "function double(x: word) returns (word) { return x; }\n";
         let math_with_export =
-            "function double(x: word) -> word { return x; }\n\nexport { double };\n";
+            "function double(x: word) returns (word) { return x; }\n\nexport { double };\n";
 
         assert!(world.open_document(entry_uri, entry.to_owned()));
         assert!(world.open_document(main_uri.clone(), main.to_owned()));
