@@ -1,5 +1,5 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 // End-to-end (runs on evmone via the testrunner) check that Yul `break`,
 // `continue` and `leave` in inline assembly don't just parse, but actually
@@ -12,7 +12,7 @@ contract C {
     //   2 + 3 + 4 + 5 = 14
     // A miscompiled `continue` would also add 0 and 1 (=> 15); a broken `break`
     // would keep going and add 6..9 as well.
-    public function loopSum() -> uint256 {
+    function loopSum() public returns (uint256) {
         let result : word;
         assembly {
             result := 0
@@ -34,7 +34,7 @@ contract C {
     //   clamp(2) = 102, clamp(9) = 3  =>  102 + 3 = 105
     // A broken `leave` would fall through and add 100 to the x > 3 branch too
     // (clamp(9) => 103 => total 205).
-    public function clampSum() -> uint256 {
+    function clampSum() public returns (uint256) {
         let result : word;
         assembly {
             function clamp(x) -> y {

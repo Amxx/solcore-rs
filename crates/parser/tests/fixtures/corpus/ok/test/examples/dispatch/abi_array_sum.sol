@@ -31,18 +31,26 @@ contract Batch {
   // discriminates the constructor rather than echoing the raw tag word.
   function tagOf(ops: calldata<array<Operation>>, i: uint256) public returns (uint256) {
     let op : Operation = ops[i];
-    match op {
-      | Operation.Approve(_) => return uint256(16);
-      | Operation.Reject(_)  => return uint256(32);
-    }
+    match (op) {
+case Operation.Approve(_) {
+return uint256(16);
+}
+case Operation.Reject(_) {
+return uint256(32);
+}
+}
   }
 
   // Payload (the uint256) of element i, regardless of constructor.
-  public function amountOf(ops : calldata(array(Operation)), i : uint256) -> uint256 {
+  function amountOf(ops: calldata<array<Operation>>, i: uint256) public returns (uint256) {
     let op : Operation = ops[i];
-    match op {
-      | Operation.Approve(v) => return v;
-      | Operation.Reject(v)  => return v;
-    }
+    match (op) {
+case Operation.Approve(v) {
+return v;
+}
+case Operation.Reject(v) {
+return v;
+}
+}
   }
 }

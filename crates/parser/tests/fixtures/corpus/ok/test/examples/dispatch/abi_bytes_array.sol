@@ -1,7 +1,7 @@
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
 // calldata(array(bytes)) — a dynamic array whose element is itself dynamic, the
 // canonical Solidity `bytes[]`. After the length word the region is a table of
@@ -14,12 +14,12 @@ contract BytesArray {
   constructor() {}
 
   // The i-th bytes element.
-  public function at(items : calldata(array(memory(bytes))), i : uint256) -> memory(bytes) {
+  function at(items: calldata<array<memory<bytes>>>, i: uint256) public returns (memory<bytes>) {
     return items[i];
   }
 
   // Number of elements.
-  public function count(items : calldata(array(memory(bytes)))) -> uint256 {
+  function count(items: calldata<array<memory<bytes>>>) public returns (uint256) {
     return items.length();
   }
 }

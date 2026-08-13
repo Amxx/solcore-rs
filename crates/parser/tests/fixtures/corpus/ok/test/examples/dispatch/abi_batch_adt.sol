@@ -1,7 +1,7 @@
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
 // Complex nested-ADT ABI decode over a calldata dynamic array. The element is a
 // three-level algebraic type built from sums *and* products:
@@ -27,24 +27,32 @@ import std.ABIGeneric.{*};
 // real calldata) needs the exact solcore-generated selector for the nested-ADT
 // signature, which has to be captured from a local sol-core run.
 
-data Operation = AddSigner(address) | RemoveSigner(address);
-data Signature = ECDSA(bytes32, bytes32) | Contract(address);
-data Batch = Queue(Operation, Signature) | Execute(uint256, memory(bytes));
+enum Operation { AddSigner(address), RemoveSigner(address) }
+enum Signature { ECDSA(bytes32, bytes32), Contract(address) }
+enum Batch { Queue(Operation, Signature), Execute(uint256, memory<bytes>) }
 
 // Address added by an AddSigner op (address(0) for a RemoveSigner).
-function addedSigner(op : Operation) -> address {
-    match op {
-      | Operation.AddSigner(a)    => return a;
-      | Operation.RemoveSigner(_) => return address(0);
-    }
+function addedSigner(op: Operation) returns (address) {
+    match (op) {
+case Operation.AddSigner(a) {
+return a;
+}
+case Operation.RemoveSigner(_) {
+return address(0);
+}
+}
 }
 
 // Verifying contract address of a Contract signature (address(0) for ECDSA).
-function contractVerifier(sig : Signature) -> address {
-    match sig {
-      | Signature.Contract(a) => return a;
-      | Signature.ECDSA(_, _) => return address(0);
-    }
+function contractVerifier(sig: Signature) returns (address) {
+    match (sig) {
+case Signature.Contract(a) {
+return a;
+}
+case Signature.ECDSA(_, _) {
+return address(0);
+}
+}
 }
 
 contract BatchDecoder {
@@ -52,22 +60,30 @@ contract BatchDecoder {
 
   // From a Queue(AddSigner(a), Contract(c)) element, return (a, c): the signer
   // being added and the contract that verifies the queued action.
-  public function queueSigner(items : calldata(array(Batch)), i : uint256) -> (address, address) {
+  function queueSigner(items: calldata<array<Batch>>, i: uint256) public returns (address, address) {
     let b : Batch = items[i];
-    match b {
-      | Batch.Queue(op, sig) => return (addedSigner(op), contractVerifier(sig));
-      | Batch.Execute(_, _)  => return (address(0), address(0));
-    }
+    match (b) {
+case Batch.Queue(op, sig) {
+return (addedSigner(op), contractVerifier(sig));
+}
+case Batch.Execute(_, _) {
+return (address(0), address(0));
+}
+}
   }
 
   // The payload bytes carried by an Execute element.
-  public function execPayload(items : calldata(array(Batch)), i : uint256) -> memory(bytes) {
+  function execPayload(items: calldata<array<Batch>>, i: uint256) public returns (memory<bytes>) {
     let b : Batch = items[i];
-    let out : memory(bytes);
-    match b {
-      | Batch.Execute(_, payload) => out = payload;
-      | Batch.Queue(_, _)         => revertEmpty();
-    }
+    let out : memory<bytes>;
+    match (b) {
+case Batch.Execute(_, payload) {
+out = payload;
+}
+case Batch.Queue(_, _) {
+revertEmpty();
+}
+}
     return out;
   }
 }

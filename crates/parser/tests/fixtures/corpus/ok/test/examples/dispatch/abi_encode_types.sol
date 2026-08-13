@@ -1,10 +1,10 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
 
-// Direct tests for the top-level `abi_encode` function (std.solc) across both
+// Direct tests for the top-level `abi_encode` function (std.sol) across both
 // static and dynamic types.
 //
 // Each method encodes a value with `abi_encode` and returns the resulting
@@ -26,37 +26,37 @@ contract AbiEncodeTypes {
   // --- static ---
 
   // uint256 is written directly into the head as one word.
-  public function encUint(x : uint256) -> memory(bytes) {
+  function encUint(x: uint256) public returns (memory<bytes>) {
     return abi_encode(x);
   }
 
   // bool encodes as a single 0/1 word.
-  public function encBool(x : bool) -> memory(bytes) {
+  function encBool(x: bool) public returns (memory<bytes>) {
     return abi_encode(x);
   }
 
   // address is left-padded into a single word.
-  public function encAddr(x : address) -> memory(bytes) {
+  function encAddr(x: address) public returns (memory<bytes>) {
     return abi_encode(x);
   }
 
   // A fully static tuple has both words in the head, with no offset.
-  public function encPair(a : uint256, b : uint256) -> memory(bytes) {
+  function encPair(a: uint256, b: uint256) public returns (memory<bytes>) {
     return abi_encode((a, b));
   }
 
   // --- dynamic ---
 
   // A string gets a head offset word pointing at a `[len][data]` tail.
-  public function encStr() -> memory(bytes) {
+  function encStr() public returns (memory<bytes>) {
     let raw : string = "abc";
-    let s : memory(string) = Str.fromString(raw);
+    let s : memory<string> = Str.fromString(raw);
     return abi_encode(s);
   }
 
   // A dynamic array gets a head offset word pointing at a `[len][elems]` tail.
-  public function encArr() -> memory(bytes) {
-    let a : memory(DynArray(uint256)) = [11, 22, 33];
+  function encArr() public returns (memory<bytes>) {
+    let a : memory<DynArray<uint256>> = [11, 22, 33];
     return abi_encode(a);
   }
 }

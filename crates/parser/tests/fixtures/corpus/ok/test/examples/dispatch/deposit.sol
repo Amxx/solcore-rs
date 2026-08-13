@@ -1,10 +1,10 @@
-import std.{*};
-import std.dispatch.{*};
-import std.opcodes.{callvalue};
+import * from std;
+import * from std.dispatch;
+import {callvalue} from std.opcodes;
 
 // TODO: Should use uint64.
 // Assumes 64-bit input.
-function to_little_endian_64(v: uint256) -> memory(bytes) {
+function to_little_endian_64(v: uint256) returns (memory<bytes>) {
     let res: word = allocate_memory(32 + 8);
     let value: word = Typedef.rep(v);
     assembly {
@@ -23,11 +23,11 @@ function to_little_endian_64(v: uint256) -> memory(bytes) {
 
 // No constants are supported yet, using this as a workaround.
 // Defining variables outside of contract/function is not supported.
-function DEPOSIT_CONTRACT_TREE_DEPTH() -> uint256 {
+function DEPOSIT_CONTRACT_TREE_DEPTH() returns (uint256) {
     return 32;
 }
 
-function MAX_DEPOSIT_COUNT() -> uint256 {
+function MAX_DEPOSIT_COUNT() returns (uint256) {
     // uint constant MAX_DEPOSIT_COUNT = 2**DEPOSIT_CONTRACT_TREE_DEPTH - 1;
     // TODO: Could use Bounded(uint32).maxVal()
     return 0xFFFFFFFF;
@@ -36,8 +36,8 @@ function MAX_DEPOSIT_COUNT() -> uint256 {
 contract DepositContract {
   deposit_count : uint256;
   // TODO: use fixed-size arrays of DEPOSIT_CONTRACT_TREE_DEPTH() length
-  branch : array(bytes32);
-  zero_hashes : array(bytes32);
+  branch : array<bytes32>;
+  zero_hashes : array<bytes32>;
 
   constructor() {
     // Dynamic storage arrays start empty and indexed access is bounds-checked,
@@ -55,11 +55,11 @@ contract DepositContract {
   }
 
   // TODO: this is for testing only
-  public function get_zero_hash(index: uint256) -> bytes32 {
+  function get_zero_hash(index: uint256) public returns (bytes32) {
     return zero_hashes[index];
   }
 
-  public function get_deposit_root() -> bytes32 {
+  function get_deposit_root() public returns (bytes32) {
     let node: bytes32;
     let size = deposit_count;
     for (let height = 0; height < DEPOSIT_CONTRACT_TREE_DEPTH(); height += 1) {
@@ -79,13 +79,13 @@ contract DepositContract {
     ));
   }
 
-  public function get_deposit_count() -> memory(bytes) {
+  function get_deposit_count() public returns (memory<bytes>) {
     return to_little_endian_64(deposit_count);
   }
 
   // TODO: once string literals are properly supported, change errors to messages
   // matching the deposit contract, full 100% identical behaviour.
-  public payable function deposit(pubkey: memory(bytes), withdrawal_credentials: memory(bytes), signature: memory(bytes), deposit_data_root: bytes32) -> () {
+  function deposit(pubkey: memory<bytes>, withdrawal_credentials: memory<bytes>, signature: memory<bytes>, deposit_data_root: bytes32) public payable {
     // Extended ABI length checks since dynamic types are used.
     require(MemorySize.len(pubkey) == 48, Error(0x9ca717ed)); // InvalidPubkeyLength()
     require(MemorySize.len(withdrawal_credentials) == 32, Error(0x3debbf1e)); // InvalidWithdrawalCredentialsLength()
@@ -101,7 +101,7 @@ contract DepositContract {
     // <= type(uint64).max
     require(deposit_amount <= 0xffffffffffffffff, Error(0x2aa66734)); // DepositValueTooHigh()
 
-    let amount: memory(bytes) = to_little_endian_64(uint256(deposit_amount));
+    let amount: memory<bytes> = to_little_endian_64(uint256(deposit_amount));
     // TODO: emit DepositEvent
     /*
     event DepositEvent(
@@ -159,7 +159,7 @@ contract DepositContract {
     assert(false);
   }
 
-  public function supportsInterface(interfaceId: bytes4) -> bool {
+  function supportsInterface(interfaceId: bytes4) public returns (bool) {
     unimplemented();
     return false;
   }
