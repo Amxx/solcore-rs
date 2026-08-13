@@ -23,29 +23,29 @@ error[SC0231]: public function `echo` ABI for contract `C` cannot use visible ma
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ external ABI evidence must be compiler-owned and canonical
 23 | }
    |
-   = note: instance `ABIDecode` can override canonical `ABIDecode` behavior
-   = help: remove the visible manual ABI instance or keep this declaration out of the external ABI
+   = note: impl `ABIDecode` can override canonical `ABIDecode` behavior
+   = help: remove the visible manual ABI impl or keep this declaration out of the external ABI
 ---
 
 error[SC0231]: public function `echo` ABI for contract `C` cannot use visible manual `ABIEncode` evidence
-  --> /main/main.solc:22:3
+  --> /main/main.sol:22:3
    |
 21 | contract C {
-22 |   public function echo(value: word) -> word { return value; }
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ external ABI evidence must be compiler-owned and canonical
+22 |   function echo(value: word) public returns (word) { return value; }
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ external ABI evidence must be compiler-owned and canonical
 23 | }
    |
-   = note: instance `ABIEncode` can override canonical `ABIEncode` behavior
-   = help: remove the visible manual ABI instance or keep this declaration out of the external ABI
+   = note: impl `ABIEncode` can override canonical `ABIEncode` behavior
+   = help: remove the visible manual ABI impl or keep this declaration out of the external ABI
 ---
 
 error[SC0231]: public function `echo` ABI for contract `C` cannot use visible manual `SigString` evidence
-  --> /main/main.solc:22:3
+  --> /main/main.sol:22:3
    |
 21 | contract C {
-22 |   public function echo(value: word) -> word { return value; }
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ external ABI evidence must be compiler-owned and canonical
+22 |   function echo(value: word) public returns (word) { return value; }
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ external ABI evidence must be compiler-owned and canonical
 23 | }
    |
-   = note: instance `SigString` can override canonical `SigString` behavior
-   = help: remove the visible manual ABI instance or keep this declaration out of the external ABI
+   = note: impl `SigString` can override canonical `SigString` behavior
+   = help: remove the visible manual ABI impl or keep this declaration out of the external ABI

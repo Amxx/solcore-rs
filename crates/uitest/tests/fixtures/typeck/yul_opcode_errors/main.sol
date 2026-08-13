@@ -1,4 +1,4 @@
-function badYul() -> word {
+function badYul() returns (word) {
   let x : word;
   assembly {
     let one := add(1)

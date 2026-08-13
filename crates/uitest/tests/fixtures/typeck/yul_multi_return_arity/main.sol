@@ -1,5 +1,5 @@
 contract YulMultiRetBad {
-  public function main() -> word {
+  function main() public returns (word) {
     let x : word;
     let y : word;
     let z : word;
