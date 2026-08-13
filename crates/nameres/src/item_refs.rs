@@ -412,12 +412,19 @@ pub(super) fn select_import_refs<'db>(
         .iter()
         .map(|hidden| spanned_name_text(db, &hidden.name))
         .collect();
-    let mut selected = match selector {
-        ImportSelector::Wildcard => available.to_vec(),
+    let selected = match selector {
+        ImportSelector::Wildcard => available
+            .iter()
+            .filter(|item_ref| !hidden.contains(&item_ref.public_name))
+            .cloned()
+            .collect(),
         ImportSelector::Names(names) => names
             .iter()
-            .flat_map(|selected| {
+            .filter_map(|selected| {
                 let source_name = spanned_name_text(db, &selected.name);
+                (!hidden.contains(&source_name)).then_some((selected, source_name))
+            })
+            .flat_map(|(selected, source_name)| {
                 let local_name = selected
                     .alias
                     .as_ref()
@@ -449,7 +456,6 @@ pub(super) fn select_import_refs<'db>(
             })
             .collect(),
     };
-    selected.retain(|item_ref| !hidden.contains(&item_ref.public_name));
     let selected = unique_import_bindings(selected);
     tracing::trace!(
         target: "nameres::imports",

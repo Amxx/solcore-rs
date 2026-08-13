@@ -107,8 +107,8 @@ impl solcore_nameres::Db for TestDb {
 
 #[test]
 fn module_diagnostics_backdates_after_same_module_body_literal_edit() {
-    let before = "function main() -> word {\n  return 1;\n}\n";
-    let after = "function main() -> word {\n  return 2;\n}\n";
+    let before = "function main() returns (word) {\n  return 1;\n}\n";
+    let after = "function main() returns (word) {\n  return 2;\n}\n";
     let (mut db, file, key) = db_with_main(before);
 
     {
@@ -150,7 +150,7 @@ fn module_diagnostics_backdates_after_same_module_body_literal_edit() {
 
 #[test]
 fn body_diagnostics_key_excludes_module_env_diagnostics() {
-    let (db, file, key) = db_with_main("function main() -> word { return 1; }\n");
+    let (db, file, key) = db_with_main("function main() returns (word) { return 1; }\n");
     let module = module_id_from_key(&db, &key);
     let hir_module = parse_file_to_hir(&db, file).module(&db);
     let body = hir_module
@@ -206,9 +206,9 @@ fn body_diagnostics_key_excludes_module_env_diagnostics() {
 
 #[test]
 fn duplicate_export_diagnostics_backdate_after_unrelated_body_length_edit() {
-    let before = "export a.{f};\nexport b.{f};\n\nfunction unrelated() -> word {\n  return 1;\n}\n";
-    let after =
-        "export a.{f};\nexport b.{f};\n\nfunction unrelated() -> word {\n  return 123456789;\n}\n";
+    let before =
+        "export a.{f};\nexport b.{f};\n\nfunction unrelated() returns (word) {\n  return 1;\n}\n";
+    let after = "export a.{f};\nexport b.{f};\n\nfunction unrelated() returns (word) {\n  return 123456789;\n}\n";
     let (mut db, file, key) = db_with_duplicate_export_main(before);
 
     let before_ids = {
@@ -299,7 +299,7 @@ fn db_with_main(content: &str) -> (TestDb, SourceFile, ModuleKey) {
     db.module_fs_snapshot = Some(empty_module_fs_snapshot(&db));
     let file = SourceFile::new(
         &db,
-        "memory:///main.solc".parse().expect("valid URL"),
+        "memory:///main.sol".parse().expect("valid URL"),
         Some(content.to_owned()),
     );
     let key = ModuleKey {
@@ -322,11 +322,11 @@ fn db_with_duplicate_export_main(content: &str) -> (TestDb, SourceFile, ModuleKe
     for (path, source) in [
         (
             vec!["a"],
-            "function f() -> word { return 0; }\nexport { f };\n",
+            "function f() returns (word) { return 0; }\nexport { f };\n",
         ),
         (
             vec!["b"],
-            "function f() -> word { return 0; }\nexport { f };\n",
+            "function f() returns (word) { return 0; }\nexport { f };\n",
         ),
     ] {
         let key = ModuleKey {
@@ -339,7 +339,7 @@ fn db_with_duplicate_export_main(content: &str) -> (TestDb, SourceFile, ModuleKe
 
     let file = SourceFile::new(
         &db,
-        "memory:///main.solc".parse().expect("valid URL"),
+        "memory:///main.sol".parse().expect("valid URL"),
         Some(content.to_owned()),
     );
     let key = ModuleKey {
@@ -355,7 +355,7 @@ fn empty_module_fs_snapshot(db: &TestDb) -> ModuleFsSnapshot {
 }
 
 fn source_file(db: &TestDb, key: &ModuleKey, content: &str) -> SourceFile {
-    let url = format!("memory:///{}.solc", key.logical_path.join("/"))
+    let url = format!("memory:///{}.sol", key.logical_path.join("/"))
         .parse()
         .expect("valid URL");
     SourceFile::new(db, url, Some(content.to_owned()))
