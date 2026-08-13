@@ -264,8 +264,8 @@ where
         );
     }
 
-    let entry_path = root.join("main.solc");
-    module_key_for_path(LibraryId::Main, root, &entry_path).expect("fixture main.solc key")
+    let entry_path = root.join("main.sol");
+    module_key_for_path(LibraryId::Main, root, &entry_path).expect("fixture main.sol key")
 }
 
 pub fn load_main_source<Db>(db: &mut Db, source: &str) -> ModuleKey
@@ -403,7 +403,7 @@ pub fn render_diagnostics(db: &dyn hir::Db, diagnostics: &[Diagnostic]) -> Strin
 pub fn assert_diagnostics_snapshot(fixture_root: &Path, rendered: &str) {
     let mut settings = insta::Settings::new();
     settings.set_snapshot_path(fixture_root);
-    settings.set_input_file(fixture_root.join("main.solc"));
+    settings.set_input_file(fixture_root.join("main.sol"));
     settings.set_prepend_module_to_snapshot(false);
     settings.bind(|| {
         insta::assert_snapshot!("diagnostics", rendered);
@@ -450,7 +450,7 @@ fn collect_module_fs_snapshot(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("solc") {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("sol") {
             if path.is_file() {
                 existing_files.insert(path.clone());
             }
@@ -480,7 +480,7 @@ fn load_library_files<Db>(
         let path = entry.expect("fixture entry").path();
         if path.is_dir() {
             load_library_files(db, library.clone(), root, &path, url_style);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("solc") {
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("sol") {
             let key = module_key_for_path(library.clone(), root, &path).expect("module key");
             let file = source_file_for_path(db, &key, &path, url_style);
             db.insert_module_file(key, file);
@@ -518,7 +518,7 @@ fn fixture_url(key: &ModuleKey) -> Url {
         LibraryId::External(name) => format!("external/{name}"),
     };
     let path = key.logical_path.join("/");
-    format!("memory:///{library}/{path}.solc")
+    format!("memory:///{library}/{path}.sol")
         .parse()
         .expect("fixture memory URL")
 }
