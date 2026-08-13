@@ -33,56 +33,53 @@ pub const EXT_ROOT: &str = "/ext";
 /// Embedded standard-library files, mounted under [`STD_ROOT`].
 pub const STD_FILES: &[(&str, &str)] = &[
     (
-        "std.solc",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/std.solc")),
+        "std.sol",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/std.sol")),
     ),
     (
-        "dispatch.solc",
+        "dispatch.sol",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../std/dispatch.solc"
+            "/../../std/dispatch.sol"
         )),
     ),
     (
-        "opcodes.solc",
+        "opcodes.sol",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../std/opcodes.solc"
+            "/../../std/opcodes.sol"
         )),
     ),
     (
-        "Generic.solc",
+        "Generic.sol",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../std/Generic.solc"
+            "/../../std/Generic.sol"
         )),
     ),
     (
-        "ABIGeneric.solc",
+        "ABIGeneric.sol",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../std/ABIGeneric.solc"
+            "/../../std/ABIGeneric.sol"
         )),
     ),
     (
-        "StorageGeneric.solc",
+        "StorageGeneric.sol",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../std/StorageGeneric.solc"
+            "/../../std/StorageGeneric.sol"
         )),
     ),
     (
-        "eip712.solc",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../std/eip712.solc"
-        )),
+        "eip712.sol",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/eip712.sol")),
     ),
     (
-        "eip7951.solc",
+        "eip7951.sol",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../std/eip7951.solc"
+            "/../../std/eip7951.sol"
         )),
     ),
 ];
@@ -401,7 +398,7 @@ impl Workspace {
 
     /// Adds or replaces a user file under `/main`.
     ///
-    /// Both `main.solc` and `/main/main.solc` refer to `/main/main.solc`.
+    /// Both `main.sol` and `/main/main.sol` refer to `/main/main.sol`.
     pub fn set_file(&mut self, path: &str, contents: String) {
         self.apply_file_changes([WorkspaceFileChange::Set {
             path: path.to_owned(),
@@ -556,10 +553,16 @@ impl Workspace {
 
     fn entry_key(&self) -> Option<ModuleKey> {
         let path = self.entry_path.as_ref()?;
+        if !is_solcore_module_path(path) {
+            return None;
+        }
         self.main_key_for_path(path)
     }
 
     fn main_key_for_path(&self, path: &Path) -> Option<ModuleKey> {
+        if !is_solcore_module_path(path) {
+            return None;
+        }
         let tree = self
             .host
             .module_tree
@@ -836,7 +839,7 @@ fn module_fs_snapshot_from_paths<'a>(
     let mut existing_files = BTreeSet::new();
     let mut sibling_stems = BTreeMap::<PathBuf, BTreeSet<String>>::new();
     for path in paths {
-        if path.extension().and_then(|extension| extension.to_str()) != Some("solc") {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("sol") {
             continue;
         }
         existing_files.insert(path.clone());
@@ -858,7 +861,7 @@ fn module_fs_snapshot_from_paths<'a>(
 }
 
 fn is_solcore_module_path(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()) == Some("solc")
+    path.extension().and_then(|extension| extension.to_str()) == Some("sol")
 }
 
 fn normalize_absolute_path(path: PathBuf) -> PathBuf {
@@ -927,8 +930,8 @@ mod tests {
 
     fn workspace_with_main(source: &str) -> Workspace {
         let mut workspace = Workspace::new();
-        workspace.set_file("main.solc", source.to_owned());
-        workspace.set_entry("main.solc");
+        workspace.set_file("main.sol", source.to_owned());
+        workspace.set_entry("main.sol");
         workspace
     }
 
@@ -950,7 +953,7 @@ mod tests {
 
     fn driver_style_messages(source: &str) -> Vec<String> {
         let mut host = AnalysisHost::new();
-        let path = main_path("main.solc");
+        let path = main_path("main.sol");
         host.set_virtual_file(path.clone(), source.to_owned());
         let tree = host
             .module_tree
@@ -990,7 +993,7 @@ mod tests {
 
     #[test]
     fn main_only_clean_program_has_driver_ordered_diagnostics() {
-        let source = "function main() -> word {\n  return 1;\n}\n";
+        let source = "function main() returns (word) {\n  return 1;\n}\n";
         let workspace = workspace_with_main(source);
 
         assert_eq!(messages(&workspace), driver_style_messages(source));
@@ -999,8 +1002,7 @@ mod tests {
 
     #[test]
     fn owned_diagnostics_preserve_heuristic_suggestion_applicability() {
-        let source =
-            "function value() -> word { return 1; }\nfunction main() -> word { return vaue(); }\n";
+        let source = "function value() returns (word) { return 1; }\nfunction main() returns (word) { return vaue(); }\n";
         let workspace = workspace_with_main(source);
         let diagnostic = workspace
             .diagnostics()
@@ -1025,7 +1027,7 @@ mod tests {
             suggestion.edits,
             vec![DiagnosticTextEdit {
                 range: DiagRange {
-                    file_url: "file:///main/main.solc".to_owned(),
+                    file_url: "file:///main/main.sol".to_owned(),
                     start: typo,
                     end: typo + "vaue".len() as u32,
                 },
@@ -1036,7 +1038,7 @@ mod tests {
 
     #[test]
     fn owned_diagnostics_preserve_exact_suggestion_applicability() {
-        let source = "data Option = None | Some(word);\nfunction main(x: word) -> Option { return Some(x); }\n";
+        let source = "enum Option {None , Some(word)}\nfunction main(x: word) returns (Option) { return Some(x); }\n";
         let workspace = workspace_with_main(source);
         let diagnostic = workspace
             .diagnostics()
@@ -1061,7 +1063,7 @@ mod tests {
             suggestion.edits,
             vec![DiagnosticTextEdit {
                 range: DiagRange {
-                    file_url: "file:///main/main.solc".to_owned(),
+                    file_url: "file:///main/main.sol".to_owned(),
                     start: constructor,
                     end: constructor + "Some".len() as u32,
                 },
@@ -1072,7 +1074,7 @@ mod tests {
 
     #[test]
     fn main_only_type_error_matches_lowered_driver_messages() {
-        let source = "function f() -> word {\n  return true;\n}\n";
+        let source = "function f() returns (word) {\n  return true;\n}\n";
         let workspace = workspace_with_main(source);
         let diagnostics = workspace.diagnostics();
 
@@ -1087,7 +1089,7 @@ mod tests {
 
     #[test]
     fn main_only_name_resolution_error_matches_lowered_driver_messages() {
-        let source = "function addOne(x: word) -> word {\n  return x + missingVar;\n}\n";
+        let source = "function addOne(x: word) returns (word) {\n  return x + missingVar;\n}\n";
         let workspace = workspace_with_main(source);
         let diagnostics = workspace.diagnostics();
 
@@ -1113,7 +1115,7 @@ mod tests {
         // for whole-frontend analysis of the embedded standard library.
         solcore_test_utils::run_in_large_stack(|| {
             let workspace = workspace_with_main(
-                "import std.{addWord};\n\nfunction main() -> word {\n  return addWord(1, 2);\n}\n",
+                "import {addWord} from std;\n\nfunction main() returns (word) {\n  return addWord(1, 2);\n}\n",
             );
 
             assert!(workspace.diagnostics().is_empty());
@@ -1126,14 +1128,15 @@ mod tests {
     fn non_solcore_twin_never_replaces_or_unregisters_a_module() {
         let mut workspace = Workspace::new();
         workspace.set_file(
-            "foo.solc",
-            "function value() -> word { return 1; }\nexport { value };\n".to_owned(),
+            "foo.sol",
+            "function value() returns (word) { return 1; }\nexport { value };\n".to_owned(),
         );
         workspace.set_file(
-            "main.solc",
-            "import foo.{value};\nfunction main() -> word { return value(); }\n".to_owned(),
+            "main.sol",
+            "import {value} from foo;\nfunction main() returns (word) { return value(); }\n"
+                .to_owned(),
         );
-        workspace.set_entry("main.solc");
+        workspace.set_entry("main.sol");
         assert!(workspace.diagnostics().is_empty());
 
         workspace.set_file("foo.txt", "not solcore source".to_owned());
@@ -1144,22 +1147,38 @@ mod tests {
     }
 
     #[test]
+    fn non_sol_entry_is_not_a_module_even_when_the_file_exists() {
+        let mut workspace = Workspace::new();
+        workspace.set_file("main.solc", "function main() {}\n".to_owned());
+        workspace.set_entry("main.solc");
+
+        assert!(workspace.entry_module().is_none());
+        assert!(workspace.raw_diagnostics().is_empty());
+
+        workspace.set_file("main.sol", "function main() {}\n".to_owned());
+        workspace.set_entry("main.sol");
+        assert!(workspace.entry_module().is_some());
+        assert!(workspace.raw_diagnostics().is_empty());
+    }
+
+    #[test]
     fn loading_reachable_module_invalidates_cached_not_loaded_import() {
         let mut workspace = Workspace::new();
         workspace.set_file(
-            "main.solc",
-            "import math.{double};\n\nfunction main() -> word {\n  return double(21);\n}\n"
+            "main.sol",
+            "import {double} from math;\n\nfunction main() returns (word) {\n  return double(21);\n}\n"
                 .to_owned(),
         );
         workspace.set_file(
-            "math.solc",
-            "function double(x: word) -> word { return x; }\n\nexport { double };\n".to_owned(),
+            "math.sol",
+            "function double(x: word) returns (word) { return x; }\n\nexport { double };\n"
+                .to_owned(),
         );
-        workspace.set_entry("main.solc");
+        workspace.set_entry("main.sol");
 
         let math_key = workspace
             .host
-            .module_key_for_virtual_path(&main_path("math.solc"))
+            .module_key_for_virtual_path(&main_path("math.sol"))
             .expect("math module key");
         assert!(workspace.host.module_files.remove(&math_key).is_some());
         workspace.host.sync_module_file_snapshot();
@@ -1186,29 +1205,29 @@ mod tests {
 
     #[test]
     fn incremental_file_updates_reanalyze_existing_source_file() {
-        let clean = "function main() -> word {\n  return 1;\n}\n";
+        let clean = "function main() returns (word) {\n  return 1;\n}\n";
         let mut workspace = workspace_with_main(clean);
         assert!(workspace.diagnostics().is_empty());
 
         let before_file = workspace
             .db()
-            .source_file(main_path("main.solc"))
+            .source_file(main_path("main.sol"))
             .expect("main source file");
         workspace.set_file(
-            "main.solc",
-            "function addOne(x: word) -> word {\n  return x + missingVar;\n}\n".to_owned(),
+            "main.sol",
+            "function addOne(x: word) returns (word) {\n  return x + missingVar;\n}\n".to_owned(),
         );
         let after_file = workspace
             .db()
-            .source_file(main_path("main.solc"))
+            .source_file(main_path("main.sol"))
             .expect("main source file");
         assert_eq!(before_file, after_file);
         assert_eq!(workspace.diagnostics().len(), 1);
 
-        workspace.set_file("main.solc", clean.to_owned());
+        workspace.set_file("main.sol", clean.to_owned());
         let restored_file = workspace
             .db()
-            .source_file(main_path("main.solc"))
+            .source_file(main_path("main.sol"))
             .expect("main source file");
         assert_eq!(before_file, restored_file);
         assert!(workspace.diagnostics().is_empty());
@@ -1216,9 +1235,9 @@ mod tests {
 
     #[test]
     fn removed_virtual_file_is_revived_with_the_same_salsa_identity() {
-        let source = "function main() -> word { return 1; }\n";
+        let source = "function main() returns (word) { return 1; }\n";
         let mut host = AnalysisHost::new();
-        let path = main_path("main.solc");
+        let path = main_path("main.sol");
         let original = host.set_virtual_file(path.clone(), source.to_owned());
         let _ = parser::parse_file_to_hir(&host, original);
 
@@ -1234,13 +1253,13 @@ mod tests {
 
     #[test]
     fn identical_virtual_and_workspace_updates_do_not_reexecute_queries() {
-        let source = "function main() -> word { return 1; }\n";
+        let source = "function main() returns (word) { return 1; }\n";
         let (mut host, executed) = host_with_execution_log();
-        let file = host.set_virtual_file(main_path("main.solc"), source.to_owned());
+        let file = host.set_virtual_file(main_path("main.sol"), source.to_owned());
         let _ = parser::parse_file_to_hir(&host, file);
         let _ = take_executed(&executed);
 
-        let same_file = host.set_virtual_file(main_path("main.solc"), source.to_owned());
+        let same_file = host.set_virtual_file(main_path("main.sol"), source.to_owned());
         assert_eq!(same_file, file);
         let _ = parser::parse_file_to_hir(&host, same_file);
         let events = take_executed(&executed);
@@ -1255,11 +1274,11 @@ mod tests {
             host,
             entry_path: None,
         };
-        workspace.set_entry("main.solc");
+        workspace.set_entry("main.sol");
         assert!(workspace.diagnostics().is_empty());
         let _ = take_executed(&executed);
 
-        workspace.set_file("main.solc", source.to_owned());
+        workspace.set_file("main.sol", source.to_owned());
         assert!(workspace.diagnostics().is_empty());
         let events = take_executed(&executed);
         assert_eq!(
@@ -1271,52 +1290,53 @@ mod tests {
 
     #[test]
     fn incremental_diagnostics_match_a_fresh_workspace_across_batch_changes() {
-        let initial_main = "import util.{value};\nfunction main() -> word { return value(); }\n";
-        let initial_util = "function value() -> word { return 1; }\nexport { value };\n";
+        let initial_main =
+            "import {value} from util;\nfunction main() returns (word) { return value(); }\n";
+        let initial_util = "function value() returns (word) { return 1; }\nexport { value };\n";
         let mut incremental = workspace_from_files(
-            &[("main.solc", initial_main), ("util.solc", initial_util)],
-            "main.solc",
+            &[("main.sol", initial_main), ("util.sol", initial_util)],
+            "main.sol",
         );
         assert!(incremental.diagnostics().is_empty());
 
-        let broken_main =
-            "import helper.{answer};\nfunction main() -> word { return answer(missing); }\n";
-        let broken_helper = "function answer(x: bool) -> word { return x; }\nexport { answer };\n";
+        let broken_main = "import {answer} from helper;\nfunction main() returns (word) { return answer(missing); }\n";
+        let broken_helper =
+            "function answer(x: bool) returns (word) { return x; }\nexport { answer };\n";
         incremental.apply_file_changes([
             WorkspaceFileChange::Set {
-                path: "main.solc".to_owned(),
+                path: "main.sol".to_owned(),
                 contents: broken_main.to_owned(),
             },
             WorkspaceFileChange::Remove {
-                path: "util.solc".to_owned(),
+                path: "util.sol".to_owned(),
             },
             WorkspaceFileChange::Set {
-                path: "helper.solc".to_owned(),
+                path: "helper.sol".to_owned(),
                 contents: broken_helper.to_owned(),
             },
         ]);
         let fresh = workspace_from_files(
-            &[("main.solc", broken_main), ("helper.solc", broken_helper)],
-            "main.solc",
+            &[("main.sol", broken_main), ("helper.sol", broken_helper)],
+            "main.sol",
         );
         assert_eq!(incremental.diagnostics(), fresh.diagnostics());
 
-        let fixed_main =
-            "import helper.{answer};\nfunction main() -> word { return answer(true); }\n";
-        let fixed_helper = "function answer(x: bool) -> word { return 1; }\nexport { answer };\n";
+        let fixed_main = "import {answer} from helper;\nfunction main() returns (word) { return answer(true); }\n";
+        let fixed_helper =
+            "function answer(x: bool) returns (word) { return 1; }\nexport { answer };\n";
         incremental.apply_file_changes([
             WorkspaceFileChange::Set {
-                path: "main.solc".to_owned(),
+                path: "main.sol".to_owned(),
                 contents: fixed_main.to_owned(),
             },
             WorkspaceFileChange::Set {
-                path: "helper.solc".to_owned(),
+                path: "helper.sol".to_owned(),
                 contents: fixed_helper.to_owned(),
             },
         ]);
         let fresh = workspace_from_files(
-            &[("main.solc", fixed_main), ("helper.solc", fixed_helper)],
-            "main.solc",
+            &[("main.sol", fixed_main), ("helper.sol", fixed_helper)],
+            "main.sol",
         );
         assert_eq!(incremental.diagnostics(), fresh.diagnostics());
         assert!(incremental.diagnostics().is_empty());
@@ -1327,19 +1347,19 @@ mod tests {
         let workspace = workspace_from_files(
             &[
                 (
-                    "main.solc",
-                    "import a.{fromA};\nfunction main() -> word { return fromA(); }\n",
+                    "main.sol",
+                    "import {fromA} from a;\nfunction main() returns (word) { return fromA(); }\n",
                 ),
                 (
-                    "a.solc",
-                    "import b.{value};\nfunction fromA() -> word { return value(); }\nexport { fromA };\n",
+                    "a.sol",
+                    "import {value} from b;\nfunction fromA() returns (word) { return value(); }\nexport { fromA };\n",
                 ),
                 (
-                    "b.solc",
-                    "function value() -> word { return 42; }\nexport { value };\n",
+                    "b.sol",
+                    "function value() returns (word) { return 42; }\nexport { value };\n",
                 ),
             ],
-            "main.solc",
+            "main.sol",
         );
         assert!(workspace.diagnostics().is_empty());
     }
@@ -1353,14 +1373,14 @@ mod tests {
         assert_eq!(
             names,
             BTreeSet::from([
-                "ABIGeneric.solc",
-                "Generic.solc",
-                "StorageGeneric.solc",
-                "dispatch.solc",
-                "eip712.solc",
-                "eip7951.solc",
-                "opcodes.solc",
-                "std.solc",
+                "ABIGeneric.sol",
+                "Generic.sol",
+                "StorageGeneric.sol",
+                "dispatch.sol",
+                "eip712.sol",
+                "eip7951.sol",
+                "opcodes.sol",
+                "std.sol",
             ])
         );
         assert!(STD_FILES.iter().all(|(_, contents)| !contents.is_empty()));
@@ -1370,18 +1390,18 @@ mod tests {
     fn virtual_file_urls_encode_special_path_characters() {
         let mut workspace = Workspace::new();
         workspace.set_file(
-            "nested/数 学#1.solc",
-            "function value() -> word { return 1; }\n".to_owned(),
+            "nested/数 学#1.sol",
+            "function value() returns (word) { return 1; }\n".to_owned(),
         );
 
         let file = workspace
             .db()
-            .source_file("/main/nested/数 学#1.solc")
+            .source_file("/main/nested/数 学#1.sol")
             .expect("virtual source file");
 
         assert_eq!(
             file.url(workspace.db()).as_str(),
-            "file:///main/nested/%E6%95%B0%20%E5%AD%A6%231.solc"
+            "file:///main/nested/%E6%95%B0%20%E5%AD%A6%231.sol"
         );
     }
 
@@ -1392,11 +1412,11 @@ mod tests {
             let mut source = String::new();
             for index in 0..256 {
                 source.push_str(&format!(
-                    "function value{index}(x: word) -> word {{ return x; }}\n"
+                    "function value{index}(x: word) returns (word) {{ return x; }}\n"
                 ));
             }
             source.push_str(&format!(
-                "function main() -> word {{ return value255({revision}); }}\n"
+                "function main() returns (word) {{ return value255({revision}); }}\n"
             ));
             source
         }
@@ -1404,7 +1424,7 @@ mod tests {
         let mut workspace = workspace_with_main(&source(0));
         assert!(workspace.diagnostics().is_empty());
         for revision in 1..=64 {
-            workspace.set_file("main.solc", source(revision));
+            workspace.set_file("main.sol", source(revision));
             assert!(workspace.diagnostics().is_empty(), "revision {revision}");
         }
     }
