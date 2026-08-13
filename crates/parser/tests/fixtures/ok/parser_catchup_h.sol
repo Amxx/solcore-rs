@@ -1,9 +1,9 @@
-data First = First(word);
-data Second = Second;
+enum First { First(word) }
+enum Second { Second }
 
 export mod;
 export mod as M;
 export mod.{a};
 export { T(*) };
 
-import m.{T};
+import {T} from m;

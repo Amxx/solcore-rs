@@ -1,31 +1,37 @@
-data Pair(a, b) = Pair(a, b);
+enum Pair<a, b> { Pair(a, b) }
 
-forall a b . function fst(p : (a, b)) -> a {
-  match p {
-    | (x, y) => return x;
-  }
+function fst<a, b>(p: (a, b)) returns (a) {
+  match (p) {
+case (x, y) {
+return x;
+}
+}
 }
 
-function tupleValue() -> (word, word) {
+function tupleValue() returns (word, word) {
   return (1, 0);
 }
 
-function unitValue() -> () {
+function unitValue() {
   return ();
 }
 
-function nestedTupleUnitPattern(p) {
-  match p {
-    | ((), (x, y)) => return x;
-  }
+function nestedTupleUnitPattern(p: ((), (word, word))) returns (word) {
+  match (p) {
+case ((), (x, y)) {
+return x;
+}
+}
 }
 
-function groupedSinglePattern(p) {
-  match p {
-    | (y) => return y;
-  }
+function groupedSinglePattern(p: word) returns (word) {
+  match (p) {
+case (y) {
+return y;
+}
+}
 }
 
-function pairData(x : word, y : word) -> Pair(word, word) {
+function pairData(x: word, y: word) returns (Pair<word, word>) {
   return Pair(x, y);
 }

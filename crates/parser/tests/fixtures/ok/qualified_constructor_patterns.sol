@@ -1,11 +1,17 @@
 contract QualifiedConstructorPatterns {
-  data Option(a) = None | Some(a);
+  enum Option<a> { None, Some(a) }
 
-  function join(mmx) {
-    match mmx {
-    | Option.None => return Option.None;
-    | Option.Some(Option.Some(x)) => return Option.Some(x);
-    | Option.Some(Option.None) => return Option.None;
-    }
+  function join<a>(mmx: Option<Option<a>>) returns (Option<a>) {
+    match (mmx) {
+case Option.None {
+return Option.None;
+}
+case Option.Some(Option.Some(x)) {
+return Option.Some(x);
+}
+case Option.Some(Option.None) {
+return Option.None;
+}
+}
   }
 }

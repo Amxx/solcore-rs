@@ -1,15 +1,15 @@
-function zero() {
+function zero() returns (word) {
   0
 }
 
-function apply(f, x) {
+function apply<a, b>(f: function(a) returns (b), x: a) returns (b) {
   f(x)
 }
 
-function choose(c, a, b) {
-  if c then a else b
+function choose<a>(c: bool, a: a, b: a) returns (a) {
+   c  ?  a  :  b
 }
 
-function keepThen(then: word) -> word {
+function keepThen(then: word) returns (word) {
   then
 }

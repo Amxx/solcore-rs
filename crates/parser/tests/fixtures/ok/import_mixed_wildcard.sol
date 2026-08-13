@@ -1,3 +1,3 @@
-import glob.{*, idWord};
-import glob2.{idWord, *};
-import glob3.{*, *};
+import * from glob;
+import * from glob2;
+import * from glob3;
