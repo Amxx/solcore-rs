@@ -14,7 +14,7 @@ use std::{
 use serde_json::{Map, Value, json};
 use vfs::{Diagnostic, DiagnosticSeverity, Workspace, WorkspaceFileChange};
 
-const DEFAULT_ENTRYPOINT: &str = "main.solc";
+const DEFAULT_ENTRYPOINT: &str = "main.sol";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
@@ -154,10 +154,10 @@ fn validate_source_name(name: &str) -> Result<(), String> {
         || name.contains('\\')
         || name.contains(':')
         || !has_only_normal_components
-        || path.extension().and_then(|extension| extension.to_str()) != Some("solc")
+        || path.extension().and_then(|extension| extension.to_str()) != Some("sol")
     {
         return Err(format!(
-            "source name `{name}` must be a relative, traversal-free `.solc` path"
+            "source name `{name}` must be a relative, traversal-free `.sol` path"
         ));
     }
     Ok(())
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn rejects_source_paths_that_escape_the_virtual_workspace() {
-        for source_name in ["../main.solc", "/main.solc", "dir\\main.solc", "main.sol"] {
+        for source_name in ["../main.sol", "/main.sol", "dir\\main.sol", "main.solc"] {
             assert!(validate_source_name(source_name).is_err(), "{source_name}");
         }
     }
@@ -304,11 +304,11 @@ mod tests {
     fn defaults_to_main_entrypoint_and_hull_stage() {
         let request = parse_request(json!({
             "language": "Solcore",
-            "sources": {"main.solc": {"content": "function main() -> word { return 0; }"}},
+            "sources": {"main.sol": {"content": "function main() returns (word) { return 0; }"}},
         }))
         .expect("valid request");
 
-        assert_eq!(request.entrypoint, "main.solc");
+        assert_eq!(request.entrypoint, "main.sol");
         assert_eq!(request.stage, Stage::Hull);
     }
 }

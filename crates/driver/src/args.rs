@@ -391,6 +391,12 @@ pub(crate) fn parse_args(args: Vec<OsString>) -> Result<ParsedArgs, String> {
     let Some(input) = input else {
         return Err("missing input file".to_owned());
     };
+    if input.extension() != Some(OsStr::new("sol")) {
+        return Err(format!(
+            "input source file `{}` must use the `.sol` extension",
+            input.display()
+        ));
+    }
     if emit_yul_object.is_some() && emit_yul.is_none() {
         return Err("--emit-yul-object requires --emit-yul".to_owned());
     }
@@ -600,7 +606,7 @@ pub(crate) fn default_diagnostic_width() -> usize {
 }
 
 pub(crate) fn usage_text(program: &str) -> String {
-    format!("usage: {program} [OPTIONS] <input.solc>\ntry `{program} --help` for more information")
+    format!("usage: {program} [OPTIONS] <input.sol>\ntry `{program} --help` for more information")
 }
 
 pub(crate) fn help_text(program: &str) -> String {
@@ -608,7 +614,7 @@ pub(crate) fn help_text(program: &str) -> String {
         "\
 Solcore Rust driver
 
-Usage: {program} [OPTIONS] [<input.solc>]
+Usage: {program} [OPTIONS] [<input.sol>]
 
 Options:
   -f, --file FILE                    Input source file (alternative to positional input)
