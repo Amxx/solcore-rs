@@ -124,14 +124,14 @@ impl solcore_hir_ty::Db for TestDb {}
 #[test]
 fn unrelated_signature_edit_does_not_rerun_every_body_inference() {
     let before = r#"
-function id(x: word) -> word { return x; }
-function unrelated(x: word) -> word { return 0; }
-function main() -> word { return id(1); }
+function id(x: word) returns (word) { return x; }
+function unrelated(x: word) returns (word) { return 0; }
+function main() returns (word) { return id(1); }
 "#;
     let after = r#"
-function id(x: word) -> word { return x; }
-function unrelated(x: bool) -> word { return 0; }
-function main() -> word { return id(1); }
+function id(x: word) returns (word) { return x; }
+function unrelated(x: bool) returns (word) { return 0; }
+function main() returns (word) { return id(1); }
 "#;
     let (mut db, file, key) = db_with_main(before);
 
@@ -165,21 +165,21 @@ function main() -> word { return id(1); }
 #[test]
 fn same_obligation_body_edit_does_not_resolve_solver_query() {
     let before = r#"
-forall a . class a:C {}
-instance word:C {}
-forall a . a:C => function use(x: a) -> word { return 0; }
+trait C<a> {}
+impl C<word> {}
+function use<a>(x: a) returns (word) where a: C { return 0; }
 
-function main() -> word {
+function main() returns (word) {
   let y: word = 1;
   return use(1);
 }
 "#;
     let after = r#"
-forall a . class a:C {}
-instance word:C {}
-forall a . a:C => function use(x: a) -> word { return 0; }
+trait C<a> {}
+impl C<word> {}
+function use<a>(x: a) returns (word) where a: C { return 0; }
 
-function main() -> word {
+function main() returns (word) {
   let y: word = 2;
   return use(1);
 }
@@ -220,14 +220,14 @@ function main() -> word {
 #[test]
 fn instance_soundness_edit_is_backdated_into_module_diagnostics() {
     let before = r#"
-data Box(a) = Box(word);
-forall a b . class a:C(b) {}
-forall a b . instance Box(a):C(b) {}
+enum Box<a> {Box(word)}
+trait C<a,b> {}
+impl<a,b> C<Box<a>,b> {}
 "#;
     let after = r#"
-data Box(a) = Box(word);
-forall a b . class a:C(b) {}
-forall a . instance Box(a):C(word) {}
+enum Box<a> {Box(word)}
+trait C<a,b> {}
+impl<a> C<Box<a>,word> {}
 "#;
     let (mut db, file, key) = db_with_main(before);
 
@@ -267,10 +267,10 @@ fn instance_soundness_reuses_scope_resolution_for_many_instances() {
 
     let mut source = String::new();
     for index in 0..INSTANCE_COUNT {
-        writeln!(source, "forall a . class a:AuditClass{index} {{}}").unwrap();
-        writeln!(source, "instance word:AuditClass{index} {{}}").unwrap();
+        writeln!(source, "trait AuditClass{index}<a> {{}}").unwrap();
+        writeln!(source, "impl AuditClass{index}<word> {{}}").unwrap();
     }
-    source.push_str("function main() -> word { return 0; }\n");
+    source.push_str("function main() returns (word) { return 0; }\n");
 
     let (db, _file, key) = db_with_file_backed_main(&source);
     let module = module_id_from_key(&db, &key);
@@ -289,8 +289,8 @@ fn instance_soundness_reuses_scope_resolution_for_many_instances() {
 #[test]
 fn generic_lookup_does_not_reresolve_all_item_types() {
     let source = r#"
-forall a rep . class a:Generic(rep) {}
-data Box(a) = Box(a);
+trait Generic<a,rep> {}
+enum Box<a> {Box(a)}
 "#;
 
     let (db, file, _key) = db_with_main(source);
@@ -312,12 +312,12 @@ data Box(a) = Box(a);
 fn contract_body_edit_does_not_rerun_dispatch_surface_query() {
     let before = r#"
 contract C {
-  public function get() -> word { return 1; }
+  function get() public returns (word) { return 1; }
 }
 "#;
     let after = r#"
 contract C {
-  public function get() -> word { return 2; }
+  function get() public returns (word) { return 2; }
 }
 "#;
     let (mut db, file, _key) = db_with_main(before);
@@ -356,14 +356,14 @@ contract C {
 fn import_diagnostic_span_edit_does_not_rerun_unrelated_body_inference() {
     let before = concat!(
         "\n",
-        "import util.{f}; \x20\n",
-        "function f() -> word { return 1; }\n",
-        "function main() -> word { return f(); }\n",
+        "import {f} from util;  \n",
+        "function f() returns (word) { return 1; }\n",
+        "function main() returns (word) { return f(); }\n",
     );
     let after = r#"
-import util.{f} ;
-function f() -> word { return 1; }
-function main() -> word { return f(); }
+import {f} from util;
+function f() returns (word) { return 1; }
+function main() returns (word) { return f(); }
 "#;
     let (mut db, file, key) = db_with_selected_import_conflict(before);
 
@@ -399,28 +399,26 @@ function main() -> word { return f(); }
 #[test]
 fn desugar_body_edit_does_not_rerun_unrelated_body_inference() {
     let before = r#"
-function choose(b: bool, x: word, y: word) -> word {
+function choose(b: bool, x: word, y: word) returns (word) {
   let p: (word, bool) = (x, true);
-  let selected: word = if b then x else y;
-  match p {
-  | (head, flag) => return selected;
-  }
+  let selected: word = (b ? x : y);
+  match (p) {
+  case (head, flag) { return selected; }}
 }
 
-function stable(x: word) -> word { return x; }
-function main() -> word { return stable(choose(false, 1, 2)); }
+function stable(x: word) returns (word) { return x; }
+function main() returns (word) { return stable(choose(false, 1, 2)); }
 "#;
     let after = r#"
-function choose(b: bool, x: word, y: word) -> word {
+function choose(b: bool, x: word, y: word) returns (word) {
   let p: (word, bool) = (x, false);
-  let selected: word = if b then x else y;
-  match p {
-  | (head, flag) => return selected;
-  }
+  let selected: word = (b ? x : y);
+  match (p) {
+  case (head, flag) { return selected; }}
 }
 
-function stable(x: word) -> word { return x; }
-function main() -> word { return stable(choose(false, 1, 2)); }
+function stable(x: word) returns (word) { return x; }
+function main() returns (word) { return stable(choose(false, 1, 2)); }
 "#;
     let (mut db, file, key) = db_with_main(before);
 
@@ -461,11 +459,11 @@ function main() -> word { return stable(choose(false, 1, 2)); }
 }
 
 fn db_with_main(content: &str) -> (TestDb, SourceFile, ModuleKey) {
-    db_with_main_url(content, "memory:///main.solc")
+    db_with_main_url(content, "memory:///main.sol")
 }
 
 fn db_with_file_backed_main(content: &str) -> (TestDb, SourceFile, ModuleKey) {
-    db_with_main_url(content, "file:///memory/main.solc")
+    db_with_main_url(content, "file:///memory/main.sol")
 }
 
 fn db_with_main_url(content: &str, url: &str) -> (TestDb, SourceFile, ModuleKey) {
@@ -506,14 +504,14 @@ fn db_with_selected_import_conflict(content: &str) -> (TestDb, SourceFile, Modul
     };
     let util_file = SourceFile::new(
         &db,
-        "memory:///util.solc".parse().expect("valid URL"),
-        Some("function f() -> word { return 0; }\nexport { f };\n".to_owned()),
+        "memory:///util.sol".parse().expect("valid URL"),
+        Some("function f() returns (word) { return 0; }\nexport { f };\n".to_owned()),
     );
     db.insert_module_file(util_key, util_file);
 
     let file = SourceFile::new(
         &db,
-        "memory:///main.solc".parse().expect("valid URL"),
+        "memory:///main.sol".parse().expect("valid URL"),
         Some(content.to_owned()),
     );
     let key = ModuleKey {

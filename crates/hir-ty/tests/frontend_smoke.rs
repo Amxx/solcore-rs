@@ -187,11 +187,11 @@ fn std_solc_frontend_typecheck_triage() {
     let repo = repo_root();
     let corpus_root = repo.join("crates/parser/tests/fixtures/corpus/ok");
     let std_root = corpus_root.join("std");
-    let outcome = run_frontend(&std_root.join("std.solc"), &std_root);
+    let outcome = run_frontend(&std_root.join("std.sol"), &std_root);
     let std_triage = std_solc_triage(&outcome);
 
     let mut report = String::new();
-    writeln!(&mut report, "std.solc frontend triage").unwrap();
+    writeln!(&mut report, "std.sol frontend triage").unwrap();
     writeln!(
         &mut report,
         "  unresolved-imports: {}",
@@ -217,7 +217,7 @@ fn std_solc_frontend_typecheck_triage() {
 
     assert!(
         outcome.unresolved_imports.is_empty(),
-        "std.solc has unresolved imports:\n{report}"
+        "std.sol has unresolved imports:\n{report}"
     );
     assert!(
         std_triage.unrecorded.is_empty() && std_triage.stale.is_empty(),
@@ -231,9 +231,9 @@ fn curated_solver_files_execute_solver_and_soundness_queries() {
     let corpus_root = repo.join("crates/parser/tests/fixtures/corpus");
     let std_root = corpus_root.join("ok/std");
     let fixtures = [
-        "examples/cases/tabled-default-instance.solc",
-        "examples/cases/tabled-given-order.solc",
-        "examples/cases/tabled-residual-given.solc",
+        "examples/cases/tabled-default-instance.sol",
+        "examples/cases/tabled-given-order.sol",
+        "examples/cases/tabled-residual-given.sol",
     ];
 
     for fixture in fixtures {
@@ -290,7 +290,7 @@ fn curated_solver_files_execute_solver_and_soundness_queries() {
 fn generated_dispatch_reuses_std_instance_facts_per_module() {
     let repo = repo_root();
     let entry = repo.join(
-        "crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/empty_no_constructor.solc",
+        "crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/empty_no_constructor.sol",
     );
     let std_root = repo.join("std");
     let outcome = run_frontend(&entry, &std_root);
@@ -321,9 +321,9 @@ fn match_coverage_conservative_cases_emit_no_false_diagnostics() {
     let std_root = corpus_root.join("ok/std");
 
     for fixture in [
-        "examples/cases/false-redundant-warning.solc",
-        "examples/comptime/match_labels.solc",
-        "examples/cases/polymatch-error.solc",
+        "examples/cases/false-redundant-warning.sol",
+        "examples/comptime/match_labels.sol",
+        "examples/cases/polymatch-error.sol",
     ] {
         let entry = corpus_entry(&corpus_root, fixture);
         let outcome = run_frontend_with_roots(
@@ -735,7 +735,7 @@ fn relative_solc_paths(root: &Path) -> BTreeSet<String> {
             let path = entry.path();
             if path.is_dir() {
                 walk(root, &path, paths);
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("solc") {
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("sol") {
                 let relative = path
                     .strip_prefix(root)
                     .expect("walked path is below corpus root")
@@ -980,7 +980,7 @@ fn collect_module_fs_snapshot(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("solc") {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("sol") {
             if path.is_file() {
                 existing_files.insert(path.clone());
             }
@@ -1094,7 +1094,7 @@ fn append_diagnostic_sample(report: &mut String, label: &str, diagnostics: &[Str
 
 fn append_std_solc_triage(report: &mut String, triage: &StdSolcTriage) {
     if !triage.known_by_reason.is_empty() {
-        writeln!(report, "\nstd.solc known diagnostic families").unwrap();
+        writeln!(report, "\nstd.sol known diagnostic families").unwrap();
         for (reason, diagnostics) in &triage.known_by_reason {
             writeln!(report, "  {reason}: {}", diagnostics.len()).unwrap();
             for diagnostic in diagnostics.iter().take(6) {
@@ -1107,14 +1107,14 @@ fn append_std_solc_triage(report: &mut String, triage: &StdSolcTriage) {
     }
 
     if !triage.unrecorded.is_empty() {
-        writeln!(report, "\nstd.solc unrecorded diagnostic families").unwrap();
+        writeln!(report, "\nstd.sol unrecorded diagnostic families").unwrap();
         for diagnostic in triage.unrecorded.iter().take(20) {
             writeln!(report, "  {}: {}", diagnostic.phase, diagnostic.diagnostic).unwrap();
         }
         if triage.unrecorded.len() > 20 {
             writeln!(
                 report,
-                "  ... {} more unrecorded std.solc diagnostics",
+                "  ... {} more unrecorded std.sol diagnostics",
                 triage.unrecorded.len() - 20
             )
             .unwrap();
@@ -1122,7 +1122,7 @@ fn append_std_solc_triage(report: &mut String, triage: &StdSolcTriage) {
     }
 
     if !triage.stale.is_empty() {
-        writeln!(report, "\nstd.solc stale diagnostic families").unwrap();
+        writeln!(report, "\nstd.sol stale diagnostic families").unwrap();
         for known in &triage.stale {
             writeln!(
                 report,

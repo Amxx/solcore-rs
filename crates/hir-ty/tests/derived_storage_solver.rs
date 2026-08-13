@@ -22,15 +22,15 @@ pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 pragma no-coverage-condition;
 
-forall a rep . class a:Generic(rep) {}
-forall self . class self:StorageDeriving {}
-forall self . class self:StorageSize {}
-forall slot value . class slot:CanStore(value) {}
+trait Generic<a,rep> {}
+trait StorageDeriving<self> {}
+trait StorageSize<self> {}
+trait CanStore<slot,value> {}
 
-data storage(ty) = storage(word);
+enum storage<ty> {storage(word)}
 
-instance word:StorageSize {}
-instance storage(word):CanStore(word) {}
+impl StorageSize<word> {}
+impl CanStore<storage<word>,word> {}
 "#;
 
 fn class_def<'db>(db: &'db TestDb, module: Module<'db>, name: &str) -> DefId<'db> {
@@ -79,7 +79,7 @@ fn derives_parameterized_storage_evidence_once() {
     let mut db = TestDb::default();
     let key = load_main_source(
         &mut db,
-        &format!("{STORAGE_SOURCE}\ndata Box(a) = Box(a);\n"),
+        &format!("{STORAGE_SOURCE}\nenum Box<a> {{Box(a)}}\n"),
     );
     let module_id = module_id_from_key(&db, &key);
     let file = db.module_file(module_id).expect("main source file");
@@ -157,9 +157,7 @@ fn recursive_storage_derivation_is_a_per_type_skip() {
     let key = load_main_source(
         &mut db,
         &format!(
-            "{STORAGE_SOURCE}\n\
-             data Point = Point(word, word);\n\
-             data Recursive = Recursive(Recursive);\n"
+            "{STORAGE_SOURCE}\nenum Point {{Point(word, word)}}\nenum Recursive {{Recursive(Recursive)}}\n"
         ),
     );
     let module_id = module_id_from_key(&db, &key);

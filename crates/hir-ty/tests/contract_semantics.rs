@@ -1268,16 +1268,16 @@ contract PhantomAbi {
 fn calldata_arrays_nested_in_derived_adt_outputs_remain_input_only() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Bag = Bag(calldata(array(uint256)));
-data Outer = Outer(Bag);
+enum Bag {Bag(calldata<array<uint256>>)}
+enum Outer {Outer(Bag)}
 
 contract InvalidOutputs {
-  public function bag(values:calldata(array(uint256))) -> Bag { return Bag(values); }
-  public function outer(values:calldata(array(uint256))) -> Outer {
+  function bag(values:calldata<array<uint256>>) public returns (Bag) { return Bag(values); }
+  function outer(values:calldata<array<uint256>>) public returns (Outer) {
     return Outer(Bag(values));
   }
 }
@@ -1301,7 +1301,7 @@ contract InvalidOutputs {
                 diagnostic.code.as_deref() == Some("SC0231")
                     && diagnostic
                         .message
-                        .contains("calldata(array(t)) is input-only")
+                        .contains("calldata<array<t>> is input-only")
             })
             .count()
             >= 2,
@@ -1315,14 +1315,14 @@ contract InvalidOutputs {
 fn tuple_typed_constructor_field_uses_the_structural_generic_signature() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data Wrap = Wrap((uint256, bool));
+enum Wrap {Wrap((uint256, bool))}
 
 contract Shapes {
-  public function roundtrip(value: Wrap) -> Wrap { return value; }
+  function roundtrip(value: Wrap) public returns (Wrap) { return value; }
 }
 "#,
     );
@@ -1352,11 +1352,11 @@ fn user_defined_location_name_does_not_make_an_adt_abi_safe() {
     let module = parse_module(
         &db,
         r#"
-data memory(a) = memory(word);
-data Wrap = Wrap(memory((word, bool)));
+enum memory<a> {memory(word)}
+enum Wrap {Wrap(memory<(word, bool)>)}
 
 contract Shapes {
-  public function roundtrip(value: Wrap) -> Wrap { return value; }
+  function roundtrip(value: Wrap) public returns (Wrap) { return value; }
 }
 "#,
     );
@@ -1381,14 +1381,14 @@ contract Shapes {
 fn direct_dynamic_sum_adt_supports_input_output_and_roundtrip() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 
-data D2 = L(uint256) | R(memory(bytes));
+enum D2 {L(uint256) , R(memory<bytes>)}
 
 contract SumRoundtrip {
-  public function rtD2(x: D2) -> D2 { return x; }
+  function rtD2(x: D2) public returns (D2) { return x; }
 }
 "#,
     );
@@ -1419,12 +1419,12 @@ contract SumRoundtrip {
 fn imported_direct_adt_uses_definition_side_abi_derivation() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.dispatch.{*};
-import model.{*};
+import * from std;
+import * from std.dispatch;
+import * from model;
 
 contract Imported {
-  public function roundtrip(payload:Payload) -> Payload { return payload; }
+  function roundtrip(payload:Payload) public returns (Payload) { return payload; }
 }
 "#,
     );
@@ -1435,14 +1435,14 @@ contract Imported {
             library: LibraryId::Main,
             logical_path: vec!["model".to_owned()],
         },
-        "/main/model.solc",
+        "/main/model.sol",
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 export { Payload(*) };
 
-data Payload = Left(uint256) | Right(uint256);
+enum Payload {Left(uint256) , Right(uint256)}
 "#,
     );
 
@@ -1471,12 +1471,12 @@ data Payload = Left(uint256) | Right(uint256);
 fn imported_output_only_adt_requires_definition_side_abi_derivation() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.dispatch.{*};
-import model.{*};
+import * from std;
+import * from std.dispatch;
+import * from model;
 
 contract Imported {
-  public function make() -> Payload { return Payload.Left(uint256(1)); }
+  function make() public returns (Payload) { return Payload.Left(uint256(1)); }
 }
 "#,
     );
@@ -1487,13 +1487,13 @@ contract Imported {
             library: LibraryId::Main,
             logical_path: vec!["model".to_owned()],
         },
-        "/main/model.solc",
+        "/main/model.sol",
         r#"
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 export { Payload(*) };
 
-data Payload = Left(uint256) | Right(uint256);
+enum Payload {Left(uint256) , Right(uint256)}
 "#,
     );
 
@@ -1519,12 +1519,12 @@ data Payload = Left(uint256) | Right(uint256);
 fn db_with_reexported_abi_adt(api_source: &str) -> (TestDb, ModuleKey) {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.dispatch.{*};
-import api.{Payload};
+import * from std;
+import * from std.dispatch;
+import {Payload} from api;
 
 contract Reexported {
-  public function roundtrip(payload:Payload) -> Payload { return payload; }
+  function roundtrip(payload:Payload) public returns (Payload) { return payload; }
 }
 "#,
     );
@@ -1535,14 +1535,14 @@ contract Reexported {
             library: LibraryId::Main,
             logical_path: vec!["base".to_owned()],
         },
-        "/main/base.solc",
+        "/main/base.sol",
         r#"
-import std.{*};
-import std.Generic.{*};
-import std.ABIGeneric.{*};
+import * from std;
+import * from std.Generic;
+import * from std.ABIGeneric;
 export { Payload(*) };
 
-data Payload = Left(uint256) | Right(uint256);
+enum Payload {Left(uint256) , Right(uint256)}
 "#,
     );
     insert_module_source(
@@ -1551,7 +1551,7 @@ data Payload = Left(uint256) | Right(uint256);
             library: LibraryId::Main,
             logical_path: vec!["api".to_owned()],
         },
-        "/main/api.solc",
+        "/main/api.sol",
         api_source,
     );
     (db, key)
@@ -1608,18 +1608,18 @@ fn instance_import_in_reexport_module_exposes_definition_side_abi_evidence() {
 fn visible_orphan_generic_instance_is_rejected_from_constructor_abi() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
-import std.dispatch.{*};
-import std.Generic.{*};
-import model.{*};
+import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from model;
 
 pragma no-generic-instance-for Payload;
 
-instance Payload:Generic(word) {}
+impl Generic<Payload,word> {}
 
 contract C {
   constructor(payload:Payload) {}
-  public function roundtrip(payload:Payload) -> Payload { return payload; }
+  function roundtrip(payload:Payload) public returns (Payload) { return payload; }
 }
 "#,
     );
@@ -1629,7 +1629,7 @@ contract C {
             library: LibraryId::Std,
             logical_path: vec!["std".to_owned()],
         },
-        "/std/std.solc",
+        "/std/std.sol",
         "",
     );
     insert_module_source(
@@ -1638,14 +1638,14 @@ contract C {
             library: LibraryId::Std,
             logical_path: vec!["Generic".to_owned()],
         },
-        "/std/Generic.solc",
+        "/std/Generic.sol",
         r#"
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 export { Generic };
-forall a rep. class a:Generic(rep) {
-  function from(x:a) -> rep;
-  function to(x:rep) -> a;
+trait Generic<a,rep> {
+  function from(x:a) returns (rep) ;
+  function to(x:rep) returns (a) ;
 }
 "#,
     );
@@ -1655,7 +1655,7 @@ forall a rep. class a:Generic(rep) {
             library: LibraryId::Std,
             logical_path: vec!["dispatch".to_owned()],
         },
-        "/std/dispatch.solc",
+        "/std/dispatch.sol",
         "",
     );
     insert_module_source(
@@ -1664,11 +1664,11 @@ forall a rep. class a:Generic(rep) {
             library: LibraryId::Main,
             logical_path: vec!["model".to_owned()],
         },
-        "/main/model.solc",
+        "/main/model.sol",
         r#"
-import std.{*};
+import * from std;
 export { Payload(*) };
-        data Payload = Payload(word, bool);
+        enum Payload {Payload(word, bool)}
 "#,
     );
 
@@ -1694,10 +1694,10 @@ export { Payload(*) };
 fn unsupported_std_leaf_is_not_reinterpreted_as_a_structural_user_adt() {
     let (mut db, key) = db_with_main(
         r#"
-import std.{*};
+import * from std;
 
 contract C {
-  public function echo(value:byte) -> word { return 0; }
+  function echo(value:byte) public returns (word) { return 0; }
 }
 "#,
     );
@@ -1723,10 +1723,10 @@ fn abi_like_user_type_names_are_not_treated_as_canonical_types() {
     let module = parse_module(
         &db,
         r#"
-data bytes16 = bytes16(word);
+enum bytes16 {bytes16(word)}
 
 contract C {
-  public function echo(value:bytes16) -> bytes16 { return value; }
+  function echo(value:bytes16) public returns (bytes16) { return value; }
 }
 "#,
     );
@@ -1752,10 +1752,10 @@ fn parameterized_abi_type_fails_loudly_and_duplicate_signatures_are_diagnosed() 
     let module = parse_module(
         &db,
         r#"
-data Mapping(a, b) = Mapping;
+enum Mapping<a, b> {Mapping}
 
 contract Store {
-  public function put(m: Mapping(word, word)) -> word { return 0; }
+  function put(m: Mapping<word, word>) public returns (word) { return 0; }
 }
 "#,
     );
@@ -1777,10 +1777,10 @@ contract Store {
     assert!(
         diagnostics(
             r#"
-data Mapping(a, b) = Mapping;
+enum Mapping<a, b> {Mapping}
 
 contract Store {
-  public function put(m: Mapping(word, word)) -> word { return 0; }
+  function put(m: Mapping<word, word>) public returns (word) { return 0; }
 }
 "#
         )
@@ -1792,8 +1792,8 @@ contract Store {
         &db,
         r#"
 contract Dup {
-  public function f(x: word) -> word { return x; }
-  public function f(x: word) -> word { return x; }
+  function f(x: word) public returns (word) { return x; }
+  function f(x: word) public returns (word) { return x; }
 }
 "#,
     );
@@ -1818,9 +1818,9 @@ contract Dup {
 fn different_signatures_with_the_same_selector_are_diagnosed() {
     let src = r#"
 contract Collision {
-  public function collision_8764(x: word) -> () { return (); }
-  public function collision_99992(x: word) -> () { return (); }
-  function main() -> () { return (); }
+  function collision_8764(x: word) public returns () { return (); }
+  function collision_99992(x: word) public returns () { return (); }
+  function main() returns () { return (); }
 }
 "#;
     let db = TestDb::default();
@@ -1868,8 +1868,8 @@ fn frontend_desugar_plan_records_if_bool_and_storage_field_hooks() {
 contract C {
   flag: word;
 
-  public function f() -> word {
-    if true {
+  function f() public returns (word) {
+    if (true) {
       flag = 1;
     } else {
       return flag;
@@ -1918,24 +1918,22 @@ fn pre_typeck_desugar_plan_records_tuple_product_shapes_and_origins() {
         &db,
         r#"
 contract C {
-  seed: (word, bool) = if (true) then (1, true) else (2, false);
+  seed: (word, bool) = ((true) ? (1, true) : (2, false));
 
-  public function f(x : word, y : bool, z : word) -> (word, bool, word) {
+  function f(x : word, y : bool, z : word) public returns ((word, bool, word)) {
     let t : (word, bool, word) = (x, y, z);
     let b : bool = true;
-    match b {
-    | true => return (x, y, z);
-    | false => return (z, y, x);
-    }
-    let w : word = if (y) then x else z;
+    match (b) {
+    case true { return (x, y, z); }
+case false { return (z, y, x); }}
+    let w : word = ((y) ? x : z);
     if (y) {
       return (w, y, z);
     } else {
       return (z, y, w);
     }
-    match t {
-    | (a, b, c) => return (a, b, c);
-    }
+    match (t) {
+    case (a, b, c) { return (a, b, c); }}
   }
 }
 "#,
@@ -2099,7 +2097,7 @@ contract C {
 fn typeck_lowers_tuple_return_type_to_right_nested_product() {
     let (db, key) = db_with_main(
         r#"
-function triple(x : word, y : bool, z : word) -> (word, bool, word) {
+function triple(x : word, y : bool, z : word) returns ((word, bool, word)) {
   return (x, y, z);
 }
 "#,
@@ -2144,8 +2142,7 @@ fn frontend_desugar_plan_records_indirect_call_shape_and_evidence() {
     let module = parse_module(
         &db,
         r#"
-forall c . c : invokable(pair(word, word), word) =>
-function apply2(f : c, a : word, b : word) -> word {
+function apply2<c>(f : c, a : word, b : word) returns (word) where c : invokable<pair<word, word>, word> {
   return f(a, b);
 }
 "#,
@@ -2185,7 +2182,7 @@ function apply2(f : c, a : word, b : word) -> word {
 #[test]
 fn frontend_desugar_plan_records_compose3_indirect_call() {
     let src =
-        include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/cases/Compose3.solc");
+        include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/cases/Compose3.sol");
     assert!(diagnostics(src).is_empty());
 
     let db = TestDb::default();
@@ -2214,7 +2211,7 @@ fn frontend_desugar_plan_records_compose3_indirect_call() {
 #[test]
 fn frontend_desugar_plan_records_simple_lambda_pair_arg_call() {
     let src =
-        include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/cases/SimpleLambda.solc");
+        include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/cases/SimpleLambda.sol");
     assert!(diagnostics(src).is_empty());
 
     let db = TestDb::default();
@@ -2246,7 +2243,7 @@ fn frontend_desugar_plan_records_captured_zero_arg_closure_call() {
     let module = parse_module(
         &db,
         r#"
-function inc(x : word) -> word {
+function inc(x : word) returns (word) {
   let f = lam () { return x; };
   return f();
 }
@@ -2279,7 +2276,7 @@ fn derived_generic_plan_uses_right_nested_product_rep_for_tree() {
     let module = parse_module(
         &db,
         r#"
-data Tree(a) = Leaf | Node(Tree(a), a, Tree(a));
+enum Tree<a> {Leaf , Node(Tree<a>, a, Tree<a>)}
 "#,
     );
     let tree = adt_named(&db, module, "Tree");
@@ -2314,13 +2311,13 @@ pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 pragma no-generic-instance-for Excluded;
 
-forall a rep . class a:Generic(rep) {}
+trait Generic<a,rep> {}
 
-data Eligible = Eligible(word);
-data Excluded = Excluded(word);
-data Manual = Manual(word);
+enum Eligible {Eligible(word)}
+enum Excluded {Excluded(word)}
+enum Manual {Manual(word)}
 
-instance Manual:Generic(word) {}
+impl Generic<Manual,word> {}
 "#,
     );
     let generic = module
