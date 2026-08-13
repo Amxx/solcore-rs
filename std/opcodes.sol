@@ -686,7 +686,7 @@ function invalid() {
     }
 }
 
-function selfdestruct(a: word) -> () {
+function selfdestruct(a: word) {
     assembly {
         selfdestruct(a)
     }

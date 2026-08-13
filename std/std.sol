@@ -1,4 +1,4 @@
-import std.opcodes.{add, sub, mul, div, mod, addmod as addmod_, mulmod as mulmod_, and as and_, or as or_, xor as xor_, shl, shr, eq, not as not_, gt as gt_, iszero, keccak256, mstore, mload, mcopy, sstore, sload, gas, calldataload, calldatacopy, returndatasize, returndatacopy, log1 as log1_, call, staticcall, revert as revert_, invalid};
+import {add, sub, mul, div, mod, addmod as addmod_, mulmod as mulmod_, and as and_, or as or_, xor as xor_, shl, shr, eq, not as not_, gt as gt_, iszero, keccak256, mstore, mload, mcopy, sstore, sload, gas, calldataload, calldatacopy, returndatasize, returndatacopy, log1 as log1_, call, staticcall, revert as revert_, invalid} from std.opcodes;
 
 pragma no-patterson-condition ABIEncode, Num, Array, ArrayPush, Eq, Ord;
 pragma no-coverage-condition ABIDecode, MemoryType, Array, ArrayPush, RValueIdxAccess;
@@ -175,19 +175,18 @@ export {
 */
 
 
-forall t.t:Typedef(word) =>
-function log1(v:t, topic:word) -> () {
+function log1<t>(v: t, topic: word) where t: Typedef<word> {
   let w : word = Typedef.rep(v);
   mstore(0, w);
   log1_(0, 32, topic);
 }
 
-function unimplemented() -> () {
+function unimplemented() {
   let Unimplemented = Error(0x6e128399);
   revertWithError(Unimplemented);
 }
 
-function out_of_bounds() -> () {
+function out_of_bounds() {
     let OutOfBounds = Error(0xb4120f14);
     revertWithError(OutOfBounds);
 }
@@ -197,65 +196,68 @@ function out_of_bounds() -> () {
 // ------------------------------------------------------------------
 // EmitHull has special handling for `revertLit("...")` after MastEval has
 // constant-folded the argument to a string literal.
-function revertLit(comptime s: string) -> () {
+function revertLit(comptime s: string) {
     unimplemented(); // Sanity check if folding ignores it.
     return ();
 }
 
 // Empty revert.
-function revertEmpty() -> () {
+function revertEmpty() {
     revert_(0, 0);
 }
 
 // Bottom: a value of any type. absurd never returns, it reverts, so it can
-// stand in for a result of any type. Used to derive class instances for empty
+// stand in for a result of any type. Used to derive trait impls for empty
 // data types (which have no values, so the method bodies are unreachable). The
-// recursive tail satisfies the forall a . a return type; execution never
+// recursive tail satisfies the generic result type `a`; execution never
 // reaches it because revertEmpty() aborts first.
-forall a . function absurd() -> a {
+function absurd<a>() returns (a) {
     // Despite looking like an infinite loop, this reverts: revertEmpty()
     // aborts execution on the first line, so the recursive return absurd()
     // is never actually run. The recursion exists only to give the body a
-    // value of type a, satisfying the forall a . a return type.
+    // value of type `a`, satisfying the generic result type.
     revertEmpty();
     return absurd();
 }
 
 // TODO: use bytes4
-data Error = Error(word) | Empty | Msg(memory(string));
+enum Error { Error(word), Empty, Msg(memory<string>) }
 
 // A string literal can be used as an Error: `require(cond, "message")` reverts
-// with the message.  The literal is materialized into memory(string) here; MastEval
+// with the message. The literal is materialized into memory<string> here; MastEval
 // erases the comptime-only parameter by cloning this method per literal, so
 // the materializer sees a literal rather than a parameter.
-instance Error : Str {
-    function fromString(s: string) -> Error {
+impl Str<Error> {
+    function fromString(s: string) returns (Error) {
         return Error.Msg(Str.fromString(s));
     }
 }
 
 // Revert with Error selector.
-function revertWithError(e:Error) -> () {
-    match e {
-        | .Error(selector) =>
-            mstore(0, selector);
+function revertWithError(e: Error) {
+    match (e) {
+case .Error(selector) {
+mstore(0, selector);
             // We only care about the BE MSB.
             revert_(28, 4);
-        | .Empty =>
-            revert_(0, 0);
-        | .Msg(msg) =>
-            let msg_ = Typedef.rep(msg);
+}
+case .Empty {
+revert_(0, 0);
+}
+case .Msg(msg) {
+let msg_ = Typedef.rep(msg);
             revert_(msg_ + 32, mload(msg_));
-    }
+}
+}
 }
 
-function assert(cond: bool) -> () {
+function assert(cond: bool) {
     if (!cond) {
         invalid();
     }
 }
 
-function require(cond: bool, e: Error) -> () {
+function require(cond: bool, e: Error) {
     if (!cond) {
         revertWithError(e);
     }
@@ -264,271 +266,316 @@ function require(cond: bool, e: Error) -> () {
 // --- booleans ---
 
 // TODO: this should short circuit. probably needs some compiler magic to do so.
-function and(x: bool, y: bool) -> bool {
-    match x, y {
-    | true, y => return y;
-    | false, _ => return false;
-    }
+function and(x: bool, y: bool) returns (bool) {
+    match (x, y) {
+case (true, y) {
+return y;
+}
+case (false, _) {
+return false;
+}
+}
 }
 
 // TODO: this should short circuit. probably needs some compiler magic to do so.
-function or(x: bool, y: bool) -> bool {
-    match x, y {
-    | true, _ => return true;
-    | false, y => return y;
-    }
+function or(x: bool, y: bool) returns (bool) {
+    match (x, y) {
+case (true, _) {
+return true;
+}
+case (false, y) {
+return y;
+}
+}
 }
 
-function not(b:bool) -> bool {
-  match b {
-    | false => return true;
-    | true => return false;
-  }
+function not(b: bool) returns (bool) {
+  match (b) {
+case false {
+return true;
+}
+case true {
+return false;
+}
+}
 }
 
-function frombool(b : bool) -> word {
- match b {
-   | false => return 0;
-   | true => return 1;
- }
+function frombool(b: bool) returns (word) {
+ match (b) {
+case false {
+return 0;
+}
+case true {
+return 1;
+}
+}
 }
 
-function tobool(x: word) -> bool {
-  match x {
-    | 0 => return false;
-    | _ => return true;
-  }
+function tobool(x: word) returns (bool) {
+  match (x) {
+case 0 {
+return false;
+}
+default {
+return true;
+}
+}
 }
 
 // --- Tuple projections ---
 
-forall a b . function fst(p: (a, b)) -> a {
-    match p {
-    | (a, _) => return a;
-    }
+function fst<a, b>(p: (a, b)) returns (a) {
+    match (p) {
+case (a, _) {
+return a;
+}
+}
 }
 
-forall a b . function snd(p: (a, b)) -> b {
-    match p {
-    | (_, b) => return b;
-    }
+function snd<a, b>(p: (a, b)) returns (b) {
+    match (p) {
+case (_, b) {
+return b;
+}
+}
 }
 
 // --- Proxy ---
 
 // Proxy is a unit type that can be used to pass Types as paramaters at runtime
-data Proxy(t) = Proxy;
+enum Proxy<t> { Proxy }
 
 // --- Type Abstraction ---
 
-forall abs rep . class abs:Typedef(rep) {
-    function abs(x:rep) -> abs;
-    function rep(x:abs) -> rep;
+trait Typedef<abs, rep> {
+    function abs(x: rep) returns (abs) ;
+    function rep(x: abs) returns (rep) ;
 }
 
-forall t.
-default instance t:Typedef(t) {
-    function abs(x:t) -> t { return x; }
-    function rep(x:t) -> t { return x; }
+default impl<t> Typedef<t, t> {
+    function abs(x: t) returns (t) { return x; }
+    function rep(x: t) returns (t) { return x; }
 }
 
 // --- Equality ---
 // Note: All these are used by the compiler by name.
 
-forall a.
-class a:Eq {
-  function eq(x:a, y:a) -> bool;
+trait Eq<a> {
+  function eq(x: a, y: a) returns (bool) ;
 }
 
-forall a. a:Eq =>
-function ne(x:a, y:a) -> bool {
+function ne<a>(x: a, y: a) returns (bool) where a: Eq {
   return not(Eq.eq(x,y));
 }
 
 // --- Ordering ---
 // Note: All these are used by the compiler by name.
 
-forall a. a:Eq =>
-class a:Ord {
-  function gt(x:a, y:a) -> bool;
+trait Ord<a> where a: Eq {
+  function gt(x: a, y: a) returns (bool) ;
 }
 
-forall a. a:Ord =>
-function gt(x:a, y:a) -> bool {
+function gt<a>(x: a, y: a) returns (bool) where a: Ord {
   return Ord.gt(x,y);
 }
 
-forall a. a:Ord =>
-function le(x:a, y:a) -> bool {
+function le<a>(x: a, y: a) returns (bool) where a: Ord {
   return not(Ord.gt(x,y));
 }
 
-forall a. a:Ord =>
-function ge(x:a, y:a) -> bool {
+function ge<a>(x: a, y: a) returns (bool) where a: Ord {
   return le(y,x);
 }
 
-forall a. a:Ord =>
-function lt(x:a, y:a) -> bool {
+function lt<a>(x: a, y: a) returns (bool) where a: Ord {
     return Ord.gt(y,x);
 }
 
-// --- Generic deriving: structural instances over the representation universe ---
+// --- Generic deriving: structural impls over the representation universe ---
 // These let `#[derive(Eq)]` / `#[derive(Ord)]` work for any data type through
-// its Generic(rep) instance, where rep is built from (), sum(f, g) and (f, g).
+// its `Generic<rep>` impl, where `rep` is built from `()`, `sum<f, g>` and
+// `(f, g)`.
 
-instance () : Eq {
-  function eq(x : (), y : ()) -> bool {
+impl Eq<()> {
+  function eq(x: (), y: ()) returns (bool) {
     return true;
   }
 }
 
-forall f g . f:Eq, g:Eq =>
-instance sum(f, g) : Eq {
-  function eq(x : sum(f, g), y : sum(f, g)) -> bool {
-    match x {
-    | inl(a) =>
-        match y {
-        | inl(b) => return Eq.eq(a, b);
-        | inr(b) => return false;
-        }
-    | inr(a) =>
-        match y {
-        | inl(b) => return false;
-        | inr(b) => return Eq.eq(a, b);
-        }
-    }
+impl<f, g> Eq<sum<f, g>> where f: Eq, g: Eq {
+  function eq(x: sum<f, g>, y: sum<f, g>) returns (bool) {
+    match (x) {
+case inl(a) {
+match (y) {
+case inl(b) {
+return Eq.eq(a, b);
+}
+case inr(b) {
+return false;
+}
+}
+}
+case inr(a) {
+match (y) {
+case inl(b) {
+return false;
+}
+case inr(b) {
+return Eq.eq(a, b);
+}
+}
+}
+}
   }
 }
 
-forall f g . f:Eq, g:Eq =>
-instance (f, g) : Eq {
-  function eq(x : (f, g), y : (f, g)) -> bool {
-    match x {
-    | (a1, b1) =>
-        match y {
-        | (a2, b2) =>
-            match Eq.eq(a1, a2) {
-            | true  => return Eq.eq(b1, b2);
-            | false => return false;
-            }
-        }
-    }
+impl<f, g> Eq<(f, g)> where f: Eq, g: Eq {
+  function eq(x: (f, g), y: (f, g)) returns (bool) {
+    match (x) {
+case (a1, b1) {
+match (y) {
+case (a2, b2) {
+match (Eq.eq(a1, a2)) {
+case true {
+return Eq.eq(b1, b2);
+}
+case false {
+return false;
+}
+}
+}
+}
+}
+}
   }
 }
 
-instance () : Ord {
-  function gt(x : (), y : ()) -> bool {
+impl Ord<()> {
+  function gt(x: (), y: ()) returns (bool) {
     return false;
   }
 }
 
-forall f g . f:Ord, g:Ord =>
-instance sum(f, g) : Ord {
-  function gt(x : sum(f, g), y : sum(f, g)) -> bool {
-    match x {
-    | inl(a) =>
-        match y {
-        | inl(b) => return Ord.gt(a, b);
-        | inr(b) => return false;
-        }
-    | inr(a) =>
-        match y {
-        | inl(b) => return true;
-        | inr(b) => return Ord.gt(a, b);
-        }
-    }
+impl<f, g> Ord<sum<f, g>> where f: Ord, g: Ord {
+  function gt(x: sum<f, g>, y: sum<f, g>) returns (bool) {
+    match (x) {
+case inl(a) {
+match (y) {
+case inl(b) {
+return Ord.gt(a, b);
+}
+case inr(b) {
+return false;
+}
+}
+}
+case inr(a) {
+match (y) {
+case inl(b) {
+return true;
+}
+case inr(b) {
+return Ord.gt(a, b);
+}
+}
+}
+}
   }
 }
 
-forall f g . f:Ord, g:Ord =>
-instance (f, g) : Ord {
-  function gt(x : (f, g), y : (f, g)) -> bool {
-    match x {
-    | (a1, b1) =>
-        match y {
-        | (a2, b2) =>
-            match Ord.gt(a1, a2) {
-            | true  => return true;
-            | false =>
-                match Eq.eq(a1, a2) {
-                | true  => return Ord.gt(b1, b2);
-                | false => return false;
-                }
-            }
-        }
-    }
+impl<f, g> Ord<(f, g)> where f: Ord, g: Ord {
+  function gt(x: (f, g), y: (f, g)) returns (bool) {
+    match (x) {
+case (a1, b1) {
+match (y) {
+case (a2, b2) {
+match (Ord.gt(a1, a2)) {
+case true {
+return true;
+}
+case false {
+match (Eq.eq(a1, a2)) {
+case true {
+return Ord.gt(b1, b2);
+}
+case false {
+return false;
+}
+}
+}
+}
+}
+}
+}
+}
   }
 }
 
 // --- Arithmetic ---
 // Note: All these are used by the compiler by name.
 
-forall t . class t:Add {
-    function add(l: t, r: t) -> t;
+trait Add<t> {
+    function add(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:Sub {
-    function sub(l: t, r: t) -> t;
+trait Sub<t> {
+    function sub(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:Mul {
-    function mul(l: t, r: t) -> t;
+trait Mul<t> {
+    function mul(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:Div {
-    function div(l: t, r: t) -> t;
+trait Div<t> {
+    function div(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:Mod {
-    function mod(l: t, r: t) -> t;
+trait Mod<t> {
+    function mod(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:BitAnd {
-    function band(l: t, r: t) -> t;
+trait BitAnd<t> {
+    function band(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:BitOr {
-    function bor(l: t, r: t) -> t;
+trait BitOr<t> {
+    function bor(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:BitXor {
-    function bxor(l: t, r: t) -> t;
+trait BitXor<t> {
+    function bxor(l: t, r: t) returns (t) ;
 }
 
-forall t . class t:BitNot {
-    function bnot(x: t) -> t;
+trait BitNot<t> {
+    function bnot(x: t) returns (t) ;
 }
 
-forall t . class t:Bounded {
-  function minVal() -> t;
-  function maxVal() -> t;
+trait Bounded<t> {
+  function minVal() returns (t) ;
+  function maxVal() returns (t) ;
 }
 
-forall t . t:Bounded =>
-function maxVal() -> t { return Bounded.maxVal(); }
+function maxVal<t>() returns (t) where t: Bounded { return Bounded.maxVal(); }
 
-// umbrella class
-forall a. a:Add, a:Sub, a:Bounded, a:Eq, a:Ord, a:Typedef(word) =>
-class a:Num {
-  function maxVal() -> a;
-  function toWord(x:a) -> word;
-  function fromWord(x:word) -> a;
-  function fromInteger(comptime x:integer) -> comptime a;
-  function add(x:a, y:a) -> a;
-  function sub(x:a, y:a) -> a;
-  function gt(x:a, y:a) -> bool;
+// Umbrella trait.
+trait Num<a> where a: Add, a: Sub, a: Bounded, a: Eq, a: Ord, a: Typedef<word> {
+  function maxVal() returns (a) ;
+  function toWord(x: a) returns (word) ;
+  function fromWord(x: word) returns (a) ;
+  function fromInteger(comptime x: integer) returns (comptime<a>) ;
+  function add(x: a, y: a) returns (a) ;
+  function sub(x: a, y: a) returns (a) ;
+  function gt(x: a, y: a) returns (bool) ;
 }
 
-forall a. a:Add, a:Sub, a:Bounded, a:Eq, a:Ord, a:Typedef(word) =>
-default instance a:Num {
-  function maxVal() -> a { return Bounded.maxVal(); }
-  function toWord(x:a) -> word { return Typedef.rep(x); }
-  function fromWord(x:word) -> a { return Typedef.abs(x); }
-  function fromInteger(comptime x:integer) -> comptime a { return Typedef.abs(wordFromInteger(x)); }
-  function add(x:a, y:a) -> a { return Add.add(x,y); }
-  function sub(x:a, y:a) -> a { return Sub.sub(x,y); }
-  function gt(x: a, y: a) -> bool { return Ord.gt(x, y); }
+default impl<a> Num<a> where a: Add, a: Sub, a: Bounded, a: Eq, a: Ord, a: Typedef<word> {
+  function maxVal() returns (a) { return Bounded.maxVal(); }
+  function toWord(x: a) returns (word) { return Typedef.rep(x); }
+  function fromWord(x: word) returns (a) { return Typedef.abs(x); }
+  function fromInteger(comptime x: integer) returns (comptime<a>) { return Typedef.abs(wordFromInteger(x)); }
+  function add(x: a, y: a) returns (a) { return Add.add(x,y); }
+  function sub(x: a, y: a) returns (a) { return Sub.sub(x,y); }
+  function gt(x: a, y: a) returns (bool) { return Ord.gt(x, y); }
 }
 
 // --- Word Arithmetic & Logic ---
@@ -536,181 +583,189 @@ default instance a:Num {
 
 // These are intended to be folded by MastEval when their arguments are
 // statically known word values.
-function eqWord(x:word, y:word) -> bool {
+function eqWord(x: word, y: word) returns (bool) {
     return tobool(eq(x, y));
 }
 
-function gtWord(x:word, y:word) -> bool {
+function gtWord(x: word, y: word) returns (bool) {
     return tobool(gt_(x, y));
 }
 
-function maxWord(a : word, b : word) -> word {
-    match gtWord(a, b) {
-    | true  => return a;
-    | false => return b;
-    }
+function maxWord(a: word, b: word) returns (word) {
+    match (gtWord(a, b)) {
+case true {
+return a;
+}
+case false {
+return b;
+}
+}
 }
 
-function minWord(a : word, b : word) -> word {
-    match gtWord(a, b) {
-    | true  => return b;
-    | false => return a;
-    }
+function minWord(a: word, b: word) returns (word) {
+    match (gtWord(a, b)) {
+case true {
+return b;
+}
+case false {
+return a;
+}
+}
 }
 
-function addWord(l: word, r: word) -> word {
+function addWord(l: word, r: word) returns (word) {
     return add(l, r);
 }
 
-function subWord(l: word, r: word) -> word {
+function subWord(l: word, r: word) returns (word) {
     return sub(l, r);
 }
 
 // Bitwise AND
-function bandWord(x: word, y: word) -> word {
+function bandWord(x: word, y: word) returns (word) {
     return and_(x, y);
 }
 
 // Bitwise OR
-function borWord(x: word, y: word) -> word {
+function borWord(x: word, y: word) returns (word) {
     return or_(x, y);
 }
 
 // Bitwise XOR
-function bxorWord(x: word, y: word) -> word {
+function bxorWord(x: word, y: word) returns (word) {
     return xor_(x, y);
 }
 
 // Bitwise NOT
-function bnotWord(x: word) -> word {
+function bnotWord(x: word) returns (word) {
     return not_(x);
 }
 
 // Bitwise SHL
-function bshlWord(x: word, y: word) -> word {
+function bshlWord(x: word, y: word) returns (word) {
     return shl(x, y);
 }
 
 // Bitwise SHR
-function bshrWord(x: word, y: word) -> word {
+function bshrWord(x: word, y: word) returns (word) {
     return shr(x, y);
 }
 
-instance word:Eq {
-  function eq(x:word, y:word) -> bool {
+impl Eq<word> {
+  function eq(x: word, y: word) returns (bool) {
     return eqWord(x, y);
   }
 }
 
-instance word:Ord {
-  function gt(x:word, y:word) -> bool {
+impl Ord<word> {
+  function gt(x: word, y: word) returns (bool) {
     return gtWord(x, y);
   }
 }
 
-instance word:Add {
-    function add(l: word, r: word) -> word {
+impl Add<word> {
+    function add(l: word, r: word) returns (word) {
         return addWord(l, r);
     }
 }
 
-instance word:Sub {
-    function sub(l: word, r: word) -> word {
+impl Sub<word> {
+    function sub(l: word, r: word) returns (word) {
         return subWord(l, r);
     }
 }
 
-function mulWord(l: word, r: word) -> word {
+function mulWord(l: word, r: word) returns (word) {
     return mul(l, r);
 }
 
-instance word:Mul {
-    function mul(l: word, r: word) -> word {
+impl Mul<word> {
+    function mul(l: word, r: word) returns (word) {
         return mulWord(l, r);
     }
 }
 
-instance word:Div {
-    function div(l: word, r: word) -> word {
+impl Div<word> {
+    function div(l: word, r: word) returns (word) {
         return div(l, r);
     }
 }
 
-instance word:Mod {
-  function mod (l : word, r : word) -> word {
+impl Mod<word> {
+  function mod(l: word, r: word) returns (word) {
     return mod(l, r);
   }
 }
 
-instance word:BitAnd {
-    function band(l: word, r: word) -> word {
+impl BitAnd<word> {
+    function band(l: word, r: word) returns (word) {
         return bandWord(l, r);
     }
 }
 
-instance word:BitOr {
-    function bor(l: word, r: word) -> word {
+impl BitOr<word> {
+    function bor(l: word, r: word) returns (word) {
         return borWord(l, r);
     }
 }
 
-instance word:BitXor {
-    function bxor(l: word, r: word) -> word {
+impl BitXor<word> {
+    function bxor(l: word, r: word) returns (word) {
         return bxorWord(l, r);
     }
 }
 
-instance word:BitNot {
-    function bnot(x: word) -> word {
+impl BitNot<word> {
+    function bnot(x: word) returns (word) {
         return bnotWord(x);
     }
 }
 
-instance integer : Eq {
-  function eq(x : integer, y : integer) -> bool {
+impl Eq<integer> {
+  function eq(x: integer, y: integer) returns (bool) {
     return integerEq(x, y);
   }
 }
 
-instance integer : Ord {
-  function gt(x : integer, y : integer) -> bool {
+impl Ord<integer> {
+  function gt(x: integer, y: integer) returns (bool) {
     return integerLt(y, x);
   }
 }
 
-instance integer : Add {
-  function add(l : integer, r : integer) -> integer {
+impl Add<integer> {
+  function add(l: integer, r: integer) returns (integer) {
     return integerAdd(l, r);
   }
 }
 
-instance integer : Sub {
-  function sub(l : integer, r : integer) -> integer {
+impl Sub<integer> {
+  function sub(l: integer, r: integer) returns (integer) {
     return integerSub(l, r);
   }
 }
 
-instance integer : Mul {
-  function mul(l : integer, r : integer) -> integer {
+impl Mul<integer> {
+  function mul(l: integer, r: integer) returns (integer) {
     return integerMul(l, r);
   }
 }
 
-instance word:Bounded {
-  function maxVal() -> word {
+impl Bounded<word> {
+  function maxVal() returns (word) {
     return 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
   }
-  function minVal () -> word {
+  function minVal() returns (word) {
     return 0;
   }
 }
 
-function hash1(x: word) -> word {
+function hash1(x: word) returns (word) {
     mstore(0, x);
     return keccak256(0, 32);
 }
 
-function hash2(x: word, y: word) -> word {
+function hash2(x: word, y: word) returns (word) {
     mstore(0, x);
     mstore(32, y);
     return keccak256(0, 64);
@@ -718,249 +773,270 @@ function hash2(x: word, y: word) -> word {
 
 // --- Value Types ---
 
-forall t. t:Typedef(word) =>
-function toWord(x:t) -> word { return Typedef.rep(x); }
+function toWord<t>(x: t) returns (word) where t: Typedef<word> { return Typedef.rep(x); }
 
-data uint256 = uint256(word);
-instance uint256:Typedef(word) {
-    function abs(w: word) -> uint256 {
+enum uint256 { uint256(word) }
+impl Typedef<uint256, word> {
+    function abs(w: word) returns (uint256) {
         return uint256(w);
     }
 
-    function rep(x: uint256) -> word {
-        match x {
-        | uint256(w) => return w;
-        }
+    function rep(x: uint256) returns (word) {
+        match (x) {
+case uint256(w) {
+return w;
+}
+}
     }
 }
-instance uint256:Add {
-  function add(x : uint256, y : uint256) -> uint256 {
+impl Add<uint256> {
+  function add(x: uint256, y: uint256) returns (uint256) {
     return Typedef.abs(Add.add(Typedef.rep(x), Typedef.rep(y)));
   }
 }
 
-instance uint256:Sub {
-  function sub(x : uint256, y : uint256) -> uint256 {
+impl Sub<uint256> {
+  function sub(x: uint256, y: uint256) returns (uint256) {
     return Typedef.abs(Sub.sub(Typedef.rep(x), Typedef.rep(y)));
   }
 }
 
-instance uint256:Mul {
-  function mul(x : uint256, y : uint256) -> uint256 {
+impl Mul<uint256> {
+  function mul(x: uint256, y: uint256) returns (uint256) {
     return Typedef.abs(Mul.mul(Typedef.rep(x), Typedef.rep(y)));
   }
 }
 
-instance uint256:Div {
-  function div(x : uint256, y : uint256) -> uint256 {
+impl Div<uint256> {
+  function div(x: uint256, y: uint256) returns (uint256) {
     return Typedef.abs(Div.div(Typedef.rep(x), Typedef.rep(y)));
   }
 }
 
-instance uint256:Mod {
-  function mod(x : uint256, y : uint256) -> uint256 {
+impl Mod<uint256> {
+  function mod(x: uint256, y: uint256) returns (uint256) {
     return Typedef.abs(Mod.mod(Typedef.rep(x), Typedef.rep(y)));
   }
 }
 
-instance uint256:BitAnd {
-  function band(x : uint256, y : uint256) -> uint256 {
+impl BitAnd<uint256> {
+  function band(x: uint256, y: uint256) returns (uint256) {
     return Typedef.abs(BitAnd.band(Typedef.rep(x), Typedef.rep(y)));
   }
 }
 
-instance uint256:BitOr {
-  function bor(x : uint256, y : uint256) -> uint256 {
+impl BitOr<uint256> {
+  function bor(x: uint256, y: uint256) returns (uint256) {
     return Typedef.abs(BitOr.bor(Typedef.rep(x), Typedef.rep(y)));
   }
 }
 
-instance uint256:BitXor {
-  function bxor(x : uint256, y : uint256) -> uint256 {
+impl BitXor<uint256> {
+  function bxor(x: uint256, y: uint256) returns (uint256) {
     return Typedef.abs(BitXor.bxor(Typedef.rep(x), Typedef.rep(y)));
   }
 }
 
-instance uint256:BitNot {
-  function bnot(x : uint256) -> uint256 {
+impl BitNot<uint256> {
+  function bnot(x: uint256) returns (uint256) {
     return Typedef.abs(BitNot.bnot(Typedef.rep(x)));
   }
 }
 
-instance uint256:Eq {
-  function eq(x : uint256, y : uint256) -> bool {
+impl Eq<uint256> {
+  function eq(x: uint256, y: uint256) returns (bool) {
     return Eq.eq(Typedef.rep(x), Typedef.rep(y));
   }
 }
 
-instance uint256:Ord {
-  function gt(x : uint256, y : uint256) -> bool {
+impl Ord<uint256> {
+  function gt(x: uint256, y: uint256) returns (bool) {
     return Ord.gt(Typedef.rep(x), Typedef.rep(y));
   }
 }
 
-instance uint256:Bounded {
-  function maxVal() -> uint256 {
+impl Bounded<uint256> {
+  function maxVal() returns (uint256) {
     return uint256(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff);
   }
-  function minVal () -> uint256 {
+  function minVal() returns (uint256) {
     return uint256(0);
   }
 }
 
-instance uint256:Int {
-  function fromInteger(x:integer) -> uint256 {
+impl Int<uint256> {
+  function fromInteger(x: integer) returns (uint256) {
     return uint256(wordFromInteger(x));
   }
 }
 
-function addmod(x: uint256, y: uint256, k: uint256) -> uint256 {
+function addmod(x: uint256, y: uint256, k: uint256) returns (uint256) {
     require(k != uint256(0), Error(0x7125cbb9)); // AddModWithZero()
     return Typedef.abs(addmod_(Typedef.rep(x), Typedef.rep(y), Typedef.rep(k)));
 }
 
-function mulmod(x: uint256, y: uint256, k: uint256) -> uint256 {
+function mulmod(x: uint256, y: uint256, k: uint256) returns (uint256) {
     require(k != uint256(0), Error(0xdaea23b9)); // MulModWithZero()
     return Typedef.abs(mulmod_(Typedef.rep(x), Typedef.rep(y), Typedef.rep(k)));
 }
 
-data byte = byte(word);
-instance byte:Typedef(word) {
-    function abs(w: word) -> byte {
+enum byte { byte(word) }
+impl Typedef<byte, word> {
+    function abs(w: word) returns (byte) {
         return byte(w);
     }
 
-    function rep(x: byte) -> word {
-        match x {
-        | byte(w) => return w;
-        }
+    function rep(x: byte) returns (word) {
+        match (x) {
+case byte(w) {
+return w;
+}
+}
     }
 }
 
 // --- Address ---
-data address = address(word);
+enum address { address(word) }
 
-instance address:Typedef(word) {
-    function rep(x:address) -> word {
-        match x {
-            | address(y) => return y;
-        }
+impl Typedef<address, word> {
+    function rep(x: address) returns (word) {
+        match (x) {
+case address(y) {
+return y;
+}
+}
     }
-    function abs(x:word) -> address {
+    function abs(x: word) returns (address) {
         return address(x);
     }
 }
 
-instance address:Eq {
-  function eq(x : address , y : address) -> bool {
+impl Eq<address> {
+  function eq(x: address, y: address) returns (bool) {
     return Eq.eq(Typedef.rep(x), Typedef.rep(y));
   }
 }
 
 // --- Bytes4 ---
 
-data bytes4 = bytes4(word);
+enum bytes4 { bytes4(word) }
 
-instance bytes4:Typedef(word) {
-    function rep(b : bytes4) -> word {
-        match b {
-            | bytes4(w) => return w;
-        }
+impl Typedef<bytes4, word> {
+    function rep(b: bytes4) returns (word) {
+        match (b) {
+case bytes4(w) {
+return w;
+}
+}
     }
-    function abs(w : word) -> bytes4 {
+    function abs(w: word) returns (bytes4) {
         return bytes4(w);
     }
 }
 
 // --- Bytes32 ---
 
-data bytes32 = bytes32(word);
+enum bytes32 { bytes32(word) }
 
-instance bytes32:Typedef(word) {
-    function rep(b : bytes32) -> word {
-        match b {
-            | bytes32(w) => return w;
-        }
+impl Typedef<bytes32, word> {
+    function rep(b: bytes32) returns (word) {
+        match (b) {
+case bytes32(w) {
+return w;
+}
+}
     }
-    function abs(w : word) -> bytes32 {
+    function abs(w: word) returns (bytes32) {
         return bytes32(w);
     }
 }
 
-instance bytes32:Eq {
-  function eq(x : bytes32, y : bytes32) -> bool {
+impl Eq<bytes32> {
+  function eq(x: bytes32, y: bytes32) returns (bool) {
     return Eq.eq(Typedef.rep(x), Typedef.rep(y));
   }
 }
 
-instance bytes32:Ord {
-  function gt(x : bytes32, y : bytes32) -> bool {
+impl Ord<bytes32> {
+  function gt(x: bytes32, y: bytes32) returns (bool) {
     return Ord.gt(Typedef.rep(x), Typedef.rep(y));
   }
 }
 
 // --- Pointers ---
 
-data memory(t) = memory(word);
-forall t . instance memory(t) : Typedef(word) {
-    function abs(x: word) -> memory(t) {
+enum memory<t> { memory(word) }
+impl<t> Typedef<memory<t>, word> {
+    function abs(x: word) returns (memory<t>) {
         return memory(x);
     }
 
-    function rep(x: memory(t)) -> word {
-        match x {
-        | memory(w) => return w;
-        }
+    function rep(x: memory<t>) returns (word) {
+        match (x) {
+case memory(w) {
+return w;
+}
+}
     }
 }
 
-data storage(t) = storage(word);
-forall t . instance storage(t) : Typedef(word) {
-    function abs(x: word) -> storage(t) {
+enum storage<t> { storage(word) }
+impl<t> Typedef<storage<t>, word> {
+    function abs(x: word) returns (storage<t>) {
         return storage(x);
     }
 
-    function rep(x: storage(t)) -> word {
-        match x {
-        | storage(w) => return w;
-       }
+    function rep(x: storage<t>) returns (word) {
+        match (x) {
+case storage(w) {
+return w;
+}
+}
     }
 }
 
-data calldata(t) = calldata(word);
-forall t . instance calldata(t) : Typedef(word) {
-    function abs(x: word) -> calldata(t) {
+enum calldata<t> { calldata(word) }
+impl<t> Typedef<calldata<t>, word> {
+    function abs(x: word) returns (calldata<t>) {
         return calldata(x);
     }
 
-    function rep(x: calldata(t)) -> word {
-        match x {
-        | calldata(w) => return w;
-       }
+    function rep(x: calldata<t>) returns (word) {
+        match (x) {
+case calldata(w) {
+return w;
+}
+}
     }
 }
 
-data returndata(t) = returndata(word);
-forall t . instance returndata(t) : Typedef(word) {
-    function abs(x: word) -> returndata(t) {
+enum returndata<t> { returndata(word) }
+impl<t> Typedef<returndata<t>, word> {
+    function abs(x: word) returns (returndata<t>) {
         return returndata(x);
     }
 
-    function rep(x: returndata(t)) -> word {
-        match x {
-        | returndata(w) => return w;
-       }
+    function rep(x: returndata<t>) returns (word) {
+        match (x) {
+case returndata(w) {
+return w;
+}
+}
     }
 }
 
-data mapping(member, index) = mapping(word) ;
+enum mapping<member, index> { mapping(word) }
 
-data array(member) = array(word) ;
+enum array<member> { array(word) }
 
 // --- Low-level memory ops
 
-function strlen(s:memory(string)) -> word {
-  match s { | memory(a) => return mload(a); }
+function strlen(s: memory<string>) returns (word) {
+  match (s) {
+case memory(a) {
+return mload(a);
+}
+}
 }
 
 // --- Memory Utilities ---
@@ -969,35 +1045,35 @@ function strlen(s:memory(string)) -> word {
 // The word stored in memory at index 0x40 is used to store the start of the currently unused memory region
 
 // returns the value stored in memory(0x40)
-function get_free_memory() -> word {
+function get_free_memory() returns (word) {
     return mload(0x40);
 }
 
 // set the value stored in memory(0x40)
-function set_free_memory(loc : word) -> () {
+function set_free_memory(loc: word) {
     mstore(0x40, loc);
 }
 
 // Allocate memory and update the memory pointer.
-function allocate_memory(size : word) -> word {
+function allocate_memory(size: word) returns (word) {
     let ptr = get_free_memory();
     set_free_memory(ptr + size);
     return ptr;
 }
 
-function allocate_zeroed_memory(size: word) -> word {
+function allocate_zeroed_memory(size: word) returns (word) {
     let ptr = allocate_memory(size);
     zeroize_memory(ptr, size);
     return ptr;
 }
 
 // Clears a memory area.
-function zeroize_memory(ptr: word, len: word) -> () {
+function zeroize_memory(ptr: word, len: word) {
     let end_ptr = ptr + len;
 
     // Zero out 32-byte words.
     for (let i = 0; i < len / 32; i += 1, ptr += 32) {
-        mstore(ptr, 0)
+        mstore(ptr, 0);
     }
 
     // Zero out trailing bytes. We rely on the zero-slot (0x60-0x7f).
@@ -1008,9 +1084,9 @@ function zeroize_memory(ptr: word, len: word) -> () {
 
 // types that can be written to and read from at a uint256 index
 // TODO: this needs to be split into LValue / RValue variants for `=` desugaring
-forall t val . class t:IndexAccess(val) {
-    function get(c: t, i: uint256) -> val;
-    function set(c: t, i: uint256, v: val) -> ();
+trait IndexAccess<t, val> {
+    function get(c: t, i: uint256) returns (val) ;
+    function set(c: t, i: uint256, v: val) ;
 }
 
 // --- DynArray ---
@@ -1018,18 +1094,18 @@ forall t val . class t:IndexAccess(val) {
 // Word arrays with a size known only at runtime
 // types with a size smaller than `word` will not be packed, so a `DynArray(byte)` will waste a lot of space
 // TODO: storage representation
-data DynArray(t);
+enum DynArray<t> {}
 
 // Layout: the length lives at `loc`, so element i lives at `loc + 32 + i*32`.
 // An index is in bounds when i < length.
-forall t . t:Typedef(word) => instance memory(DynArray(t)):IndexAccess(t) {
-    function get(ptr : memory(DynArray(t)), i : uint256) -> t {
+impl<t> IndexAccess<memory<DynArray<t>>, t> where t: Typedef<word> {
+    function get(ptr: memory<DynArray<t>>, i: uint256) returns (t) {
         let i_: word = Typedef.rep(i);
         let loc : word = Typedef.rep(ptr);
         if (i_ >= mload(loc)) { out_of_bounds(); }
         return Typedef.abs(mload(loc + 32 + (i_ * 32)));
     }
-    function set(arr : memory(DynArray(t)), i : uint256, val : t) -> () {
+    function set(arr: memory<DynArray<t>>, i: uint256, val: t) {
         let i_ : word = Typedef.rep(i);
         let loc : word = Typedef.rep(arr);
         if (i_ >= mload(loc)) { out_of_bounds(); }
@@ -1043,19 +1119,17 @@ forall t . t:Typedef(word) => instance memory(DynArray(t)):IndexAccess(t) {
 //   arrayLitInit(... arrayLitInit(arrayLitNew(n), 0, e1) ..., n-1, en)
 // The chain is a plain expression: each step returns the array it wrote to.
 
-forall t . t:Typedef(word) =>
-function arrayLitNew(n : uint256) -> memory(DynArray(t)) {
-    let prx : Proxy(t);
+function arrayLitNew<t>(n: uint256) returns (memory<DynArray<t>>) where t: Typedef<word> {
+    let prx : Proxy<t>;
     return allocateDynamicArray(prx, Typedef.rep(n));
 }
 
-forall t . t:Typedef(word) =>
-function arrayLitInit(arr : memory(DynArray(t)), i : uint256, v : t) -> memory(DynArray(t)) {
+function arrayLitInit<t>(arr: memory<DynArray<t>>, i: uint256, v: t) returns (memory<DynArray<t>>) where t: Typedef<word> {
     IndexAccess.set(arr, i, v);
     return arr;
 }
 
-forall t . function allocateDynamicArray(prx : Proxy(t), length : word) -> memory(DynArray(t)) {
+function allocateDynamicArray<t>(prx: Proxy<t>, length: word) returns (memory<DynArray<t>>) {
     // size of allocation in bytes
     let sz : word = (length + 1) * 32;
 
@@ -1065,7 +1139,7 @@ forall t . function allocateDynamicArray(prx : Proxy(t), length : word) -> memor
 
     // write array length and return
     mstore(free, length);
-    let res : memory(DynArray(t)) = Typedef.abs(free);
+    let res : memory<DynArray<t>> = Typedef.abs(free);
     return res;
 }
 
@@ -1074,18 +1148,18 @@ forall t . function allocateDynamicArray(prx : Proxy(t), length : word) -> memor
 // tightly packed byte arrays
 // bytes does not have a runtime representation since it can only ever exist in
 // memory / calldata / storage and serves only as a type tag for pointer types
-// TODO: IndexAccess for memory(bytes)
-// TODO: IndexAccess for calldata(bytes)
-// TODO: IndexAccess for storage(bytes)
-data bytes;
+// TODO: IndexAccess for memory<bytes>
+// TODO: IndexAccess for calldata<bytes>
+// TODO: IndexAccess for storage<bytes>
+enum bytes {}
 
 // --- strings ---
 
 // TODO: should this be a typedef over `bytes`?
-data string;
+enum string {}
 
-instance string:Add {
-    function add(l: string, r: string) -> string {
+impl Add<string> {
+    function add(l: string, r: string) returns (string) {
         return concatLit(l, r);
     }
 }
@@ -1096,25 +1170,25 @@ instance string:Add {
 // These are intended to be folded by MastEval when their arguments are
 // statically known string literals.
 
-function concatLit(comptime a: string, comptime b: string) -> string {
+function concatLit(comptime a: string, comptime b: string) returns (string) {
   unimplemented(); // Sanity check if folding ignores it.
   return "";
 }
 
-function strlenLit(comptime a: string) -> word {
+function strlenLit(comptime a: string) returns (word) {
   unimplemented(); // Sanity check if folding ignores it.
   return 0;
 }
 
 // Keccak-256 hash of the string-literal as UTF-8 bytes.
-function keccakLit(comptime a: string) -> word {
+function keccakLit(comptime a: string) returns (word) {
   unimplemented(); // Sanity check if folding ignores it.
   return 0;
 }
 
 // Keccak-256 hash of a word's 32-byte big-endian representation.
 // NOTE: this could be deprecated if we have comptime `to_bytes`.
-function keccakWordLit(comptime a: word) -> word {
+function keccakWordLit(comptime a: word) returns (word) {
   unimplemented(); // Sanity check if folding ignores it.
   return 0;
 }
@@ -1123,43 +1197,49 @@ function keccakWordLit(comptime a: word) -> word {
 
 // A slice is a wrapper around an existing pointer type that extends the
 // underlying type with information about the size of the data pointed to by `t`
-data slice(ptr) = slice(ptr, word);
+enum slice<ptr> { slice(ptr, word) }
 
 // --- Word Reader ---
 
 // A WordReader is an abstraction over byte indexed structure that can be read in word sized chunks (e.g. calldata / memory)
 // These let us use the same abi decoding routines for calldata / memory
-forall ty . class ty:WordReader {
+trait WordReader<ty> {
     // returns the word currently pointed to by the WordReader
-    function read(reader:ty) -> word;
+    function read(reader: ty) returns (word) ;
     // returns a new WordReader that points to a location `offset` bytes further into the array
-    function advance(reader:ty, offset:word) -> ty;
+    function advance(reader: ty, offset: word) returns (ty) ;
     // copies a block from the underlying source to memory
-    function copyToMem(reader:ty, dst: word, cnt: word) -> ();
+    function copyToMem(reader: ty, dst: word, cnt: word) ;
 }
 
 // WordReader for memory
-data MemoryWordReader = MemoryWordReader(word);
-instance MemoryWordReader:WordReader {
-    function read(reader:MemoryWordReader) -> word {
-        match reader {
-        | MemoryWordReader(ptr) => return mload(ptr);
-        }
+enum MemoryWordReader { MemoryWordReader(word) }
+impl WordReader<MemoryWordReader> {
+    function read(reader: MemoryWordReader) returns (word) {
+        match (reader) {
+case MemoryWordReader(ptr) {
+return mload(ptr);
+}
+}
     }
-    function advance(reader:MemoryWordReader, offset:word) -> MemoryWordReader {
-        match reader {
-        | MemoryWordReader(ptr) => return MemoryWordReader(ptr + offset);
-        }
+    function advance(reader: MemoryWordReader, offset: word) returns (MemoryWordReader) {
+        match (reader) {
+case MemoryWordReader(ptr) {
+return MemoryWordReader(ptr + offset);
+}
+}
     }
-    function copyToMem(reader:MemoryWordReader, dst:word, cnt: word) -> () {
-        match reader {
-        | MemoryWordReader(ptr) => mcopy(dst, ptr, cnt);
-        }
+    function copyToMem(reader: MemoryWordReader, dst: word, cnt: word) {
+        match (reader) {
+case MemoryWordReader(ptr) {
+mcopy(dst, ptr, cnt);
+}
+}
     }
 }
 
 // WordReader for calldata
-data CalldataWordReader = CalldataWordReader(word);
+enum CalldataWordReader { CalldataWordReader(word) }
 
 instance CalldataWordReader : Typedef(word) {
   function abs(a:word) -> CalldataWordReader { return CalldataWordReader(a); }
