@@ -1,13 +1,13 @@
-import std.{*};
-import std.dispatch.{*};
-import std.opcodes.{mload, mstore};
+import * from std;
+import * from std.dispatch;
+import {mload, mstore} from std.opcodes;
 
-// UFCS counterpart of storage_array.solc.
+// UFCS counterpart of storage_array.sol.
 //
 // This contract is byte-for-byte equivalent in behaviour to
-// dispatch/storage_array.solc, but exercises the receiver-style method-call
+// dispatch/storage_array.sol, but exercises the receiver-style method-call
 // sugar resolved by NameResolution: when the receiver of recv.method(args)
-// is an (unqualified) contract field and a unique class exposes method, the
+// is an (unqualified) contract field and a unique trait exposes the method, the
 // call is rewritten to Class.method(recv, args).  So:
 //
 //   members.push(addr)  ==>  ArrayPush.push(members, addr)
@@ -19,16 +19,16 @@ import std.opcodes.{mload, mstore};
 // the same runtime behaviour.  Indexed access members[i] is unaffecte: it
 // is handled by field-access desugaring, not UFCS.
 contract MemberRegistry {
-  members : array(address);
+  members : array<address>;
 
   constructor() {}
 
-  public function addMember(addr : address) -> () {
+  function addMember(addr: address) public {
     members.push(addr);
   }
 
   // MemberNotFound() selector
-  public function removeMember(addr : address) -> () {
+  function removeMember(addr: address) public {
     // foundIdx == length() acts as the "not found" sentinel.
     let foundIdx : uint256 = members.length();
     let i : uint256;
@@ -48,11 +48,11 @@ contract MemberRegistry {
     members.pop();
   }
 
-  public function numberOfMembers() -> uint256 {
+  function numberOfMembers() public returns (uint256) {
     return members.length();
   }
 
-  public function getMembers() -> memory(DynArray(address)) {
+  function getMembers() public returns (memory<DynArray<address>>) {
     let count : word = Typedef.rep(members.length());
     let totalBytes : word = (count + 1) * 32;
     let ptr : word = allocate_memory(totalBytes);
@@ -63,6 +63,6 @@ contract MemberRegistry {
       let addr : address = members[uint256(i)];
       mstore(ptr + 32 + i * 32, Typedef.rep(addr));
     }
-    return Typedef.abs(ptr) : memory(DynArray(address));
+    return Typedef.abs(ptr) ;
   }
 }

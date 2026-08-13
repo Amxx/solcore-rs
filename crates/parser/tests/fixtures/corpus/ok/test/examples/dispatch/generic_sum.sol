@@ -68,11 +68,15 @@ contract GenericSum {
         mstore(buf, Typedef.rep(tag));
         mstore(buf + 32, Typedef.rep(value));
         let rdr : MemoryWordReader = MemoryWordReader(buf);
-        let dec : ABIDecoder(Option(uint256), MemoryWordReader) = ABIDecoder(rdr);
-        let opt : Option(uint256) = decode(dec, 0);
-        match opt {
-        | Option.None    => return uint256(0);
-        | Option.Some(v) => return v;
-        }
+        let dec : ABIDecoder<Option<uint256>, MemoryWordReader> = ABIDecoder(rdr);
+        let opt : Option<uint256> = decode(dec, 0);
+        match (opt) {
+case Option.None {
+return uint256(0);
+}
+case Option.Some(v) {
+return v;
+}
+}
     }
 }

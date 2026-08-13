@@ -1,6 +1,6 @@
-import std.{*};
-import std.dispatch.{*};
-import std.eip7951.{p256verify};
+import * from std;
+import * from std.dispatch;
+import {p256verify} from std.eip7951;
 
 // Exercises the P256VERIFY (secp256r1) precompile at address 0x100, introduced
 // by EIP-7951, through the std `p256verify` helper. It returns true for a valid
@@ -8,7 +8,7 @@ import std.eip7951.{p256verify};
 contract P256Test {
     constructor() {}
 
-    public function verifyValid() -> bool {
+    function verifyValid() public returns (bool) {
         return p256verify(
             bytes32(0xabcdef00112233445566778899aabbccddeeff00112233445566778899aabbcc),
             bytes32(0xa29295460e251beea1bdc9b84b2f3fe8e3a3e4d872baa3c55b78c9e448190ea9),
@@ -18,7 +18,7 @@ contract P256Test {
         );
     }
 
-    public function verifyInvalid() -> bool {
+    function verifyInvalid() public returns (bool) {
         return p256verify(
             bytes32(0xabcdef00112233445566778899aabbccddeeff00112233445566778899aabbcd),
             bytes32(0xa29295460e251beea1bdc9b84b2f3fe8e3a3e4d872baa3c55b78c9e448190ea9),

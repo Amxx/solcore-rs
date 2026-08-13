@@ -1,9 +1,9 @@
-import std.{*};
-import std.dispatch.{*};
-import std.opcodes.{mstore};
+import * from std;
+import * from std.dispatch;
+import {mstore} from std.opcodes;
 
 // Build a memory(bytes) holding the three-byte string "abc".
-function abcBytes() -> memory(bytes) {
+function abcBytes() returns (memory<bytes>) {
     let p = allocate_memory(64);
     mstore(p, 3);
     mstore(p + 32, 0x6162630000000000000000000000000000000000000000000000000000000000);
@@ -13,35 +13,35 @@ function abcBytes() -> memory(bytes) {
 contract C {
     constructor() {}
 
-    public function keccak() -> bytes32 {
+    function keccak() public returns (bytes32) {
         return keccak256_(abcBytes());
     }
 
-    public function sha() -> bytes32 {
+    function sha() public returns (bytes32) {
         return sha256(abcBytes());
     }
 
-    public function ripemd() -> bytes32 {
+    function ripemd() public returns (bytes32) {
         return ripemd160(abcBytes());
     }
 
     // keccakWordLit folds keccak256 of a word's 32-byte big-endian form at
     // compile time; keccakWordLit(0) == keccak256(bytes32(0)).
-    public function keccakWord() -> bytes32 {
+    function keccakWord() public returns (bytes32) {
         return bytes32(keccakWordLit(0));
     }
 
     // ERC-7201 namespaced storage slots, folded to constants at compile time
     // from the string-literal namespace (no runtime keccak of the id).
-    public function erc7201Example() -> bytes32 {
+    function erc7201Example() public returns (bytes32) {
         return erc7201("example.main");
     }
 
-    public function erc7201Ownable() -> bytes32 {
+    function erc7201Ownable() public returns (bytes32) {
         return erc7201("openzeppelin.storage.Ownable");
     }
 
-    public function erc7201Empty() -> bytes32 {
+    function erc7201Empty() public returns (bytes32) {
         return erc7201("");
     }
 }
