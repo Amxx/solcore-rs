@@ -1,14 +1,14 @@
 // Storage array as a contract field: `arr : array(uint256)`.
-import std.{*};
+import * from std;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
 
 contract ArrayField {
   reserved : word; // forge uses at least 1 storage slot
-  arr : array(uint256);
+  arr : array<uint256>;
 
-  function main() -> uint256 {
+  function main() returns (uint256) {
     // push appends and grows the length automatically.
     ArrayPush.push(arr, uint256(42));
     ArrayPush.push(arr, uint256(100));

@@ -1,8 +1,8 @@
 pragma no-coverage-condition ;
 
-data List(a) = Nil | Cons(a,List(a));
-data Bool = True | False ;
+enum List<a> { Nil, Cons(a, List<a>) }
+enum Bool { True, False }
 
-forall a b c . class a : C(b,c) {}
+trait C<a, b, c> {}
 
-forall a b . instance List(b) : C (a, List(a)) {}
+impl<a, b> C<List<b>, a, List<a>> {}

@@ -59,15 +59,15 @@ contract WETH9 {
         return true;
     }
 
-    public function transfer(dst: address, wad: uint256) -> bool {
+    function transfer(dst: address, wad: uint256) public returns (bool) {
         return transferFrom(caller(), dst, wad);
     }
 
-    public function transferFrom(src: address, dst: address, wad: uint256) -> bool {
+    function transferFrom(src: address, dst: address, wad: uint256) public returns (bool) {
         let sender = caller();
         require(balances[src] >= wad, Error(0xf4d678b8)); // InsufficientBalance()
 
-        if (src != sender && allowance[src][sender] != (maxVal():uint256)) {
+        if (src != sender && allowance[src][sender] != (maxVal())) {
             require(allowance[src][sender] >= wad, Error(0x13be252b)); // InsufficientAllowance()
             allowance[src][sender] -= wad;
         }
@@ -77,7 +77,7 @@ contract WETH9 {
     }
 
     // Plain ETH transfers (no calldata, just value) auto-wrap into WETH.
-    payable fallback() -> () {
+    fallback() payable {
         let sender = caller();
         balances[sender] = balances[sender] + callvalue();
     }
