@@ -109,18 +109,12 @@ where
             alias,
             constructors: None,
         });
-    let selected_or_wildcard = just(Token::Star).to(None).or(selected_item.map(Some));
-    let named_selector = selected_or_wildcard
+    let named_selector = selected_item
         .separated_by(just(Token::Comma))
         .at_least(1)
+        .allow_trailing()
         .collect::<Vec<_>>()
-        .map(|entries| {
-            if entries.iter().any(Option::is_none) {
-                ParsedImportSelector::Wildcard
-            } else {
-                ParsedImportSelector::Names(entries.into_iter().flatten().collect())
-            }
-        });
+        .map(ParsedImportSelector::Names);
     let selector = named_selector
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
         .boxed();
@@ -128,21 +122,23 @@ where
         .ignore_then(
             import_name_parser()
                 .separated_by(just(Token::Comma))
+                .at_least(1)
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
         .or_not()
-        .map(Option::unwrap_or_default);
+        .map(Option::unwrap_or_default)
+        .boxed();
 
     let selective = just(Token::Import)
-        .ignore_then(path.clone())
-        .then_ignore(just(Token::Dot))
-        .then(selector)
-        .then(hiding)
+        .ignore_then(selector)
+        .then_ignore(from_kw_parser())
+        .then(path.clone())
+        .then(hiding.clone())
         .then_ignore(top_level_semicolon_parser("import declaration"))
         .map_with(
-            |(((external, path), selector), hiding), e| ParsedTopItem::Import {
+            |((selector, (external, path)), hiding), e| ParsedTopItem::Import {
                 span: e.span(),
                 leading_comments: Vec::new(),
                 external,
@@ -154,12 +150,14 @@ where
         )
         .boxed();
 
-    let with_alias = just(Token::Import)
-        .ignore_then(path.clone())
+    let namespace_alias = just(Token::Import)
+        .ignore_then(just(Token::Star))
         .then_ignore(just(Token::As))
-        .then(ident_parser())
+        .ignore_then(ident_parser())
+        .then_ignore(from_kw_parser())
+        .then(path.clone())
         .then_ignore(top_level_semicolon_parser("import declaration"))
-        .map_with(|((external, path), alias), e| ParsedTopItem::Import {
+        .map_with(|(alias, (external, path)), e| ParsedTopItem::Import {
             span: e.span(),
             leading_comments: Vec::new(),
             external,
@@ -167,6 +165,23 @@ where
             alias: Some(alias),
             selector: None,
             hiding: Vec::new(),
+        })
+        .boxed();
+
+    let wildcard = just(Token::Import)
+        .ignore_then(just(Token::Star))
+        .ignore_then(from_kw_parser())
+        .ignore_then(path.clone())
+        .then(hiding)
+        .then_ignore(top_level_semicolon_parser("import declaration"))
+        .map_with(|((external, path), hiding), e| ParsedTopItem::Import {
+            span: e.span(),
+            leading_comments: Vec::new(),
+            external,
+            path,
+            alias: None,
+            selector: Some(ParsedImportSelector::Wildcard),
+            hiding,
         })
         .boxed();
 
@@ -184,7 +199,7 @@ where
         })
         .boxed();
 
-    choice((selective, with_alias, plain))
+    choice((namespace_alias, wildcard, selective, plain))
         .labelled("import declaration")
         .as_context()
         .boxed()

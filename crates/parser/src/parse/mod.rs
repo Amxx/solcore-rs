@@ -430,10 +430,51 @@ pub(crate) fn parse_body_statements<'src>(
         })
         .collect::<Vec<_>>();
     nesting_errors.extend(suppress_body_cascades(parse_errors));
+    if let Some(output) = output.as_deref() {
+        validate_expression_statement_terminators(output, true, &mut nesting_errors);
+    }
 
     ParseOutput {
         output: output.unwrap_or_default(),
         errors: nesting_errors,
+    }
+}
+
+fn validate_expression_statement_terminators(
+    stmts: &[ParsedStmt<'_>],
+    allow_final_unterminated: bool,
+    errors: &mut Vec<ParsedError>,
+) {
+    for (index, stmt) in stmts.iter().enumerate() {
+        let is_final = index + 1 == stmts.len();
+        match &stmt.kind {
+            ParsedStmtKind::Expr {
+                trailing_semi: false,
+                ..
+            } if !(allow_final_unterminated && is_final) => errors.push(ParsedError::new(
+                stmt.span,
+                "expression statement requires trailing `;`; only a final named function body expression may omit it",
+            )),
+            ParsedStmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    validate_expression_statement_terminators(&arm.body, false, errors);
+                }
+            }
+            ParsedStmtKind::For { body, .. } | ParsedStmtKind::Block { body } => {
+                validate_expression_statement_terminators(body, false, errors);
+            }
+            ParsedStmtKind::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                validate_expression_statement_terminators(then_body, false, errors);
+                if let Some(else_body) = else_body {
+                    validate_expression_statement_terminators(else_body, false, errors);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -742,6 +783,7 @@ mod tests {
             "unexpected function definition: {stmt:#?}"
         );
 
+        // syntax-migration: preserve-next-literal
         let stmt = parse_yul_stmt("function _(_) -> _ { _ := _ }");
         assert!(
             matches!(
@@ -937,7 +979,7 @@ mod tests {
 
     #[test]
     fn unicode_identifier_parses() {
-        let source = "function fλ(x: word) -> word { return x; }";
+        let source = "function fλ(x: word) returns (word) { return x; }";
         let parsed = parse_supported_items(source);
         assert!(
             parsed.errors.is_empty(),

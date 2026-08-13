@@ -421,11 +421,12 @@ mod tests {
         assert_eq!(tokenize("export"), vec![Token::Export]);
         assert_eq!(tokenize("as"), vec![Token::As]);
         assert_eq!(tokenize("let"), vec![Token::Let]);
-        assert_eq!(tokenize("data"), vec![Token::Data]);
         assert_eq!(tokenize("derive"), vec![Token::Ident("derive")]);
-        assert_eq!(tokenize("class"), vec![Token::Class]);
-        assert_eq!(tokenize("forall"), vec![Token::Forall]);
-        assert_eq!(tokenize("instance"), vec![Token::Instance]);
+        for keyword in [
+            "enum", "trait", "impl", "from", "returns", "where", "mapping", "while",
+        ] {
+            assert_eq!(tokenize(keyword), vec![Token::Ident(keyword)]);
+        }
         assert_eq!(tokenize("if"), vec![Token::If]);
         assert_eq!(tokenize("else"), vec![Token::Else]);
         assert_eq!(tokenize("for"), vec![Token::For]);
@@ -453,6 +454,8 @@ mod tests {
 
     #[test]
     fn test_multi_char_operators() {
+        // `:=` remains a token for inline Yul, even though Core declarations
+        // and assignments reject it.
         assert_eq!(tokenize(":="), vec![Token::ColonEq]);
         assert_eq!(tokenize("->"), vec![Token::Arrow]);
         assert_eq!(tokenize("=>"), vec![Token::FatArrow]);
@@ -715,17 +718,23 @@ mod tests {
         );
 
         assert_eq!(
-            tokenize("function foo(a, b) -> c"),
+            tokenize("function foo(a: word, b: word) returns (word)"),
             vec![
                 Token::Function,
                 Token::Ident("foo"),
                 Token::LParen,
                 Token::Ident("a"),
+                Token::Colon,
+                Token::Ident("word"),
                 Token::Comma,
                 Token::Ident("b"),
+                Token::Colon,
+                Token::Ident("word"),
                 Token::RParen,
-                Token::Arrow,
-                Token::Ident("c"),
+                Token::Ident("returns"),
+                Token::LParen,
+                Token::Ident("word"),
+                Token::RParen,
             ]
         );
     }
@@ -734,9 +743,9 @@ mod tests {
     fn test_contract_snippet() {
         let input = r#"
             contract Foo {
-                function bar() -> u256 {
-                    let x := 0x1234;
-                    return x
+                function bar() returns (u256) {
+                    let x = 0x1234;
+                    return x;
                 }
             }
         "#;
@@ -752,16 +761,19 @@ mod tests {
                 Token::Ident("bar"),
                 Token::LParen,
                 Token::RParen,
-                Token::Arrow,
+                Token::Ident("returns"),
+                Token::LParen,
                 Token::Ident("u256"),
+                Token::RParen,
                 Token::LBrace,
                 Token::Let,
                 Token::Ident("x"),
-                Token::ColonEq,
+                Token::Eq,
                 Token::HexLit("0x1234"),
                 Token::Semi,
                 Token::Return,
                 Token::Ident("x"),
+                Token::Semi,
                 Token::RBrace,
                 Token::RBrace,
             ]

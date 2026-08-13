@@ -3,7 +3,7 @@ use hir::ast::function;
 
 use super::{
     common::*,
-    items::{body_span_parser, param_parser},
+    items::{body_span_parser, lambda_param_parser},
     recovery::trace_recovery,
     types::type_parser,
 };
@@ -74,7 +74,7 @@ where
     let mut pat = Recursive::declare();
 
     expr.define({
-        let lambda_param = param_parser().boxed();
+        let lambda_param = lambda_param_parser().boxed();
 
         let lambda_params = lambda_param
             .separated_by(just(Token::Comma))
@@ -99,49 +99,12 @@ where
             })
             .boxed();
 
-        // Parse a right-nested `else if ...` chain as a flat list of heads.
-        // Recursing through the complete expression grammar once per `else`
-        // gives each level a very large Chumsky stack frame; folding the heads
-        // back into the same AST keeps ordinary else-if chains stack-bounded.
-        let if_head = just(Token::If)
-            .ignore_then(expr.clone())
-            .then_ignore(then_kw_parser())
-            .then(expr.clone())
-            .then_ignore(just(Token::Else))
-            .map_with(|(cond, then_expr), e| (e.span(), cond, then_expr))
-            .boxed();
-        let if_expr = if_head
-            .repeated()
-            .at_least(1)
-            .collect::<Vec<_>>()
-            .then(expr.clone())
-            .map(|(heads, tail)| {
-                heads.into_iter().rev().fold(
-                    tail,
-                    |else_expr,
-                     (head_span, cond, then_expr): (
-                        LexSpan,
-                        ParsedExpr<'src>,
-                        ParsedExpr<'src>,
-                    )| ParsedExpr {
-                        span: LexSpan::from(head_span.start..else_expr.span.end),
-                        kind: ParsedExprKind::If {
-                            cond: Box::new(cond),
-                            then_expr: Box::new(then_expr),
-                            else_expr: Box::new(else_expr),
-                        },
-                    },
-                )
-            })
-            .boxed();
-
         let boundary = choice((
             just(Token::Semi).ignored(),
             just(Token::Comma).ignored(),
             just(Token::RParen).ignored(),
             just(Token::RBracket).ignored(),
             just(Token::RBrace).ignored(),
-            then_kw_parser(),
             just(Token::Else).ignored(),
             just(Token::Question).ignored(),
             just(Token::Colon).ignored(),
@@ -201,9 +164,13 @@ where
                 span: e.span(),
                 kind: ParsedExprKind::Lit(lit),
             })
+            .or(boolean_value_parser().map(|ident| ParsedExpr {
+                span: ident.1,
+                kind: ParsedExprKind::Ident(ident),
+            }))
             .or(just(Token::Dot)
                 .map_with(|_, e| e.span())
-                .then(ident_parser())
+                .then(ident_parser().or(boolean_value_parser()))
                 .then(
                     expr.clone()
                         .separated_by(just(Token::Comma))
@@ -224,7 +191,6 @@ where
             .or(tuple_or_paren_expr)
             .or(array_expr)
             .or(lambda_expr)
-            .or(if_expr)
             .recover_with(via_parser(atom_recovery))
             .boxed();
 
@@ -320,20 +286,7 @@ where
                 parsed_bin_op_expr(lhs, op, rhs, e.span())
             });
 
-        let match_arm_separator = just(Token::Pipe)
-            .ignore_then(
-                pat.clone()
-                    .separated_by(just(Token::Comma))
-                    .at_least(1)
-                    .collect::<Vec<_>>(),
-            )
-            .then_ignore(just(Token::FatArrow))
-            .ignored();
         let bit_or_op = just(Token::Pipe)
-            // In a match body, `| pat =>` starts the next arm; without this
-            // guard the expression parser could consume the separator as a
-            // bitwise-or operator while recovering from the previous arm body.
-            .and_is(match_arm_separator.not())
             .to(function::BinOp::BitOr)
             .map_with(|op, e| ParsedSpanned::new(op, e.span()));
         let bit_or = bit_xor
@@ -391,43 +344,31 @@ where
                 parsed_bin_op_expr(lhs, op, rhs, e.span())
             });
 
-        let ternary = recursive(|ternary| {
-            or.clone()
-                .then(
-                    just(Token::Question)
-                        .ignore_then(ternary.clone())
-                        .then_ignore(just(Token::Colon))
-                        .then(ternary)
-                        .or_not(),
-                )
-                .map_with(|(cond, arms), e| match arms {
-                    Some((then_expr, else_expr)) => ParsedExpr {
-                        span: e.span(),
-                        kind: ParsedExprKind::If {
-                            cond: Box::new(cond),
-                            then_expr: Box::new(then_expr),
-                            else_expr: Box::new(else_expr),
-                        },
+        // A conditional expression is right-associative. Parse the common
+        // `a ? b : c ? d : e` shape as a flat sequence and fold it from the
+        // right so a long chain does not recurse through Chumsky once per
+        // `else` arm. The then arm still uses the complete expression grammar,
+        // which preserves nested conditionals such as `a ? b ? c : d : e`.
+        let ternary_head = or
+            .clone()
+            .then_ignore(just(Token::Question))
+            .then(expr.clone())
+            .then_ignore(just(Token::Colon));
+        let ternary = ternary_head
+            .repeated()
+            .foldr(or, |(cond, then_expr), else_expr| {
+                let span = LexSpan::from(cond.span.start..else_expr.span.end);
+                ParsedExpr {
+                    span,
+                    kind: ParsedExprKind::If {
+                        cond: Box::new(cond),
+                        then_expr: Box::new(then_expr),
+                        else_expr: Box::new(else_expr),
                     },
-                    None => cond,
-                })
-        })
-        .boxed();
+                }
+            });
 
-        let type_annot = just(Token::Colon).ignore_then(type_parser()).or_not();
         ternary
-            .then(type_annot)
-            .map_with(|(expr, ty), e| match ty {
-                Some(ty) => ParsedExpr {
-                    span: e.span(),
-                    kind: ParsedExprKind::TypeAnnot {
-                        expr: Box::new(expr),
-                        ty,
-                    },
-                },
-                None => expr,
-            })
-            .boxed()
     });
 
     pat.define({
@@ -442,6 +383,16 @@ where
             .map_with(|lit, e| ParsedPat {
                 span: e.span(),
                 kind: ParsedPatKind::Lit(lit),
+            })
+            .boxed();
+
+        // Boolean values are represented as variable-shaped patterns in HIR;
+        // name resolution recognizes these two reserved spellings as the
+        // builtin nullary constructors rather than introducing bindings.
+        let bool_pat = boolean_value_parser()
+            .map(|name| ParsedPat {
+                span: name.1,
+                kind: ParsedPatKind::Var(name),
             })
             .boxed();
 
@@ -471,7 +422,7 @@ where
 
         let dot_ctor = just(Token::Dot)
             .map_with(|_, e| e.span())
-            .then(ident_parser())
+            .then(ident_parser().or(boolean_value_parser()))
             .then(ctor_args.clone())
             .map_with(|((dot, name), args), e| ParsedPat {
                 span: e.span(),
@@ -539,6 +490,7 @@ where
 
         wildcard
             .or(lit_pat)
+            .or(bool_pat)
             .or(tuple_or_paren_pat)
             .or(dot_ctor)
             .or(comptime_pat)
