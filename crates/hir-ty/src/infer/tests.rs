@@ -98,7 +98,7 @@ impl nameres::Db for TestDb {
 impl crate::Db for TestDb {}
 
 fn source_file(db: &TestDb, name: &str, src: &str) -> SourceFile {
-    let url = format!("memory:///{name}.solc").parse().expect("valid url");
+    let url = format!("memory:///{name}.sol").parse().expect("valid url");
     SourceFile::new(db, url, Some(src.to_owned()))
 }
 
@@ -120,7 +120,7 @@ fn module_key(path: &[&str]) -> ModuleKey {
 
 fn insert_module_source(db: &mut TestDb, path: &[&str], src: &str) -> ModuleKey {
     let key = module_key(path);
-    let url = format!("memory:///{}.solc", path.join("/"))
+    let url = format!("memory:///{}.sol", path.join("/"))
         .parse()
         .expect("valid url");
     let file = SourceFile::new(&*db, url, Some(src.to_owned()));
@@ -136,114 +136,112 @@ fn db_with_main_typeck(src: &str) -> (TestDb, ModuleKey) {
 
 fn db_with_array_std(main_src: &str) -> (TestDb, ModuleKey) {
     let mut db = TestDb::default();
-    let std_path = PathBuf::from("/std/std.solc");
-    let main_path = PathBuf::from("/main/main.solc");
+    let std_path = PathBuf::from("/std/std.sol");
+    let main_path = PathBuf::from("/main/main.sol");
     let std_file = source_file_at_path(
         &db,
         &std_path,
         r#"
 export { memory(*), storage(*), calldata(*), DynArray, array(*), uint256(*), address(*), string, Encoded(*), Decoded(*), concatLit, Add, Array, ArrayPush, Length, Typedef, CanStore, RValueIdxAccess };
 
-data memory(t) = memory(word);
-data storage(t) = storage(word);
-data calldata(t) = calldata(word);
-data DynArray(t);
-data array(t) = array(word);
-data uint256 = uint256(word);
-data address = address(word);
-data string;
-data Encoded = Encoded(word);
-data Decoded = Decoded(word);
+enum memory<t> {memory(word)}
+enum storage<t> {storage(word)}
+enum calldata<t> {calldata(word)}
+enum DynArray<t> {}
+enum array<t> {array(word)}
+enum uint256 {uint256(word)}
+enum address {address(word)}
+enum string {}
+enum Encoded {Encoded(word)}
+enum Decoded {Decoded(word)}
 
-function concatLit(comptime lhs:string, comptime rhs:string) -> string { return lhs; }
+function concatLit(comptime lhs:string, comptime rhs:string) returns (string) { return lhs; }
 
-forall self . class self:Add {
-  function add(lhs:self, rhs:self) -> self;
+trait Add<self> {
+  function add(lhs:self, rhs:self) returns (self) ;
 }
 
-instance uint256:Add {
-  function add(lhs:uint256, rhs:uint256) -> uint256 { return lhs; }
+impl Add<uint256> {
+  function add(lhs:uint256, rhs:uint256) returns (uint256) { return lhs; }
 }
 
-forall abs rep . class abs:Typedef(rep) {
-  function abs(x:rep) -> abs;
-  function rep(x:abs) -> rep;
+trait Typedef<abs,rep> {
+  function abs(x:rep) returns (abs) ;
+  function rep(x:abs) returns (rep) ;
 }
 
-forall t . default instance t:Typedef(t) {
-  function abs(x:t) -> t { return x; }
-  function rep(x:t) -> t { return x; }
+default impl<t> Typedef<t,t> {
+  function abs(x:t) returns (t) { return x; }
+  function rep(x:t) returns (t) { return x; }
 }
 
-instance uint256:Typedef(word) {
-  function abs(x:word) -> uint256 { return uint256(x); }
-  function rep(x:uint256) -> word { return 0; }
+impl Typedef<uint256,word> {
+  function abs(x:word) returns (uint256) { return uint256(x); }
+  function rep(x:uint256) returns (word) { return 0; }
 }
 
-instance memory(string):Typedef(word) {
-  function abs(x:word) -> memory(string) { return memory(x); }
-  function rep(x:memory(string)) -> word { return 0; }
+impl Typedef<memory<string>,word> {
+  function abs(x:word) returns (memory<string>) { return memory(x); }
+  function rep(x:memory<string>) returns (word) { return 0; }
 }
 
-forall col_idx val . class col_idx:RValueIdxAccess(val) {
-  function lookup(xi:col_idx) -> val;
+trait RValueIdxAccess<col_idx,val> {
+  function lookup(xi:col_idx) returns (val) ;
 }
 
-forall i . i:Typedef(word) =>
-instance (calldata(array(Encoded)), i):RValueIdxAccess(Decoded) {
-  function lookup(xi:(calldata(array(Encoded)), i)) -> Decoded {
+impl<i> RValueIdxAccess<(calldata<array<Encoded>>, i),Decoded> where i: Typedef<word> {
+  function lookup(xi:(calldata<array<Encoded>>, i)) returns (Decoded) {
     return Decoded(0);
   }
 }
 
-forall dst value . class dst:CanStore(value) {
-  function store(dst:dst, value:value) -> ();
-  function load(dst:dst) -> value;
+trait CanStore<dst,value> {
+  function store(dst:dst, value:value) returns () ;
+  function load(dst:dst) returns (value) ;
 }
 
-instance storage(word):CanStore(word) {
-  function store(dst:storage(word), value:word) -> () { return (); }
-  function load(dst:storage(word)) -> word { return 0; }
+impl CanStore<storage<word>,word> {
+  function store(dst:storage<word>, value:word) returns () { return (); }
+  function load(dst:storage<word>) returns (word) { return 0; }
 }
 
-instance storage(uint256):CanStore(uint256) {
-  function store(dst:storage(uint256), value:uint256) -> () { return (); }
-  function load(dst:storage(uint256)) -> uint256 { return uint256(0); }
+impl CanStore<storage<uint256>,uint256> {
+  function store(dst:storage<uint256>, value:uint256) returns () { return (); }
+  function load(dst:storage<uint256>) returns (uint256) { return uint256(0); }
 }
 
-instance storage(string):CanStore(memory(string)) {
-  function store(dst:storage(string), value:memory(string)) -> () { return (); }
-  function load(dst:storage(string)) -> memory(string) { return memory(0); }
+impl CanStore<storage<string>,memory<string>> {
+  function store(dst:storage<string>, value:memory<string>) returns () { return (); }
+  function load(dst:storage<string>) returns (memory<string>) { return memory(0); }
 }
 
-instance storage(array(word)):CanStore(storage(array(word))) {
-  function store(dst:storage(array(word)), value:storage(array(word))) -> () { return (); }
-  function load(dst:storage(array(word))) -> storage(array(word)) { return dst; }
+impl CanStore<storage<array<word>>,storage<array<word>>> {
+  function store(dst:storage<array<word>>, value:storage<array<word>>) returns () { return (); }
+  function load(dst:storage<array<word>>) returns (storage<array<word>>) { return dst; }
 }
 
-forall self . class self:Length {
-  function length(value:self) -> uint256;
+trait Length<self> {
+  function length(value:self) returns (uint256) ;
 }
 
-forall self . class self:Array {
-  function pop(value:self) -> ();
+trait Array<self> {
+  function pop(value:self) returns () ;
 }
 
-forall self elem . class self:ArrayPush(elem) {
-  function push(value:self, elem:elem) -> ();
+trait ArrayPush<self,elem> {
+  function push(value:self, elem:elem) returns () ;
 }
 
-forall t . instance storage(array(t)):Length {
-  function length(value:storage(array(t))) -> uint256 { return uint256(0); }
+impl<t> Length<storage<array<t>>> {
+  function length(value:storage<array<t>>) returns (uint256) { return uint256(0); }
 }
 
-forall t . instance storage(array(t)):Array {
-  function pop(value:storage(array(t))) -> () { return (); }
+impl<t> Array<storage<array<t>>> {
+  function pop(value:storage<array<t>>) returns () { return (); }
 }
 
-forall t elem . storage(t):CanStore(elem) =>
-instance storage(array(t)):ArrayPush(elem) {
-  function push(value:storage(array(t)), elem:elem) -> () { return (); }
+impl<t,elem> ArrayPush<storage<array<t>>,elem> where storage<t>: CanStore<elem> {
+  function push(value:storage<array<t>>, elem:elem) returns () { return (); }
 }
 "#,
     );
@@ -719,9 +717,9 @@ fn has_user_obligation<'db>(
 }
 
 #[test]
-fn unannotated_function_scheme_uses_inferred_polymorphic_body_type() {
+fn explicit_polymorphic_function_scheme_uses_declared_body_type() {
     let db = TestDb::default();
-    let module = parse_module(&db, "function id(x) { return x; }");
+    let module = parse_module(&db, "function id<a>(x: a) returns (a) { return x; }");
     let info = function_info_named(&db, module, "id");
     let scheme = function_scheme_in_hir_module(&db, module, info.function.def_id_value(&db))
         .expect("scheme");
@@ -742,14 +740,14 @@ fn unannotated_function_scheme_uses_inferred_polymorphic_body_type() {
 }
 
 #[test]
-fn contract_entry_dispatch_uses_inferred_return_type() {
+fn contract_entry_dispatch_uses_declared_return_type() {
     let mut db = TestDb::default();
     let key = insert_module_source(
         &mut db,
         &["main"],
         r#"
 contract Answer {
-  public function main() {
+  function main() public returns (word) {
 return 42;
   }
 }
@@ -778,19 +776,23 @@ fn inference_result_records_comptime_obligation_sites() {
     let module = parse_module(
         &db,
         r#"
-function need(comptime x: word) -> comptime word {
+function need(comptime x: word) returns (comptime<word>) {
   return x;
 }
 
-function g() -> comptime word {
-  let y : comptime word = need(2);
+function g() returns (comptime<word>) {
+  let y : comptime<word> = need(2);
   return y;
 }
 
-function f(x: word) -> comptime word {
-  match x {
-  | comptime 1 => return need(2);
-  | _ => return 0;
+function f(x: word) returns (comptime<word>) {
+  match (x) {
+    case comptime 1 {
+      return need(2);
+    }
+    default {
+      return 0;
+    }
   }
 }
 "#,
@@ -842,7 +844,7 @@ fn inferred_integer_let_records_comptime_obligation() {
     let module = parse_module(
         &db,
         r#"
-function f() -> word {
+function f() returns (word) {
   let x = wordToInteger(20);
   return wordFromInteger(x);
 }
@@ -866,56 +868,56 @@ function f() -> word {
 #[test]
 fn comptime_only_types_cover_params_returns_typed_lets_and_call_args() {
     let mut db = TestDb::default();
-    let std_path = PathBuf::from("/std/std.solc");
-    let main_path = PathBuf::from("/main/main.solc");
+    let std_path = PathBuf::from("/std/std.sol");
+    let main_path = PathBuf::from("/main/main.sol");
     let std_file = source_file_at_path(
         &db,
         &std_path,
         r#"
 export { string };
-data string;
+enum string {}
 "#,
     );
     let main_file = source_file_at_path(
         &db,
         &main_path,
         r#"
-import std.{string};
+import {string} from std;
 
 type Text = string;
 type Big = integer;
 
-function explicitlyNeedsText(comptime value: Text) -> () {
+function explicitlyNeedsText(comptime value: Text) returns () {
   return ();
 }
 
-function explicitlyNeedsBig(comptime value: Big) -> () {
+function explicitlyNeedsBig(comptime value: Big) returns () {
   return ();
 }
 
-function textParamIsComptime(value: Text) -> () {
+function textParamIsComptime(value: Text) returns () {
   return explicitlyNeedsText(value);
 }
 
-function bigParamIsComptime(value: Big) -> () {
+function bigParamIsComptime(value: Big) returns () {
   return explicitlyNeedsBig(value);
 }
 
-function takesText(value: Text) -> () {
+function takesText(value: Text) returns () {
   return ();
 }
 
-function takesBig(value: Big) -> () {
+function takesBig(value: Big) returns () {
   return ();
 }
 
-function exerciseText(value: Text) -> Text {
+function exerciseText(value: Text) returns (Text) {
   let copy: Text = value;
   takesText(copy);
   return copy;
 }
 
-function exerciseBig(value: Big) -> Big {
+function exerciseBig(value: Big) returns (Big) {
   let copy: Big = value;
   takesBig(copy);
   return copy;
@@ -979,17 +981,17 @@ function exerciseBig(value: Big) -> Big {
 #[test]
 fn string_literals_and_concat_lit_use_str_conversion_only_at_literal_sites() {
     let mut db = TestDb::default();
-    let std_path = PathBuf::from("/std/std.solc");
-    let main_path = PathBuf::from("/main/main.solc");
+    let std_path = PathBuf::from("/std/std.sol");
+    let main_path = PathBuf::from("/main/main.sol");
     let std_file = source_file_at_path(
         &db,
         &std_path,
         r#"
 export { memory(*), string, concatLit, strlenLit };
-data memory(a) = memory(word);
-data string;
-function concatLit(comptime lhs: string, comptime rhs: string) -> string { return lhs; }
-function strlenLit(comptime value: string) -> word { return 0; }
+enum memory<a> {memory(word)}
+enum string {}
+function concatLit(comptime lhs: string, comptime rhs: string) returns (string) { return lhs; }
+function strlenLit(comptime value: string) returns (word) { return 0; }
 "#,
     );
     let main_file = source_file_at_path(
@@ -997,45 +999,45 @@ function strlenLit(comptime value: string) -> word { return 0; }
         &main_path,
         r#"
 import std;
-import std.{memory, string, strlenLit};
+import {memory, string, strlenLit} from std;
 
-data Tag = Tag(word);
-instance Tag : Str {
-  function fromString(comptime value: string) -> Tag {
+enum Tag {Tag(word)}
+impl Str<Tag> {
+  function fromString(comptime value: string) returns (Tag) {
     return Tag(strlenLit(value));
   }
 }
 
-function literal() -> memory(string) { return "hello"; }
-function concatLit(lhs: word, rhs: word) -> word { return lhs; }
-function concatenated() -> memory(string) { return std.concatLit("he", "llo"); }
-function explicit(value: string) -> memory(string) { return Str.fromString(value); }
-function tagged() -> Tag { return "abcd"; }
-function taggedFromLet() -> Tag {
+function literal() returns (memory<string>) { return "hello"; }
+function concatLit(lhs: word, rhs: word) returns (word) { return lhs; }
+function concatenated() returns (memory<string>) { return std.concatLit("he", "llo"); }
+function explicit(value: string) returns (memory<string>) { return Str.fromString(value); }
+function tagged() returns (Tag) { return "abcd"; }
+function taggedFromLet() returns (Tag) {
   let value = "abcd";
   return Str.fromString(value);
 }
-function inferredLiteral() -> () { let value = "x"; return (); }
-function inferredConcat() -> () { let value = std.concatLit("a", "b"); return (); }
-function consumePair(value: (string, word)) -> word { return 0; }
-function inferredTuple() -> word {
+function inferredLiteral() returns () { let value = "x"; return (); }
+function inferredConcat() returns () { let value = std.concatLit("a", "b"); return (); }
+function consumePair(value: (string, word)) returns (word) { return 0; }
+function inferredTuple() returns (word) {
   let value = ("x", 0);
   return consumePair(value);
 }
-function inferredComptimeParam() -> () {
-  let sink = lam (comptime value) -> () { return (); };
+function inferredComptimeParam() returns () {
+  let sink = lam (comptime value: string) -> () { return (); };
   sink("x");
   return ();
 }
-function invalidConcat() -> memory(string) { return concatLit(1, 2); }
-function makeWord() -> word { return 0; }
-function invalidSource() -> memory(string) {
+function invalidConcat() returns (memory<string>) { return concatLit(1, 2); }
+function makeWord() returns (word) { return 0; }
+function invalidSource() returns (memory<string>) {
   let value;
-  let result: memory(string) = Str.fromString(value);
+  let result: memory<string> = Str.fromString(value);
   value = makeWord();
   return result;
 }
-function runtime(value: string) -> memory(string) { return value; }
+function runtime(value: string) returns (memory<string>) { return value; }
 "#,
     );
     let std_key = module_key_for_path(LibraryId::Std, &PathBuf::from("/std"), &std_path).unwrap();
@@ -1111,10 +1113,10 @@ function runtime(value: string) -> memory(string) { return value; }
 fn array_literals_infer_canonical_memory_dyn_array_and_empty_uses_context() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{memory, DynArray};
+import {memory, DynArray} from std;
 
-function filled(x:word, y:word) -> memory(DynArray(word)) { return [x, y]; }
-function empty() -> memory(DynArray(word)) { return []; }
+function filled(x:word, y:word) returns (memory<DynArray<word>>) { return [x, y]; }
+function empty() returns (memory<DynArray<word>>) { return []; }
 "#,
     );
     let module = module_id_from_key(&db, &key);
@@ -1135,9 +1137,9 @@ function empty() -> memory(DynArray(word)) { return []; }
 fn array_literal_rejects_mixed_element_types() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{memory, DynArray};
+import {memory, DynArray} from std;
 
-function mixed(x:word, flag:bool) -> memory(DynArray(word)) {
+function mixed(x:word, flag:bool) returns (memory<DynArray<word>>) {
   return [x, flag];
 }
 "#,
@@ -1160,33 +1162,33 @@ fn array_string_literals_use_memory_string_from_memory_and_storage_contexts() {
     let (db, key) = db_with_array_std(
         r#"
 import std;
-import std.{memory, storage, DynArray, array, string, Typedef, CanStore};
+import {memory, storage, DynArray, array, string, Typedef, CanStore} from std;
 
-function inMemory() -> memory(DynArray(memory(string))) {
+function inMemory() returns (memory<DynArray<memory<string>>>) {
   return ["hello"];
 }
 
-function explicitConversion() -> memory(DynArray(memory(string))) {
+function explicitConversion() returns (memory<DynArray<memory<string>>>) {
   return [Str.fromString("hello")];
 }
 
-function concatenated() -> memory(DynArray(memory(string))) {
+function concatenated() returns (memory<DynArray<memory<string>>>) {
   return [std.concatLit("hel", "lo")];
 }
 
-function conditional(flag:bool) -> memory(DynArray(memory(string))) {
-  return [if (flag) then "yes" else "no"];
+function conditional(flag:bool) returns (memory<DynArray<memory<string>>>) {
+  return [((flag) ? "yes" : "no")];
 }
 
 contract C {
-  names:array(string);
+  names:array<string>;
 
-  function setNames() -> () {
+  function setNames() returns () {
     names = ["alice", "bob"];
     return ();
   }
 
-  function clearNames() -> () {
+  function clearNames() returns () {
     names = [];
     return ();
   }
@@ -1275,21 +1277,21 @@ contract C {
 fn storage_array_field_ufcs_prepends_receiver_once() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{array, storage, uint256, Array, ArrayPush, Length};
+import {array, storage, uint256, Array, ArrayPush, Length} from std;
 
 contract C {
-  members:array(uint256);
+  members:array<uint256>;
 
-  function memberCount() -> uint256 {
+  function memberCount() returns (uint256) {
     return members.length();
   }
 
-  function append(value:uint256) -> () {
+  function append(value:uint256) returns () {
     members.push(value);
     return ();
   }
 
-  function removeLast() -> () {
+  function removeLast() returns () {
     members.pop();
     return ();
   }
@@ -1344,19 +1346,19 @@ contract C {
 fn local_and_parameter_ufcs_infer_receiver_and_evidence_once() {
     let (db, key) = db_with_main_typeck(
         r#"
-forall self . class self:Echo {
-  function echo(value:self) -> self;
+trait Echo<self> {
+  function echo(value:self) returns (self) ;
 }
 
-instance word:Echo {
-  function echo(value:word) -> word { return value; }
+impl Echo<word> {
+  function echo(value:word) returns (word) { return value; }
 }
 
-function parameterReceiver(value:word) -> word {
+function parameterReceiver(value:word) returns (word) {
   return value.echo();
 }
 
-function localReceiver(value:word) -> word {
+function localReceiver(value:word) returns (word) {
   let local:word = value;
   return local.echo();
 }
@@ -1400,24 +1402,24 @@ function localReceiver(value:word) -> word {
 fn field_ufcs_comptime_parameter_uses_explicit_argument_position() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{array, storage};
+import {array, storage} from std;
 
-forall self . class self:Stamp {
-  function stamp(value:self, comptime tag:word) -> word;
+trait Stamp<self> {
+  function stamp(value:self, comptime tag:word) returns (word) ;
 }
 
-instance storage(array(word)):Stamp {
-  function stamp(value:storage(array(word)), comptime tag:word) -> word { return tag; }
+impl Stamp<storage<array<word>>> {
+  function stamp(value:storage<array<word>>, comptime tag:word) returns (word) { return tag; }
 }
 
 contract C {
-  stored:array(word);
+  stored:array<word>;
 
-  function literalTag() -> word {
+  function literalTag() returns (word) {
     return stored.stamp(7);
   }
 
-  function runtimeTag(tag:word) -> word {
+  function runtimeTag(tag:word) returns (word) {
     return stored.stamp(tag);
   }
 }
@@ -1477,28 +1479,28 @@ contract C {
 fn local_and_parameter_ufcs_comptime_parameter_uses_explicit_argument_position() {
     let (db, key) = db_with_main_typeck(
         r#"
-forall self . class self:Stamp {
-  function stamp(value:self, comptime tag:word) -> word;
+trait Stamp<self> {
+  function stamp(value:self, comptime tag:word) returns (word) ;
 }
 
-instance word:Stamp {
-  function stamp(value:word, comptime tag:word) -> word { return tag; }
+impl Stamp<word> {
+  function stamp(value:word, comptime tag:word) returns (word) { return tag; }
 }
 
-function parameterLiteral(value:word) -> word {
+function parameterLiteral(value:word) returns (word) {
   return value.stamp(7);
 }
 
-function localLiteral(value:word) -> word {
+function localLiteral(value:word) returns (word) {
   let local:word = value;
   return local.stamp(7);
 }
 
-function parameterRuntime(value:word, tag:word) -> word {
+function parameterRuntime(value:word, tag:word) returns (word) {
   return value.stamp(tag);
 }
 
-function localRuntime(value:word, tag:word) -> word {
+function localRuntime(value:word, tag:word) returns (word) {
   let local:word = value;
   return local.stamp(tag);
 }
@@ -1559,29 +1561,29 @@ function localRuntime(value:word, tag:word) -> word {
 fn memory_dyn_array_index_returns_element_and_requires_word_typedefs() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{memory, DynArray, uint256, Typedef};
+import {memory, DynArray, uint256, Typedef} from std;
 
-function read(xs:memory(DynArray(word)), i:uint256) -> word {
+function read(xs:memory<DynArray<word>>, i:uint256) returns (word) {
   return xs[i];
 }
 
-function write(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+function write(xs:memory<DynArray<word>>, i:uint256, value:word) returns () {
   xs[i] = value;
   return ();
 }
 
-function compound(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
+function compound(xs:memory<DynArray<word>>, i:uint256, value:word) returns () {
   xs[i] += value;
   return ();
 }
 
-function annotatedWrite(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
-  (xs[i] : word) : word = value;
+function annotatedWrite(xs:memory<DynArray<word>>, i:uint256, value:word) returns () {
+  (xs[i] )  = value;
   return ();
 }
 
-function annotatedCompound(xs:memory(DynArray(word)), i:uint256, value:word) -> () {
-  xs[i] : word += value;
+function annotatedCompound(xs:memory<DynArray<word>>, i:uint256, value:word) returns () {
+  xs[i]  += value;
   return ();
 }
 "#,
@@ -1627,14 +1629,14 @@ function annotatedCompound(xs:memory(DynArray(word)), i:uint256, value:word) -> 
 fn calldata_array_index_uses_rvalue_evidence_and_improves_decoded_type() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{*};
+import * from std;
 
-function inferred(xs:calldata(array(Encoded)), i:uint256) -> () {
+function inferred(xs:calldata<array<Encoded>>, i:uint256) returns () {
   let value = xs[i];
   return ();
 }
 
-function expected(xs:calldata(array(Encoded)), i:uint256) -> Decoded {
+function expected(xs:calldata<array<Encoded>>, i:uint256) returns (Decoded) {
   return xs[i];
 }
 "#,
@@ -1692,41 +1694,25 @@ function expected(xs:calldata(array(Encoded)), i:uint256) -> Decoded {
 fn calldata_array_index_rejects_plain_and_compound_writes() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{*};
+import * from std;
 
-function write(
-  xs:calldata(array(Encoded)),
-  i:uint256,
-  value:Decoded
-) -> () {
+function write(xs: calldata<array<Encoded>>, i: uint256, value: Decoded) {
   xs[i] = value;
   return ();
 }
 
-function compound(
-  xs:calldata(array(Encoded)),
-  i:uint256,
-  value:Decoded
-) -> () {
+function compound(xs: calldata<array<Encoded>>, i: uint256, value: Decoded) {
   xs[i] += value;
   return ();
 }
 
-function annotatedWrite(
-  xs:calldata(array(Encoded)),
-  i:uint256,
-  value:Decoded
-) -> () {
-  (xs[i] : Decoded) : Decoded = value;
+function annotatedWrite(xs: calldata<array<Encoded>>, i: uint256, value: Decoded) {
+  (xs[i] )  = value;
   return ();
 }
 
-function annotatedCompound(
-  xs:calldata(array(Encoded)),
-  i:uint256,
-  value:Decoded
-) -> () {
-  xs[i] : Decoded += value;
+function annotatedCompound(xs: calldata<array<Encoded>>, i: uint256, value: Decoded) {
+  xs[i]  += value;
   return ();
 }
 "#,
@@ -1751,12 +1737,12 @@ function annotatedCompound(
 fn same_named_non_std_calldata_array_keeps_generic_index_typing() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{RValueIdxAccess};
+import {RValueIdxAccess} from std;
 
-data calldata(t) = calldata(word);
-data array(t) = array(word);
+enum calldata<t> {calldata(word)}
+enum array<t> {array(word)}
 
-function read(xs:calldata(array(word)), i:word) -> word {
+function read(xs:calldata<array<word>>, i:word) returns (word) {
   return xs[i];
 }
 "#,
@@ -1789,12 +1775,9 @@ function read(xs:calldata(array(word)), i:word) -> word {
 fn direct_storage_array_handle_assignment_is_a_raw_rebind() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{storage, array, string, CanStore};
+import {storage, array, string, CanStore} from std;
 
-function rebind(
-  lhs:storage(array(string)),
-  rhs:storage(array(string))
-) -> () {
+function rebind(lhs: storage<array<string>>, rhs: storage<array<string>>) {
   lhs = rhs;
   return ();
 }
@@ -1821,7 +1804,7 @@ fn importless_contract_field_assignment_keeps_the_declared_value_type() {
 contract C {
   value:word;
 
-  function write(flag:bool) -> () {
+  function write(flag:bool) returns () {
     value = flag;
     return ();
   }
@@ -1844,24 +1827,24 @@ contract C {
 fn storage_load_and_assign_use_can_store_result_improvement() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{memory, storage, CanStore};
+import {memory, storage, CanStore} from std;
 
-data Blob;
+enum Blob {}
 
-instance storage(Blob):CanStore(memory(Blob)) {
-  function store(dst:storage(Blob), value:memory(Blob)) -> () { return (); }
-  function load(dst:storage(Blob)) -> memory(Blob) { return memory(0); }
+impl CanStore<storage<Blob>,memory<Blob>> {
+  function store(dst:storage<Blob>, value:memory<Blob>) returns () { return (); }
+  function load(dst:storage<Blob>) returns (memory<Blob>) { return memory(0); }
 }
 
 contract C {
   value:Blob;
 
-  function write(src:memory(Blob)) -> () {
+  function write(src:memory<Blob>) returns () {
     value = src;
     return ();
   }
 
-  function read() -> memory(Blob) {
+  function read() returns (memory<Blob>) {
     return value;
   }
 }
@@ -1880,61 +1863,56 @@ fn contract_field_assignment_uses_specific_assign_evidence() {
         r#"
 pragma no-patterson-condition Assign;
 
-data storage(t) = storage(word);
-data mapping(k, v) = mapping(word);
-data Foo = Foo(word);
+enum storage<t> {storage(word)}
+enum mapping<k, v> {mapping(word)}
+enum Foo {Foo(word)}
 
-forall dst value . class dst:CanStore(value) {
-  function store(dst:dst, value:value) -> ();
-  function load(dst:dst) -> value;
+trait CanStore<dst,value> {
+  function store(dst:dst, value:value) returns () ;
+  function load(dst:dst) returns (value) ;
 }
 
-forall lhs rhs . class lhs:Assign(rhs) {
-  function assign(lhs:lhs, rhs:rhs) -> ();
+trait Assign<lhs,rhs> {
+  function assign(lhs:lhs, rhs:rhs) returns () ;
 }
 
-instance storage(word):CanStore(word) {
-  function store(dst:storage(word), value:word) -> () { return (); }
-  function load(dst:storage(word)) -> word { return 0; }
+impl CanStore<storage<word>,word> {
+  function store(dst:storage<word>, value:word) returns () { return (); }
+  function load(dst:storage<word>) returns (word) { return 0; }
 }
 
-forall a b . a:CanStore(b) => instance a:Assign(b) {
-  function assign(lhs:a, rhs:b) -> () { CanStore.store(lhs, rhs); }
+impl<a,b> Assign<a,b> where a: CanStore<b> {
+  function assign(lhs:a, rhs:b) returns () { CanStore.store(lhs, rhs); }
 }
 
-instance storage(word):Assign(bool) {
-  function assign(lhs:storage(word), rhs:bool) -> () { return (); }
+impl Assign<storage<word>,bool> {
+  function assign(lhs:storage<word>, rhs:bool) returns () { return (); }
 }
 
-instance storage(mapping(word, word)):CanStore(storage(mapping(word, word))) {
-  function store(
-    dst:storage(mapping(word, word)),
-    value:storage(mapping(word, word))
-  ) -> () { return (); }
-  function load(
-    dst:storage(mapping(word, word))
-  ) -> storage(mapping(word, word)) { return storage(0); }
+impl CanStore<storage<mapping(word => word)>,storage<mapping(word => word)>> {
+  function store(dst: storage<mapping(word => word)>, value: storage<mapping(word => word)>) { return (); }
+  function load(dst: storage<mapping(word => word)>) returns (storage<mapping(word => word)>) { return storage(0); }
 }
 
-instance storage(mapping(word, word)):Assign(Foo) {
-  function assign(lhs:storage(mapping(word, word)), rhs:Foo) -> () { return (); }
+impl Assign<storage<mapping(word => word)>,Foo> {
+  function assign(lhs:storage<mapping(word => word)>, rhs:Foo) returns () { return (); }
 }
 
 contract C {
   value:word;
-  values:mapping(word, word);
+  values:mapping(word => word);
 
-  function write(flag:bool) -> () {
+  function write(flag:bool) returns () {
     value = flag;
     return ();
   }
 
-  function writeAnnotated(flag:bool) -> () {
-    value : storage(word) = flag;
+  function writeAnnotated(flag:bool) returns () {
+    value = flag;
     return ();
   }
 
-  function writeMapping(value:Foo) -> () {
+  function writeMapping(value:Foo) returns () {
     values = value;
     return ();
   }
@@ -1973,13 +1951,9 @@ contract C {
 fn compound_storage_array_index_recognizes_parameter_handles() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{*};
+import * from std;
 
-function bump(
-  values:storage(array(uint256)),
-  index:uint256,
-  delta:uint256
-) -> () {
+function bump(values: storage<array<uint256>>, index: uint256, delta: uint256) {
   values[index] += delta;
   return ();
 }
@@ -2002,8 +1976,8 @@ function bump(
 fn storage_index_numeric_guard_rejects_shadowed_uint_names() {
     let (db, key) = db_with_array_std(
         r#"
-data uint;
-data uint256;
+enum uint {}
+enum uint256 {}
 "#,
     );
     let module_id = module_id_from_key(&db, &key);
@@ -2042,26 +2016,29 @@ data uint256;
 }
 
 #[test]
-fn storage_ref_annotations_are_checked_without_widening_array_literal_routing() {
+fn typed_storage_bindings_are_checked_without_widening_array_literal_routing() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{*};
+import * from std;
 
 contract C {
-  xs:array(uint256);
+  xs:array<uint256>;
 
-  function good(i:uint256, value:uint256) -> () {
-    (xs : storage(array(uint256)))[i] = value;
+  function good(i:uint256, value:uint256) returns () {
+    let typed: storage<array<uint256>> = xs;
+    typed[i] = value;
     return ();
   }
 
-  function bad(i:uint256) -> () {
-    (xs : storage(array(address)))[i] = uint256(1);
+  function bad(i:uint256) returns () {
+    let typed: storage<array<address>> = xs;
+    typed[i] = uint256(1);
     return ();
   }
 
-  function annotatedLiteral() -> () {
-    xs = ([uint256(1)] : memory(DynArray(uint256)));
+  function typedLiteral() returns () {
+    let values: memory<DynArray<uint256>> = [uint256(1)];
+    xs = values;
     return ();
   }
 }
@@ -2071,15 +2048,16 @@ contract C {
 
     let (body, good) = infer_module_function_with_solver(&db, module_id, "good");
     assert_no_typeck(&good);
-    let annotation = body
-        .exprs(&db)
+    let binding = body
+        .top_level_stmts(&db)
         .iter()
-        .find_map(|(id, expr)| matches!(expr.kind, ExprKind::TypeAnnot { .. }).then_some(id))
-        .expect("storage array annotation");
+        .copied()
+        .find(|stmt| matches!(body.stmts(&db).get(*stmt).kind, StmtKind::Let { .. }))
+        .expect("typed storage binding");
     let uint256 = canonical_std_adt_ty(&db, "uint256", Vec::new());
     let array = canonical_std_adt_ty(&db, "array", vec![uint256]);
     let storage_array = canonical_std_adt_ty(&db, "storage", vec![array]);
-    assert_eq!(good.expr_ty(body, annotation), Some(storage_array));
+    assert_eq!(good.let_ty(body, binding), Some(storage_array));
 
     let (body, bad) = infer_module_function_with_solver(&db, module_id, "bad");
     assert!(
@@ -2089,42 +2067,39 @@ contract C {
         "{:?}",
         bad.diagnostics
     );
-    let annotation = body
-        .exprs(&db)
+    let binding = body
+        .top_level_stmts(&db)
         .iter()
-        .find_map(|(id, expr)| matches!(expr.kind, ExprKind::TypeAnnot { .. }).then_some(id))
-        .expect("mismatched storage array annotation");
-    assert_eq!(bad.expr_ty(body, annotation), Some(Ty::error(&db)));
+        .copied()
+        .find(|stmt| matches!(body.stmts(&db).get(*stmt).kind, StmtKind::Let { .. }))
+        .expect("mismatched storage binding");
+    assert_eq!(bad.let_ty(body, binding), Some(Ty::error(&db)));
 
-    let (_, annotated_literal) =
-        infer_module_function_with_solver(&db, module_id, "annotatedLiteral");
+    let (_, typed_literal) = infer_module_function_with_solver(&db, module_id, "typedLiteral");
     assert!(
-        annotated_literal
+        typed_literal
             .diagnostics
             .iter()
             .any(|diagnostic| matches!(diagnostic, TypeckDiagnostic::Mismatch { .. })),
         "{:?}",
-        annotated_literal.diagnostics
+        typed_literal.diagnostics
     );
 
     let module = module_hir(&db, module_id).expect("module hir");
     let plan = crate::frontend_desugar_plan(&db, module);
-    let annotated_literal = plan
+    let typed_literal = plan
         .bodies
         .iter()
-        .find(|body| body.function_name == "annotatedLiteral")
-        .expect("annotatedLiteral desugar plan");
+        .find(|body| body.function_name == "typedLiteral")
+        .expect("typedLiteral desugar plan");
     assert!(
-        annotated_literal
-            .transforms
-            .iter()
-            .any(|transform| matches!(
+        typed_literal.transforms.iter().any(|transform| matches!(
                 transform,
                 crate::FrontendTransform::FieldWrite { hook, .. }
                     if hook.starts_with("Assign.assign(")
-            )),
+        )),
         "{:?}",
-        annotated_literal.transforms
+        typed_literal.transforms
     );
 }
 
@@ -2132,31 +2107,31 @@ contract C {
 fn storage_array_index_alias_and_literal_assignment_preserve_reference_types() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{storage, array, uint256, Typedef, CanStore};
+import {storage, array, uint256, Typedef, CanStore} from std;
 
 contract C {
-  xs:array(word);
+  xs:array<word>;
   n:word;
 
-  function read(i:uint256) -> word { return xs[i]; }
+  function read(i:uint256) returns (word) { return xs[i]; }
 
-  function aliasRead(i:uint256) -> word {
+  function aliasRead(i:uint256) returns (word) {
     let ys = xs;
     return ys[i];
   }
 
-  function aliasWrite(i:uint256, value:word) -> () {
+  function aliasWrite(i:uint256, value:word) returns () {
     let ys = xs;
     ys[i] = value;
     return ();
   }
 
-  function set(x:word) -> () {
+  function set(x:word) returns () {
     xs = [x, x];
     return ();
   }
 
-  function bad(x:word) -> () {
+  function bad(x:word) returns () {
     n = [x];
     return ();
   }
@@ -2226,12 +2201,12 @@ contract C {
 fn array_literal_contract_field_write_plan_uses_store_array_lit() {
     let (db, key) = db_with_array_std(
         r#"
-import std.{storage, array};
+import {storage, array} from std;
 
 contract C {
-  xs:array(word);
+  xs:array<word>;
 
-  function set(x:word) -> () {
+  function set(x:word) returns () {
     xs = [x];
     return ();
   }
@@ -2261,18 +2236,18 @@ contract C {
 fn module_local_string_and_integer_adts_remain_runtime_types() {
     let diagnostics = lowered_module_typeck_diagnostics(
         r#"
-data string = RuntimeString(word);
-data integer = RuntimeInteger(word);
+enum string {RuntimeString(word)}
+enum integer {RuntimeInteger(word)}
 
-function takesString(value: string) -> () {
+function takesString(value: string) returns () {
   return ();
 }
 
-function takesInteger(value: integer) -> () {
+function takesInteger(value: integer) returns () {
   return ();
 }
 
-function exercise(value: word) -> () {
+function exercise(value: word) returns () {
   takesString(string.RuntimeString(value));
   takesInteger(integer.RuntimeInteger(value));
   return ();
