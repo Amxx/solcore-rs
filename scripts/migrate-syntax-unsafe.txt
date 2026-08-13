@@ -1,0 +1,16 @@
+# Syntax migration exceptions
+
+The following tracked sources required a conservative migration or
+still contain an intentionally malformed construct.  Intentional
+parser-error fixtures are not skipped wholesale: independent syntax
+around the error is rewritten normally.
+Paths use their pre-extension-migration `.solc` spelling.
+
+- `crates/parser/tests/fixtures/corpus/fail/test/diagnostics/parse-error.solc` — intentional parser-error fixture; cannot migrate function declaration: unbalanced function parameters
+- `crates/parser/tests/fixtures/corpus/fail/test/examples/cases/catenable-err.solc` — intentional parser-error fixture; cannot migrate function declaration: unterminated function header
+- `crates/uitest/tests/fixtures/parse/class_missing_body_brace/main.solc` — intentional parser-error fixture; cannot migrate class declaration: declaration has no body
+- `crates/uitest/tests/fixtures/parse/ergo_function_missing_params/main.solc` — intentional parser-error fixture; cannot migrate function declaration: function parameter list not found
+- `crates/uitest/tests/fixtures/parse/import_selector_unterminated/main.solc` — intentional parser-error fixture; unterminated import declaration
+- `crates/uitest/tests/fixtures/parse/instance_missing_head/main.solc` — intentional parser-error fixture; cannot migrate instance declaration: invalid predicate
+- `crates/uitest/tests/fixtures/parse/missing_semicolon/main.solc` — intentional parser-error fixture; unterminated import declaration
+- `crates/uitest/tests/fixtures/parse/multiple_errors_continue/main.solc` — intentional parser-error fixture; unterminated import declaration
