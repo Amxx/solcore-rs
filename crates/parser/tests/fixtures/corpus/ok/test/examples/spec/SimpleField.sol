@@ -1,4 +1,4 @@
-import std.{*};
+import * from std;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
@@ -6,11 +6,11 @@ pragma no-bounded-variable-condition ;
 contract Simple {
   myval : word ;
 
-  public function getVal () -> word {
+  function getVal() public returns (word) {
     return myval ;
   }
 
-  public function main () -> word {
+  function main() public returns (word) {
     return getVal();
   }
 }
