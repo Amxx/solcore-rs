@@ -490,11 +490,11 @@ impl DiagnosticCode {
         ),
         DiagnosticCodeAlias::new(
             Self::TYPECK_INCOMPLETE_METHOD_SIGNATURE,
-            "SC0221 covers incomplete method signatures and invalid instance method signatures.",
+            "SC0221 covers incomplete method signatures and invalid impl method signatures.",
         ),
         DiagnosticCodeAlias::new(
             Self::TYPECK_CLASS_AS_TYPE,
-            "SC0229 covers class-as-type errors and generated dispatch type collisions.",
+            "SC0229 covers trait-as-type errors and generated dispatch type collisions.",
         ),
         DiagnosticCodeAlias::new(
             Self::TYPECK_NON_EXHAUSTIVE_MATCH,

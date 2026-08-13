@@ -36,7 +36,7 @@ pub mod visit;
 /// Solcore's virtual VFS paths are platform-neutral even though they are
 /// represented as `file:` URLs. Native builds prefer
 /// [`url::Url::to_file_path`], then decode a local URL directly when the native
-/// conversion rejects a drive-less URL such as `file:///main/main.solc` on
+/// conversion rejects a drive-less URL such as `file:///main/main.sol` on
 /// Windows. The `url` crate cfg-gates its native conversion API off for
 /// `wasm32-unknown-unknown`, so wasm builds use the direct form as well.
 pub fn url_to_file_path(url: &url::Url) -> Option<std::path::PathBuf> {
@@ -93,10 +93,10 @@ mod url_to_file_path_tests {
     #[test]
     fn virtual_file_urls_are_platform_neutral() {
         for (url, expected) in [
-            ("file:///main/main.solc", "/main/main.solc"),
-            ("file:///std/std.solc", "/std/std.solc"),
-            ("file:///ext/math/lib.solc", "/ext/math/lib.solc"),
-            ("file:///main/space%20name.solc", "/main/space name.solc"),
+            ("file:///main/main.sol", "/main/main.sol"),
+            ("file:///std/std.sol", "/std/std.sol"),
+            ("file:///ext/math/lib.sol", "/ext/math/lib.sol"),
+            ("file:///main/space%20name.sol", "/main/space name.sol"),
         ] {
             let url = url::Url::parse(url).expect("virtual file URL");
             assert_eq!(
@@ -109,7 +109,7 @@ mod url_to_file_path_tests {
 
     #[test]
     fn direct_file_url_decoding_rejects_a_remote_host() {
-        let remote = url::Url::parse("file://server/main/file.solc").expect("remote URL");
+        let remote = url::Url::parse("file://server/main/file.sol").expect("remote URL");
 
         assert!(decoded_local_file_url_path(&remote).is_none());
     }
