@@ -897,3 +897,228 @@ def migrate_source(source: str, *, skip_shared_migrator: bool = False) -> str:
     return source
 
 
+def decode_rust_string(content: str) -> str | None:
+    out: list[str] = []
+    index = 0
+    escapes = {"n": "\n", "r": "\r", "t": "\t", "0": "\0", "\\": "\\", '"': '"', "'": "'"}
+    while index < len(content):
+        if content[index] != "\\":
+            out.append(content[index])
+            index += 1
+            continue
+        index += 1
+        if index >= len(content):
+            return None
+        char = content[index]
+        if char in escapes:
+            out.append(escapes[char])
+            index += 1
+        elif char == "x" and index + 2 < len(content):
+            try:
+                out.append(chr(int(content[index + 1 : index + 3], 16)))
+            except ValueError:
+                return None
+            index += 3
+        elif char == "u" and index + 1 < len(content) and content[index + 1] == "{":
+            close = content.find("}", index + 2)
+            if close < 0:
+                return None
+            try:
+                out.append(chr(int(content[index + 2 : close].replace("_", ""), 16)))
+            except ValueError:
+                return None
+            index = close + 1
+        elif char == "\n":
+            index += 1
+            while index < len(content) and content[index] in " \t\r\n":
+                index += 1
+        else:
+            # Unknown escapes may be intentionally invalid Rust in compile-fail
+            # support code; leave that literal untouched.
+            return None
+    return "".join(out)
+
+
+def encode_rust_string(content: str) -> str:
+    out: list[str] = []
+    for char in content:
+        if char == "\\":
+            out.append("\\\\")
+        elif char == '"':
+            out.append('\\"')
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\r":
+            out.append("\\r")
+        elif char == "\t":
+            out.append("\\t")
+        elif ord(char) < 0x20 or ord(char) == 0x7F:
+            out.append(f"\\x{ord(char):02x}")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+FORMAT_MACRO_PREFIX = re.compile(r"\b(?:format|format_args)!\s*\(\s*$")
+FORMAT_PLACEHOLDER = re.compile(
+    r"(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*)?(?:[!:].*)?\Z", re.S
+)
+
+
+def is_format_macro_literal(text: str, literal_start: int) -> bool:
+    """Return whether a literal is the format template of a format macro."""
+    return FORMAT_MACRO_PREFIX.search(text, 0, literal_start) is not None
+
+
+def decode_format_template(template: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """Decode literal braces while protecting Rust format placeholders."""
+    out: list[str] = []
+    placeholders: list[tuple[str, str]] = []
+    index = 0
+    while index < len(template):
+        if template.startswith("{{", index):
+            out.append("{")
+            index += 2
+            continue
+        if template.startswith("}}", index):
+            out.append("}")
+            index += 2
+            continue
+        if template[index] == "{":
+            close = template.find("}", index + 1)
+            if close < 0:
+                out.append("{")
+                index += 1
+                continue
+            placeholder = template[index : close + 1]
+            if FORMAT_PLACEHOLDER.fullmatch(template[index + 1 : close]) is None:
+                out.append("{")
+                index += 1
+                continue
+            marker_index = len(placeholders)
+            marker = f"__solcore_format_arg_{marker_index}__"
+            used_markers = {existing for existing, _ in placeholders}
+            while marker in template or marker in used_markers:
+                marker_index += 1
+                marker = f"__solcore_format_arg_{marker_index}__"
+            placeholders.append((marker, placeholder))
+            out.append(marker)
+            index = close + 1
+            continue
+        if template[index] == "}":
+            out.append("}")
+            index += 1
+            continue
+        out.append(template[index])
+        index += 1
+    return "".join(out), placeholders
+
+
+def encode_format_template(
+    source: str, placeholders: list[tuple[str, str]]
+) -> str | None:
+    """Escape source braces and restore protected Rust format placeholders."""
+    if any(source.count(marker) != 1 for marker, _ in placeholders):
+        return None
+    template = source.replace("{", "{{").replace("}", "}}")
+    for marker, placeholder in placeholders:
+        template = template.replace(marker, placeholder)
+    return template
+
+
+def migrate_rust_strings(text: str) -> tuple[str, int]:
+    output: list[str] = []
+    cursor = 0
+    changed = 0
+    opener = re.compile(
+        r"(?<![A-Za-z0-9_])(?:(?P<raw_prefix>br|r)(?P<hashes>#{0,16})|(?P<byte>b)?)\""
+    )
+    while True:
+        match = opener.search(text, cursor)
+        if not match:
+            output.append(text[cursor:])
+            break
+        content_start = match.end()
+        hashes = match.group("hashes")
+        if match.group("raw_prefix"):
+            close = '"' + (hashes or "")
+            content_end = text.find(close, content_start)
+            if content_end < 0:
+                output.append(text[cursor:])
+                break
+            encoded_content = text[content_start:content_end]
+            decoded = encoded_content
+        else:
+            scan = content_start
+            while scan < len(text):
+                if text[scan] == "\\":
+                    scan += 2
+                    continue
+                if text[scan] == '"':
+                    break
+                scan += 1
+            if scan >= len(text):
+                output.append(text[cursor:])
+                break
+            close = '"'
+            content_end = scan
+            encoded_content = text[content_start:content_end]
+            decoded = decode_rust_string(encoded_content)
+            if decoded is None:
+                output.append(text[cursor : content_end + 1])
+                cursor = content_end + 1
+                continue
+        output.append(text[cursor:content_start])
+        prefix = text[: match.start()]
+        preserved_region = prefix.rfind(PRESERVE_LITERALS_BEGIN_MARKER) > prefix.rfind(
+            PRESERVE_LITERALS_END_MARKER
+        )
+        preserve_next = PRESERVE_NEXT_LITERAL_MARKER in text[cursor : match.start()]
+        format_template = None
+        if not (preserved_region or preserve_next) and is_format_macro_literal(
+            text, match.start()
+        ):
+            format_template = decode_format_template(decoded)
+        if preserved_region or preserve_next:
+            migrated = decoded
+        elif format_template is None:
+            migrated = migrate_source(decoded)
+        else:
+            source, placeholders = format_template
+            migrated_source = migrate_source(source, skip_shared_migrator=True)
+            migrated = encode_format_template(migrated_source, placeholders)
+            if migrated is None:
+                migrated = decoded
+        changed_literal = migrated != decoded
+        if changed_literal:
+            changed += 1
+        if not changed_literal:
+            output.append(encoded_content)
+        elif match.group("raw_prefix"):
+            output.append(migrated)
+        else:
+            output.append(encode_rust_string(migrated))
+        output.append(close)
+        cursor = content_end + len(close)
+    return "".join(output), changed
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--write", action="store_true")
+    parser.add_argument("paths", nargs="+", type=Path)
+    args = parser.parse_args()
+    total = 0
+    for path in args.paths:
+        original = path.read_text()
+        migrated, changed = migrate_rust_strings(original)
+        if changed:
+            total += changed
+            print(f"{path}: {changed} raw string(s)")
+            if args.write:
+                path.write_text(migrated)
+    print(f"changed raw strings: {total}")
+
+
+if __name__ == "__main__":
+    main()
