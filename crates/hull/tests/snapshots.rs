@@ -36,7 +36,7 @@ impl parser::Db for TestDb {}
 fn test_span<'db>(db: &'db TestDb) -> Span<'db> {
     let file = SourceFile::new(
         db,
-        "memory:///hull_snapshots.solc".parse().expect("valid URL"),
+        "memory:///hull_snapshots.sol".parse().expect("valid URL"),
         Some(String::new()),
     );
     Span::new(AnchorId::root(db, file), Offset::new(0), Offset::new(0))
@@ -70,6 +70,7 @@ fn identity_function_snapshot() {
     assert_eq!(check_program_with_db(&db, &program), Vec::new());
     assert_eq!(
         pretty_program(&db, &program),
+        // syntax-migration: preserve-next-literal
         "function id (x : word) -> word {\n  return x\n}\n"
     );
 }
@@ -410,6 +411,7 @@ fn add1_contract_object_snapshot() {
             "  }\n",
             "  object \"Add1_deployed\" {\n",
             "    code {\n",
+            // syntax-migration: preserve-next-literal
             "      function main () -> word {\n",
             "        let res : word\n",
             "        assembly {\n",

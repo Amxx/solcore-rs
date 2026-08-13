@@ -100,27 +100,27 @@ fn specialization_corpus_subset_emits_and_checks() {
     let cases = [
         (
             "spec/01id",
-            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/01id.solc"),
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/01id.sol"),
         ),
         (
             "spec/00answer",
-            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/00answer.solc"),
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/00answer.sol"),
         ),
         (
             "spec/022add",
-            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/022add.solc"),
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/022add.sol"),
         ),
         (
             "spec/024arith",
-            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/024arith.solc"),
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/024arith.sol"),
         ),
         (
             "spec/031maybe",
-            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/031maybe.solc"),
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/031maybe.sol"),
         ),
         (
             "spec/047rgb",
-            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/047rgb.solc"),
+            include_str!("../../parser/tests/fixtures/corpus/ok/test/examples/spec/047rgb.sol"),
         ),
     ];
     let mut failures = Vec::new();
@@ -181,11 +181,11 @@ fn objectless_string_materializers_are_content_deduplicated() {
     let (db, output) = specialize_src_with_std(
         "objectless_string_materializer",
         r#"
-import std.{memory, string};
+import {memory, string} from std;
 
-function alpha() -> memory(string) { return "alpha"; }
-function beta() -> memory(string) { return "beta"; }
-function main() -> memory(string) {
+function alpha() returns (memory<string>) { return "alpha"; }
+function beta() returns (memory<string>) { return "beta"; }
+function main() returns (memory<string>) {
   alpha();
   beta();
   return "alpha";
@@ -215,10 +215,10 @@ fn contract_objects_receive_their_reachable_string_materializer() {
     let (db, output) = specialize_src_with_std(
         "contract_string_materializers",
         r#"
-import std.{memory, string};
+import {memory, string} from std;
 
-contract A { function main() -> memory(string) { return "shared"; } }
-contract B { function main() -> memory(string) { return "shared"; } }
+contract A { function main() returns (memory<string>) { return "shared"; } }
+contract B { function main() returns (memory<string>) { return "shared"; } }
 "#,
     );
     assert_eq!(output.diagnostics, Vec::new());
@@ -243,13 +243,13 @@ fn canonical_revert_literal_lowers_to_message_revert() {
     let hull = pretty_src_hull_with_std(
         "revert_literal",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract WithFallback {
-  public function answer() -> uint256 { return uint256(42); }
+  function answer() public returns (uint256) { return uint256(42); }
 
-  fallback() -> () {
+  fallback() {
     revertLit("fallback-was-called");
   }
 }
@@ -268,11 +268,11 @@ fn let_initializer_revert_literal_lowers_to_message_revert() {
     let hull = pretty_src_hull_with_std(
         "let_revert_literal",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
-  fallback() -> () {
+  fallback() {
     let unreachable : () = revertLit("let-initializer");
     return unreachable;
   }
@@ -289,14 +289,14 @@ fn nested_revert_literal_lowers_before_its_containing_expression() {
     let hull = pretty_src_hull_with_std(
         "nested_revert_literal",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
-  fallback() -> () {
+  fallback() {
     let raw : word;
     assembly { raw := callvalue() }
-    let result : () = if (raw == 0) then revertLit("nested") else ();
+    let result : () = ((raw == 0) ? revertLit("nested") : ());
     return result;
   }
 }
@@ -317,7 +317,7 @@ fn contract_without_runtime_main_defers_dispatch_to_specialization() {
         "dispatch_word",
         r#"
 contract C {
-  function main() -> () {}
+  function main() returns () {}
 }
 "#,
     );
@@ -348,7 +348,7 @@ contract C {
 fn dispatch_basic_fixture_uses_std_dispatch_main() {
     solcore_test_utils::run_in_large_stack(|| {
         let fixture = repo_root()
-            .join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.solc");
+            .join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/basic.sol");
         let (db, output) = specialize_fixture(&fixture);
         assert_eq!(output.diagnostics, Vec::new());
         let emitted = emit_module(db, &output.module, EmitOptions::default());
@@ -373,7 +373,7 @@ fn dispatch_basic_fixture_uses_std_dispatch_main() {
 fn deployment_objects_copy_runtime_and_guard_constructor_value() {
     let repo = repo_root();
     let fixture = repo.join(
-        "crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/empty_no_constructor.solc",
+        "crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/empty_no_constructor.sol",
     );
     let (db, output) = specialize_fixture(&fixture);
     assert_eq!(output.diagnostics, Vec::new());
@@ -389,7 +389,7 @@ fn deployment_objects_copy_runtime_and_guard_constructor_value() {
     );
 
     let fixture = repo
-        .join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/nonpayable_ctor.solc");
+        .join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/nonpayable_ctor.sol");
     let (db, output) = specialize_fixture(&fixture);
     assert_eq!(output.diagnostics, Vec::new());
     let emitted = emit_module(db, &output.module, EmitOptions::default());
@@ -420,8 +420,8 @@ fn deployment_objects_copy_runtime_and_guard_constructor_value() {
         .expect("runtime object");
     assert!(!runtime.contains("_start"), "{hull}");
 
-    let fixture = repo
-        .join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/payable_ctor.solc");
+    let fixture =
+        repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/dispatch/payable_ctor.sol");
     let (db, output) = specialize_fixture(&fixture);
     assert_eq!(output.diagnostics, Vec::new());
     let emitted = emit_module(db, &output.module, EmitOptions::default());
@@ -442,7 +442,7 @@ fn importless_nullary_constructor_uses_overlay_deployment_entry() {
 contract C {
   constructor() {}
 
-  function main() -> () {
+  function main() returns () {
     return ();
   }
 }
@@ -468,15 +468,15 @@ fn std_constructor_overlay_decodes_appended_arguments_in_deployment_closure() {
     let (db, output) = specialize_src_with_std(
         "std_ctor_overlay_args",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
   constructor(config : uint256) {
     let saved_config = config;
   }
 
-  public function echo(config : uint256) -> uint256 { return config; }
+  function echo(config : uint256) public returns (uint256) { return config; }
 }
 "#,
     );
@@ -519,11 +519,11 @@ fn std_dispatch_address_decode_rejects_dirty_high_bits() {
     let (db, output) = specialize_src_with_std(
         "std_address_dispatch",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
-  public function id_address(a : address) -> address { return a; }
+  function id_address(a : address) public returns (address) { return a; }
 }
 "#,
     );
@@ -547,12 +547,12 @@ fn std_dispatch_explicit_fallback_stops_after_execution() {
     let (db, output) = specialize_src_with_std(
         "std_fallback_dispatch",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract C {
-  public function answer() -> uint256 { return uint256(42); }
-  fallback() -> () {}
+  function answer() public returns (uint256) { return uint256(42); }
+  fallback() {}
 }
 "#,
     );
@@ -568,7 +568,7 @@ contract C {
 fn for_loop_emits_hull_for_and_loop_control() {
     let repo = repo_root();
     let fixture =
-        repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/cases/for-break.solc");
+        repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/cases/for-break.sol");
     let (db, output) = specialize_fixture(&fixture);
     assert_eq!(output.diagnostics, Vec::new());
     let emitted = emit_module(db, &output.module, EmitOptions::default());
@@ -599,7 +599,7 @@ fn for_loop_emits_hull_for_and_loop_control() {
 fn word_storage_fixture_reaches_word_slot_ops() {
     let repo = repo_root();
     let fixture =
-        repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/spec/120basicCounter.solc");
+        repo.join("crates/parser/tests/fixtures/corpus/ok/test/examples/spec/120basicCounter.sol");
     let (db, output) = specialize_fixture(&fixture);
     assert_eq!(output.diagnostics, Vec::new());
     let emitted = emit_module(db, &output.module, EmitOptions::default());
@@ -620,22 +620,22 @@ fn word_storage_fixture_reaches_word_slot_ops() {
 
 #[test]
 fn single_constructor_matches_project_payloads_from_scrutinee() {
-    assert_fixture_emits_and_checks("cases/encoder1.solc");
-    assert_fixture_has_no_unbound_alt("cases/mptc-multi-instance.solc");
+    assert_fixture_emits_and_checks("cases/encoder1.sol");
+    assert_fixture_has_no_unbound_alt("cases/mptc-multi-instance.sol");
 }
 
 #[test]
 fn decision_tree_match_lowering_preserves_priority_nested_and_multi_scrutinee_cases() {
     for fixture in [
-        "spec/033join.solc",
-        "spec/038food0.solc",
-        "cases/Option.solc",
-        "cases/option2.solc",
-        "cases/dot-pattern-nested-constructor.solc",
-        "cases/Logic.solc",
-        "cases/Ackermann.solc",
-        "cases/false-redundant-warning.solc",
-        "cases/super-class.solc",
+        "spec/033join.sol",
+        "spec/038food0.sol",
+        "cases/Option.sol",
+        "cases/option2.sol",
+        "cases/dot-pattern-nested-constructor.sol",
+        "cases/Logic.sol",
+        "cases/Ackermann.sol",
+        "cases/false-redundant-warning.sol",
+        "cases/super-class.sol",
     ] {
         assert_fixture_emits_without_match_lowering_regressions(fixture);
     }
@@ -647,21 +647,25 @@ fn decision_tree_shape_preserves_specific_constructors_before_wildcard_defaults(
         "dwarves_runtime_shape",
         r#"
 contract Dwarves {
-  data Dwarf = Doc | Grumpy | Sleepy | Bashful | Happy | Sneezy | Dopey;
+  enum Dwarf {Doc , Grumpy , Sleepy , Bashful , Happy , Sneezy , Dopey}
 
-  public function fromEnum(c : Dwarf) -> word {
+  function fromEnum(c : Dwarf) public returns (word) {
     assembly { mstore(0, 0) }
-    match c {
-      | Dwarf.Doc => return 1;
-      | Dwarf.Grumpy => return 2;
-      | Dwarf.Sleepy => return 3;
-      | Dwarf.Bashful => return 4;
-      | Dwarf.Happy => return 5;
-      | _ => return 0;
+    match (c) {
+      case Dwarf.Doc {
+        return 1;
+      }
+      case Dwarf.Grumpy { return 2; }
+      case Dwarf.Sleepy { return 3; }
+      case Dwarf.Bashful { return 4; }
+      case Dwarf.Happy { return 5; }
+      default {
+        return 0;
+      }
     }
   }
 
-  function main() -> word { return fromEnum(Dwarf.Happy); }
+  function main() returns (word) { return fromEnum(Dwarf.Happy); }
 }
 "#,
     );
@@ -683,7 +687,7 @@ contract Dwarves {
         ],
     );
 
-    let food0_actual = pretty_fixture_hull("spec/038food0.solc");
+    let food0_actual = pretty_fixture_hull("spec/038food0.sol");
     assert!(
         food0_actual.contains("function 038food0_FoodContract_main"),
         "{food0_actual}"
@@ -693,20 +697,24 @@ contract Dwarves {
     let food0_shape = pretty_src_hull(
         "food0_runtime_shape",
         r#"
-data Food = Curry | Beans | Other;
-data CFood = Red(Food) | Green(Food) | Nocolor;
+enum Food {Curry , Beans , Other}
+enum CFood {Red(Food) , Green(Food) , Nocolor}
 
-function fromEnum(x : CFood) -> word {
+function fromEnum(x : CFood) returns (word) {
   assembly { mstore(0, 0) }
-  match x {
-    | CFood.Red(Food.Curry) => return 1;
-    | CFood.Green(Food.Beans) => return 42;
-    | _ => return 3;
+  match (x) {
+    case CFood.Red(Food.Curry) {
+      return 1;
+    }
+    case CFood.Green(Food.Beans) { return 42; }
+    default {
+      return 3;
+    }
   }
 }
 
 contract FoodContract {
-  function main() -> word { return fromEnum(CFood.Green(Food.Beans)); }
+  function main() returns (word) { return fromEnum(CFood.Green(Food.Beans)); }
 }
 "#,
     );
@@ -723,7 +731,7 @@ contract FoodContract {
         ],
     );
 
-    let food = pretty_fixture_hull("spec/039food.solc");
+    let food = pretty_fixture_hull("spec/039food.sol");
     assert!(
         food.contains("function 039food_FoodContract_main") && food.contains("return 42"),
         "{food}"
@@ -732,18 +740,22 @@ contract FoodContract {
     let wildcard_after_ctor = pretty_src_hull(
         "wildcard_after_ctor",
         r#"
-data Tiny = A | B | C;
+enum Tiny {A , B , C}
 
 contract C {
-  public function pick(t : Tiny) -> word {
+  function pick(t : Tiny) public returns (word) {
     assembly { mstore(0, 0) }
-    match t {
-      | Tiny.B => return 2;
-      | _ => return 9;
+    match (t) {
+      case Tiny.B {
+        return 2;
+      }
+      default {
+        return 9;
+      }
     }
   }
 
-  function main() -> word { return pick(Tiny.B); }
+  function main() returns (word) { return pick(Tiny.B); }
 }
 "#,
     );
@@ -757,9 +769,9 @@ contract C {
 #[test]
 fn cited_terminal_yul_fixtures_do_not_fail_missing_terminator() {
     for fixture in [
-        "cases/yul-return.solc",
-        "cases/undefined.solc",
-        "cases/copytomem.solc",
+        "cases/yul-return.sol",
+        "cases/undefined.sol",
+        "cases/copytomem.sol",
     ] {
         let kinds = check_fixture_kinds(fixture);
         assert!(
@@ -773,7 +785,7 @@ fn cited_terminal_yul_fixtures_do_not_fail_missing_terminator() {
 
 #[test]
 fn recursive_adt_layouts_are_cycle_safe() {
-    for fixture in ["cases/PeanoMatch.solc", "cases/listid.solc"] {
+    for fixture in ["cases/PeanoMatch.sol", "cases/listid.sol"] {
         assert_fixture_emits_and_checks(fixture);
     }
 }
@@ -783,10 +795,14 @@ fn runtime_string_match_is_rejected_before_emission() {
     let (_db, output) = specialize_src(
         "string_literal_match",
         r#"
-function main(s : string) -> word {
-  match s {
-    | "a" => return 1;
-    | _ => return 2;
+function main(s : string) returns (word) {
+  match (s) {
+    case "a" {
+      return 1;
+    }
+    default {
+      return 2;
+    }
   }
 }
 "#,
@@ -813,27 +829,33 @@ fn out_of_range_word_literals_wrap_in_hull_exprs_and_patterns() {
         "word_literal_wrap",
         &format!(
             r#"
-import std.{{*}};
-import std.dispatch.{{*}};
+import * from std;
+import * from std.dispatch;
 
 contract C {{
-  function exact() -> word {{
+  function exact() returns (word) {{
     return {TWO_256};
   }}
 
-  function plus() -> word {{
+  function plus() returns (word) {{
     return {TWO_256_PLUS_ONE};
   }}
 
-  function pick(x : word) -> word {{
-    match x {{
-      | {TWO_256} => return 10;
-      | {TWO_256_PLUS_ONE} => return 11;
-      | _ => return 12;
+  function pick(x : word) returns (word) {{
+    match (x) {{
+      case {TWO_256} {{
+        return 10;
+      }}
+      case {TWO_256_PLUS_ONE} {{
+        return 11;
+      }}
+      default {{
+        return 12;
+      }}
     }}
   }}
 
-  public function main() -> word {{
+  function main() public returns (word) {{
     let x : word = 0;
     assembly {{ x := calldataload(0) }}
     return exact() + plus() + pick(x);
@@ -872,15 +894,19 @@ fn value_equal_word_patterns_share_one_canonical_switch_branch() {
         "equal_literal_spellings",
         r#"
 contract C {
-  function pick(x : word) -> word {
-    match x {
-      | 0x2a => return 111;
-      | 0042 => return 222;
-      | _ => return 333;
+  function pick(x : word) returns (word) {
+    match (x) {
+      case 0x2a {
+        return 111;
+      }
+      case 0042 { return 222; }
+      default {
+        return 333;
+      }
     }
   }
 
-  function main() -> word {
+  function main() returns (word) {
     let x : word = 0;
     assembly { x := calldataload(0) }
     return pick(x);
@@ -907,23 +933,27 @@ fn evaluator_does_not_fold_past_unknown_return() {
     let hull = pretty_src_hull_with_std(
         "eval_return_unknown_abort",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract RetUnknown {
-  function pick(flag: bool, y: word) -> word {
-    match flag {
-      | true => return y;
-      | false => return 5;
+  function pick(flag: bool, y: word) returns (word) {
+    match (flag) {
+      case true {
+        return y;
+      }
+      case false {
+        return 5;
+      }
     }
     return 0;
   }
 
-  function get(x: word) -> word {
+  function get(x: word) returns (word) {
     return pick(true, x);
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     let x : word = 0;
     assembly { x := calldataload(0) }
     return get(x);
@@ -942,17 +972,17 @@ fn evaluator_does_not_inline_storage_writing_helpers() {
     let mapping_hull = pretty_src_hull_with_std(
         "eval_storage_writer_mapping",
         r#"
-import std.{*};
+import * from std;
 
 contract MappingWriter {
-  m: mapping(word, word);
+  m: mapping(word => word);
 
-  function set(k: word, v: word) -> word {
+  function set(k: word, v: word) returns (word) {
     m[k] = v;
     return v;
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     let a : word = set(1, 42);
     return m[1];
   }
@@ -974,17 +1004,17 @@ contract MappingWriter {
     let direct_hull = pretty_src_hull_with_std(
         "eval_storage_writer_direct",
         r#"
-import std.{*};
+import * from std;
 
 contract DirectWriter {
   x: word;
 
-  function setv(v: word) -> word {
+  function setv(v: word) returns (word) {
     x = v;
     return v;
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     let a : word = setv(9);
     return x;
   }
@@ -1012,13 +1042,13 @@ fn storage_index_assignment_materializes_slot_before_rhs() {
     let hull = pretty_src_hull_with_std(
         "storage_index_order",
         r#"
-import std.{*};
+import * from std;
 
 contract StorageIndexOrder {
   counter: word;
-  m: mapping(word, word);
+  m: mapping(word => word);
 
-  function next() -> word {
+  function next() returns (word) {
     let cur: word = counter;
     let res: word;
     assembly {
@@ -1028,7 +1058,7 @@ contract StorageIndexOrder {
     return res;
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     counter = 0;
     m[next()] = next();
     return m[1];
@@ -1057,13 +1087,13 @@ contract StorageIndexOrder {
     let compound_hull = pretty_src_hull_with_std(
         "storage_index_compound",
         r#"
-import std.{*};
+import * from std;
 
 contract StorageIndexCompound {
   counter: word;
-  m: mapping(word, word);
+  m: mapping(word => word);
 
-  function next() -> word {
+  function next() returns (word) {
     let cur: word = counter;
     let res: word;
     assembly {
@@ -1073,7 +1103,7 @@ contract StorageIndexCompound {
     return res;
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     counter = 0;
     m[1] = 10;
     m[next()] += next();
@@ -1110,13 +1140,13 @@ fn new_compound_assignments_evaluate_storage_lhs_once() {
     let hull = pretty_src_hull_with_std(
         "storage_index_bit_not_compound",
         r#"
-import std.{*};
+import * from std;
 
 contract StorageIndexBitNotCompound {
   counter: word;
-  m: mapping(word, word);
+  m: mapping(word => word);
 
-  function next() -> word {
+  function next() returns (word) {
     let cur: word = counter;
     let res: word;
     assembly {
@@ -1126,7 +1156,7 @@ contract StorageIndexBitNotCompound {
     return res;
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     counter = 0;
     m[1] = 10;
     m[next()] ~=;
@@ -1146,13 +1176,13 @@ contract StorageIndexBitNotCompound {
     for (name, operator) in [("mul", "*="), ("div", "/=")] {
         let source = format!(
             r#"
-import std.{{*}};
+import * from std;
 
 contract StorageIndexBinaryCompound {{
   counter: word;
-  m: mapping(word, word);
+  m: mapping(word => word);
 
-  function next() -> word {{
+  function next() returns (word) {{
     let cur: word = counter;
     let res: word;
     assembly {{ res := add(cur, 1) }}
@@ -1160,7 +1190,7 @@ contract StorageIndexBinaryCompound {{
     return res;
   }}
 
-  public function main() -> word {{
+  function main() public returns (word) {{
     counter = 0;
     m[1] = 12;
     m[next()] {operator} next();
@@ -1188,11 +1218,11 @@ fn evaluator_invalidates_storage_bindings_after_residual_calls() {
 contract StaleCall {
   x: word;
 
-  function setx() -> () {
+  function setx() returns () {
     x = 8;
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     x = 7;
     setx();
     return x;
@@ -1214,23 +1244,23 @@ fn audit_p0_match_scrutinees_are_materialized_exactly_once_even_for_default_bind
     for (name, arms) in [
         (
             "match_call_default_binding",
-            "| 0 => return 0; | n => return n;",
+            "case 0 { return 0; } case n { return n; }",
         ),
-        ("match_call_wildcard", "| _ => return 7;"),
+        ("match_call_wildcard", "default { return 7; }"),
     ] {
         let hull = pretty_src_hull(
             name,
             &format!(
                 r#"
-function read(x: word) -> word {{
+function read(x: word) returns (word) {{
   let value: word;
   assembly {{ value := sload(x) }}
   return value;
 }}
 
 contract C {{
-  public function main() -> word {{
-    match read(0) {{ {arms} }}
+  function main() public returns (word) {{
+    match (read(0)) {{ {arms} }}
   }}
 }}
 "#
@@ -1250,7 +1280,7 @@ fn audit_p0_shadowing_let_materializes_its_initializer_before_declaration() {
 contract C {
   balance: word;
 
-  public function main() -> word {
+  function main() public returns (word) {
     let balance: word = balance;
     return balance;
   }
@@ -1279,7 +1309,7 @@ fn audit_p0_for_initializer_let_remains_visible_after_the_loop() {
 contract C {
   i: word;
 
-  public function main() -> word {
+  function main() public returns (word) {
     for (let i: word; false; ) {}
     return i;
   }
@@ -1296,19 +1326,19 @@ fn audit_p0_if_branch_let_is_hoisted_and_remains_a_local() {
     let hull = pretty_src_hull_with_std(
         "if_branch_let_scope",
         r#"
-import std.{*};
+import * from std;
 
 contract C {
   x: word;
 
-  function f(flag: bool) -> word {
+  function f(flag: bool) returns (word) {
     if (flag && true) {
       let x: word = 7;
     }
     return x;
   }
 
-  public function main() -> word { return f(tobool(x)); }
+  function main() public returns (word) { return f(tobool(x)); }
 }
 "#,
     );
@@ -1345,11 +1375,11 @@ fn evaluator_invalidates_residual_assembly_branch_assignments() {
     let if_hull = pretty_src_hull_with_std(
         "eval_if_asm_assignment",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract IfAsm {
-  function f(b: bool) -> word {
+  function f(b: bool) returns (word) {
     let x : word = 1;
     if (b) {
       assembly { x := 5 }
@@ -1357,7 +1387,7 @@ contract IfAsm {
     return x;
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     let raw : word = 0;
     assembly { raw := calldataload(0) }
     let b : bool = tobool(raw);
@@ -1375,20 +1405,22 @@ contract IfAsm {
     let match_hull = pretty_src_hull_with_std(
         "eval_match_asm_assignment",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract MatchAsm {
-  function g(b: bool) -> word {
+  function g(b: bool) returns (word) {
     let x : word = 1;
-    match b {
-      | true => assembly { x := 5 }
-      | false => {}
+    match (b) {
+      case true {
+        assembly { x := 5 }
+      }
+      case false {}
     }
     return x;
   }
 
-  public function main() -> word {
+  function main() public returns (word) {
     let raw : word = 0;
     assembly { raw := calldataload(0) }
     let b : bool = tobool(raw);
@@ -1407,9 +1439,9 @@ contract MatchAsm {
 #[test]
 fn cited_nested_layout_fixtures_check_cleanly() {
     for fixture in [
-        "spec/032simplejoin.solc",
-        "spec/034cojoin.solc",
-        "spec/043fstsnd.solc",
+        "spec/032simplejoin.sol",
+        "spec/034cojoin.sol",
+        "spec/043fstsnd.sol",
     ] {
         let kinds = check_fixture_kinds(fixture);
         assert!(kinds.is_empty(), "{fixture}: {kinds:?}");
@@ -1454,24 +1486,24 @@ fn mapping_field_in_value_position_lowers_to_unimplemented_trap() {
     // `unimplemented()` runtime traps. This must not escape as an internal
     // hull-check error (previously: UndefinedVariable { name: "bal" }).
     let read_src = r#"
-data mapping(key, value) = mapping(word);
+enum mapping<key, value> {mapping(word)}
 
 contract C {
-  bal : mapping(word, word);
+  bal : mapping(word => word);
 
-  public function main() -> word {
+  function main() public returns (word) {
     let b = bal;
     return 7;
   }
 }
 "#;
     let store_src = r#"
-data mapping(key, value) = mapping(word);
+enum mapping<key, value> {mapping(word)}
 
 contract C {
-  bal : mapping(word, word);
+  bal : mapping(word => word);
 
-  public function main() -> word {
+  function main() public returns (word) {
     bal = bal;
     return 7;
   }
@@ -1504,15 +1536,15 @@ fn aliased_mapping_field_keeps_the_storage_hash_helper_reachable() {
     let hull = pretty_src_hull_with_std(
         "aliased_mapping_field",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
-type Balances = mapping(uint256, uint256);
+type Balances = mapping(uint256 => uint256);
 
 contract C {
   balances : Balances;
 
-  public function roundtrip(k:uint256, v:uint256) -> uint256 {
+  function roundtrip(k:uint256, v:uint256) public returns (uint256) {
     balances[k] = v;
     return balances[k];
   }
@@ -1529,27 +1561,27 @@ fn contract_field_offsets_honor_custom_storage_size_instances() {
     let hull = pretty_src_hull_with_std(
         "custom_contract_field_offset",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
-data Wide = Wide(word);
+enum Wide {Wide(word)}
 
-instance Wide:StorageSize {
-  function size(x:Proxy(Wide)) -> word { return 7; }
+impl StorageSize<Wide> {
+  function size(x:Proxy<Wide>) returns (word) { return 7; }
 }
 
-instance storage(Wide):CanStore(Wide) {
-  function store(r:storage(Wide), v:Wide) -> () {
+impl CanStore<storage<Wide>,Wide> {
+  function store(r:storage<Wide>, v:Wide) returns () {
     let slot:word;
     let value:word;
-    match r { | storage(x) => slot = x; }
-    match v { | Wide(x) => value = x; }
+    match (r) { case storage(x) { slot = x; }}
+    match (v) { case Wide(x) { value = x; }}
     assembly { sstore(slot, value) }
   }
-  function load(r:storage(Wide)) -> Wide {
+  function load(r:storage<Wide>) returns (Wide) {
     let slot:word;
     let value:word;
-    match r { | storage(x) => slot = x; }
+    match (r) { case storage(x) { slot = x; }}
     assembly { value := sload(slot) }
     return Wide(value);
   }
@@ -1559,7 +1591,7 @@ contract C {
   first : Wide;
   second : uint256;
 
-  public function setAndGet(v:uint256) -> uint256 {
+  function setAndGet(v:uint256) public returns (uint256) {
     second = v;
     return second;
   }
@@ -1575,31 +1607,31 @@ fn compound_contract_field_access_replays_effectful_storage_size() {
     let hull = pretty_src_hull_with_std(
         "effectful_contract_field_offset",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
-data Wide = Wide(word);
+enum Wide {Wide(word)}
 
-instance Wide:StorageSize {
-  function size(x:Proxy(Wide)) -> word {
+impl StorageSize<Wide> {
+  function size(x:Proxy<Wide>) returns (word) {
     let result:word;
     assembly { result := sload(99) }
     return result;
   }
 }
 
-instance storage(Wide):CanStore(Wide) {
-  function store(r:storage(Wide), v:Wide) -> () {
+impl CanStore<storage<Wide>,Wide> {
+  function store(r:storage<Wide>, v:Wide) returns () {
     let slot:word;
     let value:word;
-    match r { | storage(x) => slot = x; }
-    match v { | Wide(x) => value = x; }
+    match (r) { case storage(x) { slot = x; }}
+    match (v) { case Wide(x) { value = x; }}
     assembly { sstore(slot, value) }
   }
-  function load(r:storage(Wide)) -> Wide {
+  function load(r:storage<Wide>) returns (Wide) {
     let slot:word;
     let value:word;
-    match r { | storage(x) => slot = x; }
+    match (r) { case storage(x) { slot = x; }}
     assembly { value := sload(slot) }
     return Wide(value);
   }
@@ -1610,7 +1642,7 @@ contract C {
   first : Wide;
   second : uint256;
 
-  public function bump(v:uint256) -> uint256 {
+  function bump(v:uint256) public returns (uint256) {
     second += v;
     return v;
   }
@@ -1633,7 +1665,7 @@ fn specialize_src(name: &str, src: &str) -> (&'static TestDb, SpecializeOutput<'
 }
 
 fn parse_module<'db>(db: &'db TestDb, name: &str, src: &str) -> Module<'db> {
-    let url = format!("memory:///{name}.solc").parse().expect("valid URL");
+    let url = format!("memory:///{name}.sol").parse().expect("valid URL");
     let file = SourceFile::new(db, url, Some(src.to_owned()));
     parse_file_to_hir(db, file).module(db)
 }
@@ -1645,7 +1677,7 @@ fn parse_module<'db>(db: &'db TestDb, name: &str, src: &str) -> Module<'db> {
 fn specialize_src_with_std(name: &str, src: &str) -> (&'static TestDb, SpecializeOutput<'static>) {
     let main_root = repo_root().join("target/hull-smoke-tmp").join(name);
     fs::create_dir_all(&main_root).expect("create temp main root");
-    let path = main_root.join("main.solc");
+    let path = main_root.join("main.sol");
     fs::write(&path, src).expect("write temp source");
     specialize_fixture(&path)
 }
@@ -1707,7 +1739,7 @@ fn collect_module_fs_snapshot(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("solc") {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("sol") {
             if path.is_file() {
                 existing_files.insert(path.clone());
             }
@@ -1861,34 +1893,34 @@ fn dynamic_array_helpers_check_bounds_and_preserve_typedef_representations() {
     let hull = pretty_src_hull_with_std(
         "array-checked-typedef",
         r#"
-import std.{*};
+import * from std;
 
-data Shifted = Shifted(word);
-instance Shifted:Typedef(word) {
-  function rep(x:Shifted) -> word {
-    match x { | Shifted(w) => return w + 100; }
+enum Shifted {Shifted(word)}
+impl Typedef<Shifted,word> {
+  function rep(x:Shifted) returns (word) {
+    match (x) { case Shifted(w) { return w + 100; }}
   }
-  function abs(w:word) -> Shifted { return Shifted(w - 100); }
+  function abs(w:word) returns (Shifted) { return Shifted(w - 100); }
 }
 
-data Second = Second(word);
-instance Second:Typedef(word) {
-  function rep(x:Second) -> word {
-    match x { | Second(w) => return w + 1; }
+enum Second {Second(word)}
+impl Typedef<Second,word> {
+  function rep(x:Second) returns (word) {
+    match (x) { case Second(w) { return w + 1; }}
   }
-  function abs(w:word) -> Second { return Second(w - 1); }
+  function abs(w:word) returns (Second) { return Second(w - 1); }
 }
 
-type Numbers = array(uint256);
+type Numbers = array<uint256>;
 
 contract CheckedArrays {
   xs : Numbers;
   seed : word;
 
-  function main() -> word {
-    let m : memory(DynArray(Shifted)) = [Shifted(3), Shifted(4)];
+  function main() returns (word) {
+    let m : memory<DynArray<Shifted>> = [Shifted(3), Shifted(4)];
     xs = [10, 20];
-    let p : storage(Numbers) = xs;
+    let p : storage<Numbers> = xs;
     let idx : Second = Second(seed);
     p[idx] += uint256(1);
     let picked : Shifted = m[idx];
@@ -1926,10 +1958,10 @@ fn storage_array_slot_helper_is_reachable_without_array_fields() {
     let hull = pretty_src_hull_with_std(
         "array-local-storage-ref",
         r#"
-import std.{*};
+import * from std;
 
-function main() -> uint256 {
-  let xs : storage(array(uint256)) = storage(0x100);
+function main() returns (uint256) {
+  let xs : storage<array<uint256>> = storage(0x100);
   return xs[uint256(0)];
 }
 "#,
@@ -1947,15 +1979,15 @@ fn nested_and_dynamic_storage_array_values_emit_deep_conversion_paths() {
     let hull = pretty_src_hull_with_std(
         "array-nested-dynamic",
         r#"
-import std.{*};
+import * from std;
 
 contract CollectionArray {
-  flags : array(bool);
-  grid : array(array(uint256));
-  names : array(string);
-  backup : array(string);
+  flags : array<bool>;
+  grid : array<array<uint256>>;
+  names : array<string>;
+  backup : array<string>;
 
-  function main() -> uint256 {
+  function main() returns (uint256) {
     Array.setLength(flags, uint256(0));
     ArrayPush.push(flags, true);
     let flag : bool = flags[uint256(0)];
@@ -1963,17 +1995,17 @@ contract CollectionArray {
     Array.setLength(grid, uint256(1));
     ArrayPush.push(grid[uint256(0)], uint256(7));
     grid[uint256(0)][uint256(0)] = uint256(9);
-    let row : storage(array(uint256)) = grid[uint256(0)];
+    let row : storage<array<uint256>> = grid[uint256(0)];
     ArrayPush.push(row, uint256(11));
 
-    let s : memory(string) = "hello";
+    let s : memory<string> = "hello";
     ArrayPush.push(names, s);
     names[uint256(0)] = s;
-    let loaded : memory(string) = names[uint256(0)];
+    let loaded : memory<string> = names[uint256(0)];
     backup = names;
-    let copied : memory(string) = backup[uint256(0)];
+    let copied : memory<string> = backup[uint256(0)];
 
-    if flag {
+    if (flag) {
       return row[uint256(1)] + uint256(strlen(loaded)) + uint256(strlen(copied));
     }
     return uint256(0);
@@ -1994,13 +2026,13 @@ fn public_dynamic_array_return_emits_abi_copy() {
     let hull = pretty_src_hull_with_std(
         "array-public-return",
         r#"
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract PublicArray {
   constructor() {}
 
-  public function values() -> memory(DynArray(uint256)) {
+  function values() public returns (memory<DynArray<uint256>>) {
     return [1, 2, 3];
   }
 }
@@ -2012,24 +2044,23 @@ contract PublicArray {
 }
 
 const OPERATOR_CUSTOM_UINT_ADD: &str = r#"
-import std.{*};
+import * from std;
 
-data uint = u(word);
+enum uint {u(word)}
 
-instance uint:Add {
-  function add(x:uint, y:uint) -> uint {
+impl Add<uint> {
+  function add(x:uint, y:uint) returns (uint) {
     return uint.u(42);
   }
 }
 
-function unwrap(x:uint) -> word {
-  match x {
-  | uint.u(w) => return w;
-  }
+function unwrap(x:uint) returns (word) {
+  match (x) {
+  case uint.u(w) { return w; }}
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let a:uint = uint.u(1);
     let b:uint = uint.u(2);
     let c:uint = a + b;
@@ -2039,34 +2070,33 @@ contract C {
 "#;
 
 const OPERATOR_CUSTOM_BIT_NOT: &str = r#"
-import std.{*};
+import * from std;
 
-data mask = mask(word);
+enum mask {mask(word)}
 
-instance mask:BitNot {
-  function bnot(x:mask) -> mask {
+impl BitNot<mask> {
+  function bnot(x:mask) returns (mask) {
     return mask(42);
   }
 }
 
-function unwrap(x:mask) -> word {
-  match x {
-  | mask(w) => return w;
-  }
+function unwrap(x:mask) returns (word) {
+  match (x) {
+  case mask(w) { return w; }}
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return unwrap(~mask(0));
   }
 }
 "#;
 
 const OPERATOR_ALL_COMPOUND: &str = r#"
-import std.{*};
+import * from std;
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let acc:word = 6;
     acc += 4;
     acc -= 3;
@@ -2084,26 +2114,24 @@ contract C {
 "#;
 
 const OPERATOR_METERS_ADD: &str = r#"
-import std.{*};
+import * from std;
 
-data meters = meters(word);
+enum meters {meters(word)}
 
-instance meters:Add {
-  function add(x:meters, y:meters) -> meters {
-    match x, y {
-    | meters(xw), meters(yw) => return meters(addWord(xw, yw));
-    }
+impl Add<meters> {
+  function add(x:meters, y:meters) returns (meters) {
+    match (x, y) {
+    case (meters(xw), meters(yw)) { return meters(addWord(xw, yw)); }}
   }
 }
 
-function unwrap(x:meters) -> word {
-  match x {
-  | meters(w) => return w;
-  }
+function unwrap(x:meters) returns (word) {
+  match (x) {
+  case meters(w) { return w; }}
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let a:meters = meters(1);
     let b:meters = meters(2);
     let c:meters = a + b;
@@ -2113,28 +2141,26 @@ contract C {
 "#;
 
 const OPERATOR_METERS_ORD: &str = r#"
-import std.{*};
+import * from std;
 
-data meters = meters(word);
+enum meters {meters(word)}
 
-instance meters:Eq {
-  function eq(x:meters, y:meters) -> bool {
-    match x, y {
-    | meters(xw), meters(yw) => return eqWord(xw, yw);
-    }
+impl Eq<meters> {
+  function eq(x:meters, y:meters) returns (bool) {
+    match (x, y) {
+    case (meters(xw), meters(yw)) { return eqWord(xw, yw); }}
   }
 }
 
-instance meters:Ord {
-  function gt(x:meters, y:meters) -> bool {
-    match x, y {
-    | meters(xw), meters(yw) => return gtWord(xw, yw);
-    }
+impl Ord<meters> {
+  function gt(x:meters, y:meters) returns (bool) {
+    match (x, y) {
+    case (meters(xw), meters(yw)) { return gtWord(xw, yw); }}
   }
 }
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     let a:meters = meters(1);
     let b:meters = meters(2);
     if (a < b) {
@@ -2147,10 +2173,10 @@ contract C {
 "#;
 
 const OPERATOR_WORD_ADD: &str = r#"
-import std.{*};
+import * from std;
 
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return 1 + 2;
   }
 }
