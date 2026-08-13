@@ -1,18 +1,18 @@
 // --- preamble / duplicated std defs ---
 
-data Proxy(a) = Proxy;
+enum Proxy<a> { Proxy }
 
 // dynamic arrays with a runtime size. cannot exist on stack so no data constructor (i.e. should be used in combination with memory / storage pointers).
-data array(a);
+enum array<a> {}
 
 // a typed pointer to a location in memory
-data memory(a) = memory(word);
+enum memory<a> { memory(word) }
 
 // word arithmetc
-forall t . class t:Add { function add(l: t, r: t) -> t; }
-forall t . class t:Mul { function mul(l: t, r: t) -> t; }
-instance word:Add {
-    function add(l: word, r: word) -> word {
+trait Add<t> { function add(l: t, r: t) returns (t) ; }
+trait Mul<t> { function mul(l: t, r: t) returns (t) ; }
+impl Add<word> {
+    function add(l: word, r: word) returns (word) {
         let rw : word;
         assembly {
             rw := add(l,r)
@@ -20,8 +20,8 @@ instance word:Add {
         return rw;
     }
 }
-instance word:Mul {
-    function mul(l: word, r: word) -> word {
+impl Mul<word> {
+    function mul(l: word, r: word) returns (word) {
         let rw : word;
         assembly {
             rw := mul(l,r)
@@ -32,24 +32,24 @@ instance word:Mul {
 
 // --- MemoryType ---
 
-forall a . class a:MemoryType {
-  function load(loc : word) -> a;
-  function store(loc: word, val : a) -> ();
-  function size(prx : Proxy(a)) -> word;
+trait MemoryType<a> {
+  function load(loc: word) returns (a) ;
+  function store(loc: word, val: a) ;
+  function size(prx: Proxy<a>) returns (word) ;
 }
 
-instance word:MemoryType {
-  function load(loc : word) -> word {
+impl MemoryType<word> {
+  function load(loc: word) returns (word) {
     let ret : word;
     assembly { ret := mload(loc) }
     return ret;
   }
 
-  function store(loc : word, val : word) -> () {
+  function store(loc: word, val: word) {
     assembly { mstore(loc,val) }
   }
 
-  function size(prx : Proxy(word)) -> word {
+  function size(prx: Proxy<word>) returns (word) {
     return 32;
   }
 }

@@ -1,8 +1,8 @@
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
 #[derive(Eq)]
-data Void;
+enum Void {}

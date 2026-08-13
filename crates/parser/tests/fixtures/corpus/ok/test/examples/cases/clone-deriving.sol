@@ -1,21 +1,20 @@
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
-forall a.
-class a : Clone {
-  function clone(x : a) -> a;
+trait Clone<a> {
+  function clone(x: a) returns (a) ;
 }
 
-instance word : Clone {
-  function clone(x : word) -> word { return x; }
+impl Clone<word> {
+  function clone(x: word) returns (word) { return x; }
 }
 
 #[derive(Clone)]
-data Box = Box(word);
+enum Box { Box(word) }
 
-function cloneBox(x : Box) -> Box {
+function cloneBox(x: Box) returns (Box) {
   return Clone.clone(x);
 }

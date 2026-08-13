@@ -1,14 +1,14 @@
-import std.{*};
-import std.Generic.{*};
+import * from std;
+import * from std.Generic;
 
 pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 
 contract ContractLocalDerive {
   #[derive(Eq)]
-  data Color = Red | Green;
+  enum Color { Red, Green }
 
-  public function same() -> bool {
+  function same() public returns (bool) {
     return Eq.eq(Color.Red, Color.Red);
   }
 }

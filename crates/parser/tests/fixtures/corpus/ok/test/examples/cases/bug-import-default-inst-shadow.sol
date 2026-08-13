@@ -6,7 +6,7 @@ import * from std.Generic;
 
 // Minimal reproducer for the "imported-default-instance-stub mis-tagged" bug.
 //
-// std/Generic.solc exports:
+// std/Generic.sol exports:
 //   forall a rep . a:Generic(rep), rep:ABIAttribs, rep:ABIEncode =>
 //   default instance a : ABIEncode { function encodeInto ... }
 //
@@ -24,9 +24,8 @@ import * from std.Generic;
 //   4. tcTopDeclWithVisibility calls tcTopDecl' on the stub (funs = []).
 //   5. tcInstance' -> checkCompleteInstDef -> "Incomplete definition for ABIEncode".
 
-forall a rep . a:Generic(rep), rep:ABIAttribs, rep:ABIEncode =>
-default instance a : ABIEncode {
-    function encodeInto(x : a, basePtr : word, offset : word, tail : word) -> word {
+default impl<a, rep> ABIEncode<a> where a: Generic<rep>, rep: ABIAttribs, rep: ABIEncode {
+    function encodeInto(x: a, basePtr: word, offset: word, tail: word) returns (word) {
         return ABIEncode.encodeInto(Generic.from(x), basePtr, offset, tail);
     }
 }

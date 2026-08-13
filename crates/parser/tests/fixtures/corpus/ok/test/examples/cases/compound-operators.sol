@@ -1,4 +1,4 @@
-import std.{*};
+import * from std;
 pragma no-patterson-condition ;
 pragma no-coverage-condition ;
 pragma no-bounded-variable-condition ;
@@ -10,7 +10,7 @@ pragma no-bounded-variable-condition ;
 //   ^=  &=  |=       (bitwise: BitXor / BitAnd / BitOr)
 //   ~=              (unary bitwise NOT: BitNot, `acc ~=` -> `acc := ~acc`)
 // each binary `lhs op= rhs` desugars to `lhs := lhs op rhs`.
-function f(x: word) -> word {
+function f(x: word) returns (word) {
   let acc : word = x;   // 6
   acc += 4;             // 10
   acc -= 3;             // 7
@@ -27,5 +27,5 @@ function f(x: word) -> word {
 
 contract CompoundOperators {
   // f(6) == 3 — folded at compile time.
-  public function main() -> word { return f(6); }
+  function main() public returns (word) { return f(6); }
 }

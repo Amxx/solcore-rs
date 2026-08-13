@@ -1,4 +1,4 @@
-function test() -> word {
+function test() returns (word) {
     let f = lam (x: word) -> word {
         let y : word = 42;
         return y;
@@ -7,7 +7,7 @@ function test() -> word {
 }
 
 contract C {
-    public function main() -> word {
+    function main() public returns (word) {
         return test();
     }
 }

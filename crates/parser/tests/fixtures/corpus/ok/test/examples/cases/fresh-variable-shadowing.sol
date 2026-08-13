@@ -1,14 +1,18 @@
-data Bool = False | True;
+enum Bool { False, True }
 
-function test(v0 : Bool, p : Bool) -> Bool {
-  match p {
-  | Bool.True => return Bool.False;
-  | z    => return v0;
-  }
+function test(v0: Bool, p: Bool) returns (Bool) {
+  match (p) {
+case Bool.True {
+return Bool.False;
+}
+case z {
+return v0;
+}
+}
 }
 
 contract FreshVariableShadowing {
-  public function main() -> Bool {
+  function main() public returns (Bool) {
     test(Bool.True, Bool.False)
   }
 }

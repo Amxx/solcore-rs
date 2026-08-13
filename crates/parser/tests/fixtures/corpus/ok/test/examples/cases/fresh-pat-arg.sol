@@ -1,7 +1,7 @@
-function g(x:word) -> word { x }
+function g(x: word) returns (word) { x }
 
-forall a. function h(x:a) -> a { x }
+function h<a>(x: a) returns (a) { x }
 
 contract C {
-  public function main() -> word { g(h(42)) }
+  function main() public returns (word) { g(h(42)) }
 }
