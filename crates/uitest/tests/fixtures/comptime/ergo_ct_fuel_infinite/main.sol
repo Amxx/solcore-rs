@@ -2,12 +2,12 @@
 // recursive evaluator before the larger total-work fuel budget is consumed.
 import std;
 
-function spin(comptime n : integer) -> comptime integer {
+function spin(comptime n: integer) returns (comptime<integer>) {
   return spin(integerAdd(n, 1));
 }
 
 contract CtFuelInfinite {
-  function main() -> word {
+  function main() returns (word) {
     return wordFromInteger(spin(0));
   }
 }

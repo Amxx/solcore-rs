@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/nameres/duplicate_qualifier/main.solc
+input_file: crates/uitest/tests/fixtures/nameres/duplicate_qualifier/main.sol
 ---
 error[SC0116]: duplicate import qualifier `bar`
- --> /main/main.solc:2:12
+ --> /main/main.sol:2:12
   |
 1 | import foo.bar;
   |            --- first qualifier with this name

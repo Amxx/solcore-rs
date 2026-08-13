@@ -1,8 +1,0 @@
-import std.{*};
-import std.dispatch.{*};
-
-contract C {
-  fallback() -> word {
-    return 1;
-  }
-}

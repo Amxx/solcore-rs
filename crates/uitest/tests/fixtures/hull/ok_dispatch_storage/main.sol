@@ -1,5 +1,5 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 // Storage support for a `memory(bytes)` contract field: assigning to the
 // field copies the byte array into storage, reading it back loads it into
@@ -7,11 +7,11 @@ import std.dispatch.{*};
 contract C {
   content: bytes;
 
-  public function set(value: memory(bytes)) -> () {
+  function set(value: memory<bytes>) public {
     content = value;
   }
 
-  public function get() -> memory(bytes) {
+  function get() public returns (memory<bytes>) {
     return content;
   }
 }

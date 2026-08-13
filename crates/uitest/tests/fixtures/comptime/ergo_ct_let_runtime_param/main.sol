@@ -3,11 +3,11 @@
 import std;
 
 contract CtLetRuntimeParam {
-  function scale(k : word) -> word {
-    let c : comptime word = k + 1;
+  function scale(k: word) returns (word) {
+    let c : comptime<word> = k + 1;
     return c;
   }
-  function main() -> word {
+  function main() returns (word) {
     let v : word;
     assembly {
       v := sload(0)

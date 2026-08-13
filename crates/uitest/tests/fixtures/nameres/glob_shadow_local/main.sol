@@ -1,5 +1,5 @@
-import lib.{*};
+import * from lib;
 
-function value(x: word) -> word {
+function value(x: word) returns (word) {
   return x;
 }

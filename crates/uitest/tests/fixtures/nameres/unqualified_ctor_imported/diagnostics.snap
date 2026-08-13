@@ -1,12 +1,12 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/nameres/unqualified_ctor_imported/main.solc
+input_file: crates/uitest/tests/fixtures/nameres/unqualified_ctor_imported/main.sol
 ---
 error[SC0106]: unqualified constructor: Ok
- --> /main/main.solc:4:10
+ --> /main/main.sol:4:10
   |
-3 | function mk(x: word) -> Token {
+3 | function mk(x: word) returns (Token) {
 4 |   return Ok(x);
   |          ^^ constructor must be qualified
 5 | }
@@ -15,11 +15,11 @@ error[SC0106]: unqualified constructor: Ok
 ---
 
 error[SC0106]: unqualified constructor: Ok
-  --> /main/main.solc:9:5
+  --> /main/main.sol:9:6
    |
- 8 |   match t {
- 9 |   | Ok(v) => return v;
-   |     ^^ constructor must be qualified
-10 |   | Token.Err(v) => return v;
+ 8 |   match (t) {
+ 9 | case Ok(v) {
+   |      ^^ constructor must be qualified
+10 | return v;
    |
    = help: use Type.Constructor form

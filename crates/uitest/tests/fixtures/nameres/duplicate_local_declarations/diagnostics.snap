@@ -1,12 +1,12 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/nameres/duplicate_local_declarations/main.solc
+input_file: crates/uitest/tests/fixtures/nameres/duplicate_local_declarations/main.sol
 ---
 error[SC0108]: duplicate declaration `Foo` in type namespace
- --> /main/main.solc:2:6
+ --> /main/main.sol:2:6
   |
-1 | data Foo = Foo;
+1 | enum Foo { Foo }
   |      --- previous declaration
 2 | type Foo = word;
   |      ^^^ duplicate declaration
@@ -15,7 +15,7 @@ error[SC0108]: duplicate declaration `Foo` in type namespace
 ---
 
 error[SC0108]: duplicate declaration `dup` in term namespace
- --> /main/main.solc:5:10
+ --> /main/main.sol:5:10
   |
 3 |
 4 | function dup() {}

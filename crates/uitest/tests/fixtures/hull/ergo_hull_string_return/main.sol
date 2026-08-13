@@ -1,7 +1,12 @@
-// Mirrors reference corpus test/examples/cases/string-const.solc:
-// a public function returning a string constant.
+// A runtime function whose result type is not representable in Hull.
+import {string} from std;
+
 contract Answer {
-  public function main() {
-    return "42";
+  function main() returns (string) {
+    return helper();
   }
+}
+
+function helper() returns (string) {
+  return "42";
 }

@@ -1,11 +1,15 @@
-import std.{*};
-import std.dispatch.{*};
+import * from std;
+import * from std.dispatch;
 
 contract Digits {
-  public function name(d : uint256) -> uint256 {
-    match d {
-    | 0 => return 100;
-    | 1 => return 101;
-    }
+  function name(d: uint256) public returns (uint256) {
+    match (d) {
+case 0 {
+return 100;
+}
+case 1 {
+return 101;
+}
+}
   }
 }
