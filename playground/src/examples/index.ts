@@ -149,6 +149,28 @@ function main() returns (word) {
     ],
   },
   {
+    id: "comptime",
+    name: "Comptime",
+    description: "Evaluates a typed computation during specialization and embeds its result.",
+    entry: "main.sol",
+    files: [
+      {
+        path: "main.sol",
+        content: `import * from std;
+
+function double(comptime value: word) returns (comptime<word>) {
+  return value + value;
+}
+
+function main() returns (word) {
+  let answer: comptime<word> = double(21);
+  return answer;
+}
+`,
+      },
+    ],
+  },
+  {
     id: "multi-file",
     name: "Multi-file",
     description: "Imports a sibling module and calls an exported function.",
