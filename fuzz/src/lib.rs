@@ -3,7 +3,7 @@
 //! Expected source diagnostics return normally.  A panic, abort, or timeout is
 //! therefore the signal recorded by AFL++ as a finding.
 
-use std::path::Path;
+use std::{env, panic, path::Path, thread};
 
 use hir::{diag::DiagnosticLevel, input::SourceFile};
 use parser::{parse_diagnostics, parse_file_to_hir};
@@ -17,12 +17,68 @@ pub const MAX_INPUT_BYTES: usize = 64 * 1024;
 /// Match the native driver's compiler-thread stack so a deep valid input does
 /// not become a harness-only stack-overflow finding.
 pub const COMPILER_STACK_SIZE: usize = 256 * 1024 * 1024;
+/// Number of inputs processed before AFL++ replaces the persistent child.
+///
+/// Compiler databases and parser graphs are reclaimed after every input.
+/// Recycling the child still bounds the impact of allocator/thread-local high
+/// water and future dependency regressions without paying for a fresh process
+/// on every input.
+pub const DEFAULT_PERSISTENT_LOOP_COUNT: usize = 10;
+
+const AFL_FUZZER_LOOPCOUNT: &str = "AFL_FUZZER_LOOPCOUNT";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Parser,
     Frontend,
     Backend,
+}
+
+/// Runs an AFL++ target with a bounded persistent-child lifetime.
+///
+/// Operators can override [`DEFAULT_PERSISTENT_LOOP_COUNT`] by setting
+/// `AFL_FUZZER_LOOPCOUNT` before starting the target.
+///
+/// # Safety
+///
+/// Call this at the start of `main`, before any other threads are created or
+/// any foreign code can concurrently access the process environment.
+pub unsafe fn fuzz(target: Target) {
+    // SAFETY: The caller guarantees exclusive access to the process
+    // environment until this function has configured the persistent loop.
+    unsafe { configure_persistent_loop() };
+
+    let fuzzer = thread::Builder::new()
+        .name(format!("solcore-{target:?}-fuzz").to_ascii_lowercase())
+        .stack_size(COMPILER_STACK_SIZE)
+        .spawn(move || afl::fuzz!(|input: &[u8]| process(target, input)))
+        .expect("failed to spawn compiler fuzzing thread");
+    if let Err(payload) = fuzzer.join() {
+        panic::resume_unwind(payload);
+    }
+}
+
+unsafe fn configure_persistent_loop() {
+    // Match afl.rs, which reads this setting with `env::var`. A non-UTF-8 value
+    // is unusable there, so treat it as absent instead of accidentally leaving
+    // afl.rs with its effectively unbounded fallback.
+    apply_persistent_loop_default(env::var(AFL_FUZZER_LOOPCOUNT).ok(), |name, value| {
+        // SAFETY: The caller of `configure_persistent_loop` guarantees that no
+        // other thread can access the process environment concurrently.
+        unsafe { env::set_var(name, value) };
+    });
+}
+
+fn apply_persistent_loop_default(
+    configured: Option<String>,
+    mut set_var: impl FnMut(&str, String),
+) {
+    if configured.is_none() {
+        set_var(
+            AFL_FUZZER_LOOPCOUNT,
+            DEFAULT_PERSISTENT_LOOP_COUNT.to_string(),
+        );
+    }
 }
 
 /// Runs one input through a fuzz target.
@@ -65,6 +121,7 @@ fn backend(source: &str) {
     {
         return;
     }
+    drop(diagnostics);
 
     let entry_file = workspace
         .db()
@@ -130,5 +187,31 @@ mod tests {
     fn non_utf8_and_oversized_inputs_are_skipped() {
         process(Target::Frontend, &[0xff]);
         process(Target::Frontend, &vec![b'x'; MAX_INPUT_BYTES + 1]);
+    }
+
+    #[test]
+    fn persistent_loop_is_bounded_by_default() {
+        let mut configured = None;
+        apply_persistent_loop_default(None, |name, value| {
+            configured = Some((name.to_owned(), value));
+        });
+
+        assert_eq!(
+            configured,
+            Some((
+                AFL_FUZZER_LOOPCOUNT.to_owned(),
+                DEFAULT_PERSISTENT_LOOP_COUNT.to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn explicit_persistent_loop_count_is_preserved() {
+        let mut configured = None;
+        apply_persistent_loop_default(Some("37".to_owned()), |name, value| {
+            configured = Some((name.to_owned(), value));
+        });
+
+        assert_eq!(configured, None);
     }
 }
