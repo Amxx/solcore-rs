@@ -23,3 +23,9 @@
 
 /target
 /.claude/
+
+# Nix
+/result
+/result-*
+/.direnv/
+/.npm-cache/
