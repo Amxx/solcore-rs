@@ -123,6 +123,44 @@ function main() returns (word) {
     ],
   },
   {
+    id: "option",
+    name: "Option",
+    description: "A generic optional value: checked division returns an Option instead of reverting.",
+    entry: "main.sol",
+    files: [
+      {
+        path: "main.sol",
+        content: `import * from std;
+
+enum Option<a> {
+    None,
+    Some(a)
+}
+
+// Division by zero yields Option.None instead of reverting.
+function checkedDiv(a: word, b: word) returns (Option<word>) {
+    if (b == 0) {
+        return Option.None;
+    }
+    return Option.Some(a / b);
+}
+
+function unwrapOr(option: Option<word>, orElse: word) returns (word) {
+    match (option) {
+        case Option.Some(value) { return value; }
+        default { return orElse; }
+    }
+}
+
+function main() returns (word) {
+    // 84 / 2 succeeds with Some(42); 84 / 0 would fall back to 0.
+    return unwrapOr(checkedDiv(84, 2), 0);
+}
+`,
+      },
+    ],
+  },
+  {
     id: "pattern-matching",
     name: "Pattern matching",
     description: "An escrow whose lifecycle is an enum stored in a contract field, driven by match.",
