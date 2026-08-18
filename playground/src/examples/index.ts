@@ -135,9 +135,7 @@ import * from std.dispatch;
 import * from std.Generic;
 import * from std.StorageGeneric;
 
-// The escrow's lifecycle is a sum type: each phase is a constructor, and the
-// funded/released phases carry the amount as a payload. Storing \`Phase\` in a
-// contract field works because enums derive a storage representation.
+// An escrow whose lifecycle is a sum type stored in a contract field.
 enum Phase {
   AwaitingPayment,
   Funded(uint256),
