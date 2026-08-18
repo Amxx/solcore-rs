@@ -24,9 +24,9 @@ export const examples: PlaygroundExample[] = [
 import * from std.dispatch;
 
 contract Answer {
-  function main() public returns (uint256) {
-    return uint256(42);
-  }
+    function main() public returns (uint256) {
+        return uint256(42);
+    }
 }
 `,
       },
@@ -41,7 +41,7 @@ contract Answer {
       {
         path: "main.sol",
         content: `function main() returns (word) {
-  return 42;
+    return 42;
 }
 `,
       },
@@ -58,7 +58,7 @@ contract Answer {
         content: `import {addWord} from std;
 
 function main() returns (word) {
-  return addWord(1, 2);
+    return addWord(1, 2);
 }
 `,
       },
@@ -73,25 +73,25 @@ function main() returns (word) {
       {
         path: "main.sol",
         content: `trait Toggle<a> {
-  function toggle(value: a) returns (a);
+    function toggle(value: a) returns (a);
 }
 
 enum Switch {
-  Off,
-  On
+    Off,
+    On
 }
 
 impl Toggle<Switch> {
-  function toggle(value: Switch) returns (Switch) {
-    match (value) {
-      case Switch.Off { return Switch.On; }
-      case Switch.On { return Switch.Off; }
+    function toggle(value: Switch) returns (Switch) {
+        match (value) {
+            case Switch.Off { return Switch.On; }
+            case Switch.On { return Switch.Off; }
+        }
     }
-  }
 }
 
 function main() returns (Switch) {
-  return Toggle.toggle(Switch.Off);
+    return Toggle.toggle(Switch.Off);
 }
 `,
       },
@@ -106,17 +106,17 @@ function main() returns (Switch) {
       {
         path: "main.sol",
         content: `enum Pair<a, b> {
-  Pair(a, b)
+    Pair(a, b)
 }
 
 function second<a, b>(pair: Pair<a, b>) returns (b) {
-  match (pair) {
-    case Pair(_, value) { return value; }
-  }
+    match (pair) {
+        case Pair(_, value) { return value; }
+    }
 }
 
 function main() returns (word) {
-  return second(Pair(true, 42));
+    return second(Pair(true, 42));
 }
 `,
       },
@@ -137,50 +137,50 @@ import * from std.StorageGeneric;
 
 // An escrow whose lifecycle is a sum type stored in a contract field.
 enum Phase {
-  AwaitingPayment,
-  Funded(uint256),
-  Released(uint256)
+    AwaitingPayment,
+    Funded(uint256),
+    Released(uint256)
 }
 
 contract Escrow {
-  phase: Phase;
+    phase: Phase;
 
-  constructor() {
-    phase = Phase.AwaitingPayment;
-  }
-
-  function deposit(amount: uint256) public {
-    match (phase) {
-      case Phase.AwaitingPayment {
-        phase = Phase.Funded(amount);
-      }
-      default {
-        require(false, "already funded");
-      }
+    constructor() {
+        phase = Phase.AwaitingPayment;
     }
-  }
 
-  function release() public returns (uint256) {
-    match (phase) {
-      case Phase.Funded(amount) {
-        phase = Phase.Released(amount);
-        return amount;
-      }
-      default {
-        require(false, "nothing to release");
-        return uint256(0);
-      }
+    function deposit(amount: uint256) public {
+        match (phase) {
+            case Phase.AwaitingPayment {
+                phase = Phase.Funded(amount);
+            }
+            default {
+                require(false, "already funded");
+            }
+        }
     }
-  }
 
-  // 0 = awaiting payment, 1 = funded, 2 = released
-  function status() public returns (uint256) {
-    match (phase) {
-      case Phase.AwaitingPayment { return uint256(0); }
-      case Phase.Funded(_) { return uint256(1); }
-      case Phase.Released(_) { return uint256(2); }
+    function release() public returns (uint256) {
+        match (phase) {
+            case Phase.Funded(amount) {
+                phase = Phase.Released(amount);
+                return amount;
+            }
+            default {
+                require(false, "nothing to release");
+                return uint256(0);
+            }
+        }
     }
-  }
+
+    // 0 = awaiting payment, 1 = funded, 2 = released
+    function status() public returns (uint256) {
+        match (phase) {
+            case Phase.AwaitingPayment { return uint256(0); }
+            case Phase.Funded(_) { return uint256(1); }
+            case Phase.Released(_) { return uint256(2); }
+        }
+    }
 }
 `,
       },
@@ -195,18 +195,18 @@ contract Escrow {
       {
         path: "main.sol",
         content: `function makeAdder(value: word) returns (function(word) returns (word)) {
-  return lam (other: word) -> word {
-    let result: word;
-    assembly {
-      result := add(value, other)
-    }
-    return result;
-  };
+    return lam (other: word) -> word {
+        let result: word;
+        assembly {
+            result := add(value, other)
+        }
+        return result;
+    };
 }
 
 function main() returns (word) {
-  let addTen = makeAdder(10);
-  return addTen(32);
+    let addTen = makeAdder(10);
+    return addTen(32);
 }
 `,
       },
@@ -223,12 +223,12 @@ function main() returns (word) {
         content: `import * from std;
 
 function double(comptime value: word) returns (comptime<word>) {
-  return value + value;
+    return value + value;
 }
 
 function main() returns (word) {
-  let answer: comptime<word> = double(21);
-  return answer;
+    let answer: comptime<word> = double(21);
+    return answer;
 }
 `,
       },
@@ -245,18 +245,18 @@ function main() returns (word) {
         content: `import {double} from math;
 
 function main() returns (word) {
-  return double(21);
+    return double(21);
 }
 `,
       },
       {
         path: "math.sol",
         content: `function double(x: word) returns (word) {
-  let res: word;
-  assembly {
-    res := add(x, x)
-  }
-  return res;
+    let res: word;
+    assembly {
+        res := add(x, x)
+    }
+    return res;
 }
 
 export { double };
