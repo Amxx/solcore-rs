@@ -123,6 +123,72 @@ function main() returns (word) {
     ],
   },
   {
+    id: "pattern-matching",
+    name: "Pattern matching",
+    description: "An escrow whose lifecycle is an enum stored in a contract field, driven by match.",
+    entry: "main.sol",
+    files: [
+      {
+        path: "main.sol",
+        content: `import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.StorageGeneric;
+
+// The escrow's lifecycle is a sum type: each phase is a constructor, and the
+// funded/released phases carry the amount as a payload. Storing \`Phase\` in a
+// contract field works because enums derive a storage representation.
+enum Phase {
+  AwaitingPayment,
+  Funded(uint256),
+  Released(uint256)
+}
+
+contract Escrow {
+  phase: Phase;
+
+  constructor() {
+    phase = Phase.AwaitingPayment;
+  }
+
+  function deposit(amount: uint256) public {
+    match (phase) {
+      case Phase.AwaitingPayment {
+        phase = Phase.Funded(amount);
+      }
+      default {
+        require(false, "already funded");
+      }
+    }
+  }
+
+  function release() public returns (uint256) {
+    match (phase) {
+      case Phase.Funded(amount) {
+        phase = Phase.Released(amount);
+        return amount;
+      }
+      default {
+        require(false, "nothing to release");
+        return uint256(0);
+      }
+    }
+  }
+
+  // 0 = awaiting payment, 1 = funded, 2 = released
+  function status() public returns (uint256) {
+    match (phase) {
+      case Phase.AwaitingPayment { return uint256(0); }
+      case Phase.Funded(_) { return uint256(1); }
+      case Phase.Released(_) { return uint256(2); }
+    }
+  }
+}
+`,
+      },
+    ],
+  },
+  {
     id: "lambda",
     name: "Lambda",
     description: "Builds a lambda that captures a value from its enclosing function.",
