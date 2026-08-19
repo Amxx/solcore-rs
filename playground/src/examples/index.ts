@@ -478,14 +478,19 @@ function main() returns (word) {
       {
         path: "main.sol",
         content: `import * from std;
+import * from std.dispatch;
 
-function double(comptime value: word) returns (comptime<word>) {
+// Evaluated during specialization: the deployed code contains only the
+// result, not the computation.
+function double(comptime value: uint256) returns (comptime<uint256>) {
     return value + value;
 }
 
-function main() returns (word) {
-    let answer: comptime<word> = double(21);
-    return answer;
+contract Answer {
+    function answer() public returns (uint256) {
+        let result: comptime<uint256> = double(uint256(21));
+        return result;
+    }
 }
 `,
       },
