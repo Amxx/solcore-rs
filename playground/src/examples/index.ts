@@ -470,36 +470,6 @@ contract Answer {
       },
     ],
   },
-  {
-    id: "multi-file",
-    name: "Multi-file",
-    description: "Imports a sibling module and calls an exported function.",
-    entry: "main.sol",
-    files: [
-      {
-        path: "main.sol",
-        content: `import {double} from math;
-
-function main() returns (word) {
-    return double(21);
-}
-`,
-      },
-      {
-        path: "math.sol",
-        content: `function double(x: word) returns (word) {
-    let res: word;
-    assembly {
-        res := add(x, x)
-    }
-    return res;
-}
-
-export { double };
-`,
-      },
-    ],
-  },
 ];
 
 export const defaultExample = examples[0];
