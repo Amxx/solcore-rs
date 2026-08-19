@@ -444,32 +444,6 @@ export { sender };
     ],
   },
   {
-    id: "lambda",
-    name: "Lambda",
-    description: "Builds a lambda that captures a value from its enclosing function.",
-    entry: "main.sol",
-    files: [
-      {
-        path: "main.sol",
-        content: `function makeAdder(value: word) returns (function(word) returns (word)) {
-    return lam (other: word) -> word {
-        let result: word;
-        assembly {
-            result := add(value, other)
-        }
-        return result;
-    };
-}
-
-function main() returns (word) {
-    let addTen = makeAdder(10);
-    return addTen(32);
-}
-`,
-      },
-    ],
-  },
-  {
     id: "comptime",
     name: "Comptime",
     description: "Evaluates a typed computation during specialization and embeds its result.",
