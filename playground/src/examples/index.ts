@@ -14,7 +14,7 @@ export interface PlaygroundExample {
 export const examples: PlaygroundExample[] = [
   {
     id: "contract-output",
-    name: "Contract output",
+    name: "Hello contract",
     description: "A small contract that emits Hull, Yul, Sonatina IR, and ABI JSON.",
     entry: "main.sol",
     files: [
@@ -27,21 +27,6 @@ contract Answer {
     function main() public returns (uint256) {
         return uint256(42);
     }
-}
-`,
-      },
-    ],
-  },
-  {
-    id: "hello",
-    name: "Hello",
-    description: "A minimal function returning a word literal.",
-    entry: "main.sol",
-    files: [
-      {
-        path: "main.sol",
-        content: `function main() returns (word) {
-    return 42;
 }
 `,
       },
