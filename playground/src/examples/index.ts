@@ -125,12 +125,39 @@ function main() returns (word) {
   {
     id: "option",
     name: "Option",
-    description: "A generic optional value: checked division returns an Option instead of reverting.",
+    description: "A reusable Option module and a splitter contract: checked division returns an Option instead of reverting.",
     entry: "main.sol",
     files: [
       {
         path: "main.sol",
         content: `import * from std;
+import * from std.dispatch;
+import {Option, checkedDiv, unwrapOr} from option;
+
+contract Splitter {
+    // Each recipient's equal share of the pot; zero recipients yields
+    // zero instead of reverting on division.
+    function share(pot: uint256, recipients: uint256) public returns (uint256) {
+        return unwrapOr(checkedDiv(pot, recipients), uint256(0));
+    }
+
+    // What is left over after handing out equal shares.
+    function remainder(pot: uint256, recipients: uint256) public returns (uint256) {
+        match (checkedDiv(pot, recipients)) {
+            case Option.Some(perRecipient) { return pot - perRecipient * recipients; }
+            default { return pot; }
+        }
+    }
+}
+`,
+      },
+      {
+        path: "option.sol",
+        content: `// Candidate standard-library inventory: this module should disappear once
+// std provides Option.
+import * from std;
+import * from std.Generic;
+import * from std.StorageGeneric;
 
 enum Option<a> {
     None,
@@ -138,24 +165,28 @@ enum Option<a> {
 }
 
 // Division by zero yields Option.None instead of reverting.
-function checkedDiv(a: word, b: word) returns (Option<word>) {
-    if (b == 0) {
+function checkedDiv(a: uint256, b: uint256) returns (Option<uint256>) {
+    if (b == uint256(0)) {
         return Option.None;
     }
     return Option.Some(a / b);
 }
 
-function unwrapOr(option: Option<word>, orElse: word) returns (word) {
+function unwrapOr<a>(option: Option<a>, orElse: a) returns (a) {
     match (option) {
         case Option.Some(value) { return value; }
         default { return orElse; }
     }
 }
 
-function main() returns (word) {
-    // 84 / 2 succeeds with Some(42); 84 / 0 would fall back to 0.
-    return unwrapOr(checkedDiv(84, 2), 0);
+function contains<a>(option: Option<a>, value: a) returns (bool) where a: Eq {
+    match (option) {
+        case Option.Some(inner) { return inner == value; }
+        default { return false; }
+    }
 }
+
+export { Option(*), checkedDiv, unwrapOr, contains };
 `,
       },
     ],
