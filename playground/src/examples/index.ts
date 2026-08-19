@@ -61,12 +61,17 @@ contract Calculator {
   {
     id: "trait",
     name: "Trait",
-    description: "Defines a trait, implements it for a custom enum, and calls its method.",
+    description: "A trait implemented for a custom enum drives a stored on-chain state machine.",
     entry: "main.sol",
     files: [
       {
         path: "main.sol",
-        content: `trait Toggle<a> {
+        content: `import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.StorageGeneric;
+
+trait Toggle<a> {
     function toggle(value: a) returns (a);
 }
 
@@ -84,8 +89,23 @@ impl Toggle<Switch> {
     }
 }
 
-function main() returns (Switch) {
-    return Toggle.toggle(Switch.Off);
+contract LightSwitch {
+    state : Switch;
+
+    constructor() {
+        state = Switch.Off;
+    }
+
+    function flip() public {
+        state = Toggle.toggle(state);
+    }
+
+    function isOn() public returns (bool) {
+        match (state) {
+            case Switch.On { return true; }
+            default { return false; }
+        }
+    }
 }
 `,
       },
