@@ -1,6 +1,6 @@
 .app-shell {
   display: grid;
-  grid-template-rows: var(--topbar-height) minmax(0, 1fr) var(--statusbar-height);
+  grid-template-rows: minmax(var(--topbar-height), auto) minmax(0, 1fr) var(--statusbar-height);
   height: 100%;
   min-width: 0;
   background:
@@ -10,11 +10,12 @@
 
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
+  gap: var(--space-2) var(--space-4);
   min-width: 0;
-  padding: 0 var(--space-4);
+  padding: var(--space-2) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
   background: color-mix(in srgb, var(--surface-1) 90%, transparent);
   backdrop-filter: blur(18px);
@@ -40,6 +41,7 @@
 }
 
 .topbar__controls {
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
   min-width: 0;
@@ -166,12 +168,21 @@
   min-width: 0;
   height: 32px;
   padding: 0 30px 0 10px;
-  color: inherit;
+  color: var(--text-primary);
+  background-color: var(--surface-1);
   border: 0;
   outline: 0;
   appearance: none;
-  background: transparent;
   cursor: pointer;
+}
+
+.select-control select option {
+  color: var(--text-primary);
+  background-color: var(--surface-1);
+}
+
+.select-control__shell:hover select {
+  background-color: var(--surface-hover);
 }
 
 .select-control svg {
@@ -196,6 +207,7 @@
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .compile-timing.is-outdated {
@@ -212,6 +224,18 @@
 
 .workspace-panels,
 .main-panels {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Wraps the editor/output PanelGroup so its pixel width can be measured via
+   ResizeObserver (App.tsx) to drive the space-aware horizontal/vertical
+   layout switch. Needs an explicit height/width since it sits between two
+   elements that both size to 100% of their parent. */
+.main-area {
+  display: flex;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
 }
@@ -380,6 +404,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   gap: var(--space-2);
   min-width: 0;
   height: 42px;
@@ -623,12 +648,31 @@
   }
 
   .topbar__controls {
-    overflow-x: auto;
     justify-content: flex-start;
   }
 
   .select-control > span:first-child {
     display: none;
+  }
+}
+
+/*
+ * Trim to icon-only controls at the SAME 1080px breakpoint that drops the
+ * select labels. Below 1080px the full-text Compile/Reset buttons + version
+ * pill no longer fit alongside the (now label-less) selects, so simplifying at
+ * this same width avoids the cramped 960-1080px band where the labels were
+ * hidden but everything else stayed full-size (forcing topbar__controls into
+ * its overflow-x scroll). The 760px query below still handles the true
+ * mobile two-row wrap.
+ */
+@media (max-width: 1080px) {
+  .button span,
+  .version-pill {
+    display: none;
+  }
+
+  .select-control__shell {
+    min-width: 124px;
   }
 }
 
@@ -648,15 +692,6 @@
 
   .brand__text {
     max-width: 52vw;
-  }
-
-  .button span,
-  .version-pill {
-    display: none;
-  }
-
-  .select-control__shell {
-    min-width: 124px;
   }
 
   .workspace-shell {

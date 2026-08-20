@@ -433,6 +433,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "matchcov"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40459aafa8d5c25a61c1e176a86d8111b508927716c76f98e4f66a007eb6ee86"
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -794,12 +800,14 @@ name = "solcore-hir-ty"
 version = "0.1.0"
 dependencies = [
  "ena",
+ "matchcov",
  "num-bigint",
  "rustc-hash",
  "salsa",
  "solcore-hir",
  "solcore-nameres",
  "solcore-parser",
+ "tablesolve",
  "tracing",
 ]
 
@@ -809,6 +817,7 @@ version = "0.1.0"
 dependencies = [
  "solcore-hir",
  "solcore-hir-ty",
+ "solcore-nameres",
  "solcore-parser",
  "solcore-specialize",
 ]
@@ -900,6 +909,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "tablesolve"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49838cdd952e69beb44e8ecf05aa29c5e80a7d4a15f12252daecb24998bce43c"
 
 [[package]]
 name = "thin-vec"

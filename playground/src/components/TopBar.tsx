@@ -3,8 +3,12 @@ import {
   ChevronDown,
   Loader2,
   Moon,
+  PanelBottomClose,
+  PanelBottomOpen,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Play,
   RotateCcw,
   Sun,
@@ -19,9 +23,18 @@ import { useCompileElapsed } from "./useCompileElapsed";
 interface TopBarProps {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  outputOpen: boolean;
+  onToggleOutput: () => void;
+  outputStacked: boolean;
 }
 
-export function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps): JSX.Element {
+export function TopBar({
+  sidebarOpen,
+  onToggleSidebar,
+  outputOpen,
+  onToggleOutput,
+  outputStacked,
+}: TopBarProps): JSX.Element {
   const order = useWorkspaceStore((state) => state.order);
   const entry = useWorkspaceStore((state) => state.entry);
   const compiling = useWorkspaceStore((state) => state.compiling);
@@ -169,6 +182,26 @@ export function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps): JSX.Eleme
         </button>
 
         <span className="version-pill">v{compilerVersion ?? "..."}</span>
+
+        <button
+          type="button"
+          className="icon-button"
+          onClick={onToggleOutput}
+          title={outputOpen ? "Hide output pane" : "Show output pane"}
+          aria-label={outputOpen ? "Hide output pane" : "Show output pane"}
+        >
+          {outputStacked ? (
+            outputOpen ? (
+              <PanelBottomClose size={18} />
+            ) : (
+              <PanelBottomOpen size={18} />
+            )
+          ) : outputOpen ? (
+            <PanelRightClose size={18} />
+          ) : (
+            <PanelRightOpen size={18} />
+          )}
+        </button>
       </div>
     </header>
   );

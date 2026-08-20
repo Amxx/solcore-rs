@@ -7,12 +7,15 @@ export function FileExplorer(): JSX.Element {
   const order = useWorkspaceStore((state) => state.order);
   const entry = useWorkspaceStore((state) => state.entry);
   const activePath = useWorkspaceStore((state) => state.activePath);
-  const result = useWorkspaceStore((state) => state.result);
+  const rawResult = useWorkspaceStore((state) => state.result);
+  const workspaceVersion = useWorkspaceStore((state) => state.workspaceVersion);
+  const lastCompiledVersion = useWorkspaceStore((state) => state.lastCompiledVersion);
   const createFile = useWorkspaceStore((state) => state.createFile);
   const renameFile = useWorkspaceStore((state) => state.renameFile);
   const deleteFile = useWorkspaceStore((state) => state.deleteFile);
   const setActive = useWorkspaceStore((state) => state.setActive);
   const setEntry = useWorkspaceStore((state) => state.setEntry);
+  const result = lastCompiledVersion === workspaceVersion ? rawResult : null;
   const problemsByFile = useMemo(() => fileProblemSummaries(result), [result]);
 
   const handleAdd = (): void => {
