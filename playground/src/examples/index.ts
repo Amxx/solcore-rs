@@ -474,6 +474,10 @@ contract Answer {
 
 export const defaultExample = examples[0];
 
+export function findExample(id: string): PlaygroundExample | undefined {
+  return examples.find((example) => example.id === id);
+}
+
 export function getExample(id: string): PlaygroundExample {
-  return examples.find((example) => example.id === id) ?? defaultExample;
+  return findExample(id) ?? defaultExample;
 }
