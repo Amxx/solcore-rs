@@ -14,7 +14,7 @@ export interface PlaygroundExample {
 export const examples: PlaygroundExample[] = [
   {
     id: "contract-output",
-    name: "Contract output",
+    name: "Hello contract",
     description: "A small contract that emits Hull, Yul, Sonatina IR, and ABI JSON.",
     entry: "main.sol",
     files: [
@@ -33,32 +33,26 @@ contract Answer {
     ],
   },
   {
-    id: "hello",
-    name: "Hello",
-    description: "A minimal function returning a word literal.",
-    entry: "main.sol",
-    files: [
-      {
-        path: "main.sol",
-        content: `function main() returns (word) {
-    return 42;
-}
-`,
-      },
-    ],
-  },
-  {
     id: "std-usage",
     name: "Std usage",
-    description: "Imports a helper from the embedded standard library.",
+    description: "Calls a standard-library trait method directly; the + operator desugars to the same call.",
     entry: "main.sol",
     files: [
       {
         path: "main.sol",
-        content: `import {addWord} from std;
+        content: `import * from std;
+import * from std.dispatch;
 
-function main() returns (word) {
-    return addWord(1, 2);
+contract Calculator {
+    // The + operator is not compiler magic: it desugars to the same
+    // standard-library trait method called explicitly below.
+    function viaOperator(a: uint256, b: uint256) public returns (uint256) {
+        return a + b;
+    }
+
+    function viaTrait(a: uint256, b: uint256) public returns (uint256) {
+        return Num.add(a, b);
+    }
 }
 `,
       },
@@ -67,12 +61,17 @@ function main() returns (word) {
   {
     id: "trait",
     name: "Trait",
-    description: "Defines a trait, implements it for a custom enum, and calls its method.",
+    description: "A trait implemented for a custom enum drives a stored on-chain state machine.",
     entry: "main.sol",
     files: [
       {
         path: "main.sol",
-        content: `trait Toggle<a> {
+        content: `import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.StorageGeneric;
+
+trait Toggle<a> {
     function toggle(value: a) returns (a);
 }
 
@@ -90,8 +89,23 @@ impl Toggle<Switch> {
     }
 }
 
-function main() returns (Switch) {
-    return Toggle.toggle(Switch.Off);
+contract LightSwitch {
+    state : Switch;
+
+    constructor() {
+        state = Switch.Off;
+    }
+
+    function flip() public {
+        state = Toggle.toggle(state);
+    }
+
+    function isOn() public returns (bool) {
+        match (state) {
+            case Switch.On { return true; }
+            default { return false; }
+        }
+    }
 }
 `,
       },
@@ -100,23 +114,72 @@ function main() returns (Switch) {
   {
     id: "generics",
     name: "Generics",
-    description: "Uses a generic pair type and a generic function to select its second value.",
+    description: "A where-constrained generic max works for a user-defined Version type via its Ord impl.",
     entry: "main.sol",
     files: [
       {
         path: "main.sol",
-        content: `enum Pair<a, b> {
-    Pair(a, b)
+        content: `import * from std;
+import * from std.dispatch;
+import * from std.Generic;
+import * from std.StorageGeneric;
+
+// One generic maximum for every ordered type, user-defined included.
+// Candidate standard-library inventory: a generic max belongs in std
+// eventually.
+function max<a>(x: a, y: a) returns (a) where a: Ord {
+    if (x > y) { return x; }
+    return y;
 }
 
-function second<a, b>(pair: Pair<a, b>) returns (b) {
-    match (pair) {
-        case Pair(_, value) { return value; }
+enum Version {
+    Version(uint256, uint256)
+}
+
+function major(v: Version) returns (uint256) {
+    match (v) {
+        case Version.Version(value, _) { return value; }
     }
 }
 
-function main() returns (word) {
-    return second(Pair(true, 42));
+function minor(v: Version) returns (uint256) {
+    match (v) {
+        case Version.Version(_, value) { return value; }
+    }
+}
+
+impl Eq<Version> {
+    function eq(a: Version, b: Version) returns (bool) {
+        return major(a) == major(b) && minor(a) == minor(b);
+    }
+}
+
+// Ord requires Eq: the compiler checks the trait hierarchy.
+impl Ord<Version> {
+    function gt(a: Version, b: Version) returns (bool) {
+        if (major(a) == major(b)) { return minor(a) > minor(b); }
+        return major(a) > major(b);
+    }
+}
+
+contract Registry {
+    newest : Version;
+
+    constructor() {
+        newest = Version.Version(uint256(0), uint256(0));
+    }
+
+    function publish(maj: uint256, min: uint256) public {
+        newest = max(newest, Version.Version(maj, min));
+    }
+
+    function newestMajor() public returns (uint256) {
+        return major(newest);
+    }
+
+    function newestMinor() public returns (uint256) {
+        return minor(newest);
+    }
 }
 `,
       },
@@ -125,12 +188,39 @@ function main() returns (word) {
   {
     id: "option",
     name: "Option",
-    description: "A generic optional value: checked division returns an Option instead of reverting.",
+    description: "A reusable Option module and a splitter contract: checked division returns an Option instead of reverting.",
     entry: "main.sol",
     files: [
       {
         path: "main.sol",
         content: `import * from std;
+import * from std.dispatch;
+import {Option, checkedDiv, unwrapOr} from option;
+
+contract Splitter {
+    // Each recipient's equal share of the pot; zero recipients yields
+    // zero instead of reverting on division.
+    function share(pot: uint256, recipients: uint256) public returns (uint256) {
+        return unwrapOr(checkedDiv(pot, recipients), uint256(0));
+    }
+
+    // What is left over after handing out equal shares.
+    function remainder(pot: uint256, recipients: uint256) public returns (uint256) {
+        match (checkedDiv(pot, recipients)) {
+            case Option.Some(perRecipient) { return pot - perRecipient * recipients; }
+            default { return pot; }
+        }
+    }
+}
+`,
+      },
+      {
+        path: "option.sol",
+        content: `// Candidate standard-library inventory: this module should disappear once
+// std provides Option.
+import * from std;
+import * from std.Generic;
+import * from std.StorageGeneric;
 
 enum Option<a> {
     None,
@@ -138,24 +228,28 @@ enum Option<a> {
 }
 
 // Division by zero yields Option.None instead of reverting.
-function checkedDiv(a: word, b: word) returns (Option<word>) {
-    if (b == 0) {
+function checkedDiv(a: uint256, b: uint256) returns (Option<uint256>) {
+    if (b == uint256(0)) {
         return Option.None;
     }
     return Option.Some(a / b);
 }
 
-function unwrapOr(option: Option<word>, orElse: word) returns (word) {
+function unwrapOr<a>(option: Option<a>, orElse: a) returns (a) {
     match (option) {
         case Option.Some(value) { return value; }
         default { return orElse; }
     }
 }
 
-function main() returns (word) {
-    // 84 / 2 succeeds with Some(42); 84 / 0 would fall back to 0.
-    return unwrapOr(checkedDiv(84, 2), 0);
+function contains<a>(option: Option<a>, value: a) returns (bool) where a: Eq {
+    match (option) {
+        case Option.Some(inner) { return inner == value; }
+        default { return false; }
+    }
 }
+
+export { Option(*), checkedDiv, unwrapOr, contains };
 `,
       },
     ],
@@ -234,29 +328,11 @@ contract Escrow {
         path: "main.sol",
         content: `import * from std;
 import * from std.dispatch;
-import * from std.Generic;
-import * from std.StorageGeneric;
-import {caller} from std.opcodes;
+import {Option, contains} from option;
+import {sender} from context;
 
 // A token either has an owner or does not exist: unset mapping entries
 // read back as Option.None.
-enum Option<a> {
-    None,
-    Some(a)
-}
-
-function contains<a>(option: Option<a>, value: a) returns (bool) where a: Eq {
-    match (option) {
-        case Option.Some(inner) { return inner == value; }
-        default { return false; }
-    }
-}
-
-// msg.sender: the CALLER opcode lifted from word into address.
-function sender() returns (address) {
-    return address(caller());
-}
-
 contract MiniNFT {
     nextId : uint256;
     owners : mapping(uint256 => Option<address>);
@@ -312,30 +388,57 @@ contract MiniNFT {
 }
 `,
       },
-    ],
-  },
-  {
-    id: "lambda",
-    name: "Lambda",
-    description: "Builds a lambda that captures a value from its enclosing function.",
-    entry: "main.sol",
-    files: [
       {
-        path: "main.sol",
-        content: `function makeAdder(value: word) returns (function(word) returns (word)) {
-    return lam (other: word) -> word {
-        let result: word;
-        assembly {
-            result := add(value, other)
-        }
-        return result;
-    };
+        path: "option.sol",
+        content: `// Candidate standard-library inventory: this module should disappear once
+// std provides Option.
+import * from std;
+import * from std.Generic;
+import * from std.StorageGeneric;
+
+enum Option<a> {
+    None,
+    Some(a)
 }
 
-function main() returns (word) {
-    let addTen = makeAdder(10);
-    return addTen(32);
+// Division by zero yields Option.None instead of reverting.
+function checkedDiv(a: uint256, b: uint256) returns (Option<uint256>) {
+    if (b == uint256(0)) {
+        return Option.None;
+    }
+    return Option.Some(a / b);
 }
+
+function unwrapOr<a>(option: Option<a>, orElse: a) returns (a) {
+    match (option) {
+        case Option.Some(value) { return value; }
+        default { return orElse; }
+    }
+}
+
+function contains<a>(option: Option<a>, value: a) returns (bool) where a: Eq {
+    match (option) {
+        case Option.Some(inner) { return inner == value; }
+        default { return false; }
+    }
+}
+
+export { Option(*), checkedDiv, unwrapOr, contains };
+`,
+      },
+      {
+        path: "context.sol",
+        content: `// Candidate standard-library inventory: this module should disappear once
+// std provides transaction context helpers.
+import * from std;
+import {caller} from std.opcodes;
+
+// msg.sender: the CALLER opcode lifted from word into address.
+function sender() returns (address) {
+    return address(caller());
+}
+
+export { sender };
 `,
       },
     ],
@@ -349,45 +452,20 @@ function main() returns (word) {
       {
         path: "main.sol",
         content: `import * from std;
+import * from std.dispatch;
 
-function double(comptime value: word) returns (comptime<word>) {
+// Evaluated during specialization: the deployed code contains only the
+// result, not the computation.
+function double(comptime value: uint256) returns (comptime<uint256>) {
     return value + value;
 }
 
-function main() returns (word) {
-    let answer: comptime<word> = double(21);
-    return answer;
-}
-`,
-      },
-    ],
-  },
-  {
-    id: "multi-file",
-    name: "Multi-file",
-    description: "Imports a sibling module and calls an exported function.",
-    entry: "main.sol",
-    files: [
-      {
-        path: "main.sol",
-        content: `import {double} from math;
-
-function main() returns (word) {
-    return double(21);
-}
-`,
-      },
-      {
-        path: "math.sol",
-        content: `function double(x: word) returns (word) {
-    let res: word;
-    assembly {
-        res := add(x, x)
+contract Answer {
+    function answer() public returns (uint256) {
+        let result: comptime<uint256> = double(uint256(21));
+        return result;
     }
-    return res;
 }
-
-export { double };
 `,
       },
     ],
