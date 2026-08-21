@@ -1,6 +1,9 @@
 import {
   Braces,
+  Check,
   ChevronDown,
+  Link as LinkIcon,
+  X,
   Loader2,
   Moon,
   PanelBottomClose,
@@ -16,6 +19,7 @@ import {
 import { useEffect, useState } from "react";
 import { version } from "../compiler/runtime";
 import { formatCompileDuration } from "../compiler/timing";
+import { buildExampleLink } from "../share/exampleLink";
 import { examples } from "../store/workspace";
 import { useWorkspaceStore } from "../store/workspace";
 import { useCompileElapsed } from "./useCompileElapsed";
@@ -47,8 +51,9 @@ export function TopBar({
   const toggleTheme = useWorkspaceStore((state) => state.toggleTheme);
   const resetWorkspace = useWorkspaceStore((state) => state.resetWorkspace);
   const loadExample = useWorkspaceStore((state) => state.loadExample);
-  const [selectedExample, setSelectedExample] = useState(examples[0]?.id ?? "hello");
+  const selectedExample = useWorkspaceStore((state) => state.exampleId);
   const [compilerVersion, setCompilerVersion] = useState<string | null>(null);
+  const [linkCopyState, setLinkCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const solFiles = order.filter((path) => path.endsWith(".sol"));
   const compileElapsedMs = useCompileElapsed();
   const compileIsOutdated =
@@ -80,6 +85,25 @@ export function TopBar({
     };
   }, []);
 
+  useEffect(() => {
+    if (linkCopyState === "idle") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setLinkCopyState("idle"), 2000);
+    return () => window.clearTimeout(timer);
+  }, [linkCopyState]);
+
+  const copyExampleLink = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(buildExampleLink(window.location.href, selectedExample));
+      setLinkCopyState("copied");
+    } catch {
+      // Clipboard access needs a secure context and may be denied.
+      setLinkCopyState("failed");
+    }
+  };
+
   return (
     <header className="topbar">
       <div className="topbar__left">
@@ -105,14 +129,7 @@ export function TopBar({
         <label className="select-control">
           <span>Example</span>
           <span className="select-control__shell">
-            <select
-              value={selectedExample}
-              onChange={(event) => {
-                const nextExample = event.target.value;
-                setSelectedExample(nextExample);
-                loadExample(nextExample);
-              }}
-            >
+            <select value={selectedExample} onChange={(event) => loadExample(event.target.value)}>
               {examples.map((example) => (
                 <option key={example.id} value={example.id}>
                   {example.name}
@@ -122,6 +139,28 @@ export function TopBar({
             <ChevronDown size={14} aria-hidden="true" />
           </span>
         </label>
+
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => {
+            void copyExampleLink();
+          }}
+          title={
+            linkCopyState === "failed"
+              ? "Copy failed - copy the address bar URL with ?example=" + selectedExample
+              : "Copy a link to this example"
+          }
+          aria-label="Copy a link to this example"
+        >
+          {linkCopyState === "copied" ? (
+            <Check size={18} />
+          ) : linkCopyState === "failed" ? (
+            <X size={18} />
+          ) : (
+            <LinkIcon size={18} />
+          )}
+        </button>
 
         <label className="select-control">
           <span>Entry</span>

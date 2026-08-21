@@ -2,7 +2,14 @@ import { create } from "zustand";
 import { compileClient } from "../compiler/compileClient";
 import { nowMs } from "../compiler/timing";
 import type { CompileInput, CompileResult, Diag } from "../compiler/types";
-import { defaultExample, examples, getExample, type PlaygroundExample } from "../examples";
+import {
+  defaultExample,
+  examples,
+  findExample,
+  getExample,
+  type PlaygroundExample,
+} from "../examples";
+import { readSharedExampleId, stripExampleParam } from "../share/exampleLink";
 
 export interface WorkspaceFile {
   path: string;
@@ -24,6 +31,7 @@ export interface WorkspaceState {
   order: string[];
   entry: string;
   activePath: string;
+  exampleId: string;
   compiling: boolean;
   compileStartedAt: number | null;
   lastCompileDurationMs: number | null;
@@ -47,6 +55,7 @@ export interface WorkspaceState {
 }
 
 const WORKSPACE_STORAGE_KEY = "solcore-playground.workspace.v1";
+const WORKSPACE_BACKUP_STORAGE_KEY = "solcore-playground.workspace.v1.backup";
 const THEME_STORAGE_KEY = "solcore-playground.theme.v1";
 
 let compileRun = 0;
@@ -77,7 +86,7 @@ function cloneFiles(files: Array<{ path: string; content: string }>): WorkspaceF
 
 function workspaceFromExample(example: PlaygroundExample): Pick<
   WorkspaceState,
-  "files" | "order" | "entry" | "activePath"
+  "files" | "order" | "entry" | "activePath" | "exampleId"
 > {
   const files = cloneFiles(example.files);
   const order = files.map((file) => file.path);
@@ -88,6 +97,7 @@ function workspaceFromExample(example: PlaygroundExample): Pick<
     order,
     entry,
     activePath: entry,
+    exampleId: example.id,
   };
 }
 
@@ -141,6 +151,7 @@ interface PersistedWorkspace {
   order: string[];
   entry: string;
   activePath: string;
+  exampleId: string;
 }
 
 function readStoredWorkspace(): PersistedWorkspace | null {
@@ -196,9 +207,31 @@ function readStoredWorkspace(): PersistedWorkspace | null {
       return null;
     }
 
-    return { files, order, entry, activePath };
+    const exampleId =
+      typeof parsed.exampleId === "string" && findExample(parsed.exampleId)
+        ? parsed.exampleId
+        : defaultExample.id;
+
+    return { files, order, entry, activePath, exampleId };
   } catch {
     return null;
+  }
+}
+
+// One-slot backup: a shared example link overwrites the stored workspace on
+// plain navigation, so the previous payload stays recoverable by hand.
+function backupStoredWorkspace(): void {
+  if (!isBrowser()) {
+    return;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (raw !== null) {
+      window.localStorage.setItem(WORKSPACE_BACKUP_STORAGE_KEY, raw);
+    }
+  } catch {
+    // Best effort; never block loading the shared example.
   }
 }
 
@@ -216,6 +249,7 @@ function persistWorkspace(state: WorkspaceState): void {
     order: files.map((file) => file.path),
     entry: state.entry,
     activePath: state.activePath,
+    exampleId: state.exampleId,
   };
 
   window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(payload));
@@ -242,15 +276,26 @@ function diagnosticResult(message: string): CompileResult {
   };
 }
 
-const storedWorkspace = readStoredWorkspace();
+function readSharedExample(): PlaygroundExample | null {
+  if (!isBrowser()) {
+    return null;
+  }
+
+  const sharedId = readSharedExampleId(window.location.search);
+  return sharedId ? (findExample(sharedId) ?? null) : null;
+}
+
+const sharedExample = readSharedExample();
+const storedWorkspace = sharedExample ? null : readStoredWorkspace();
 const initialWorkspace = storedWorkspace
   ? {
       files: createFileMap(storedWorkspace.files),
       order: storedWorkspace.order,
       entry: storedWorkspace.entry,
       activePath: storedWorkspace.activePath,
+      exampleId: storedWorkspace.exampleId,
     }
-  : workspaceFromExample(defaultExample);
+  : workspaceFromExample(sharedExample ?? defaultExample);
 const initialTheme = readInitialTheme();
 
 applyTheme(initialTheme);
@@ -501,5 +546,19 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     }
   },
 }));
+
+if (sharedExample) {
+  // The shared example replaces any locally stored workspace: back the previous
+  // payload up, persist the example, and drop the parameter so a later reload
+  // keeps the visitor's edits instead of resetting the example. An unknown id
+  // deliberately keeps the parameter in the address bar, so a mistyped link
+  // stays diagnosable from a screenshot.
+  backupStoredWorkspace();
+  persistWorkspace(useWorkspaceStore.getState());
+
+  if (isBrowser()) {
+    window.history.replaceState(null, "", stripExampleParam(window.location.href));
+  }
+}
 
 export { examples };

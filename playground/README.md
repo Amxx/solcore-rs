@@ -19,6 +19,36 @@ After dependencies are installed, `npm run dev` rebuilds both local wasm package
 
 `package.json` depends on `solcore-wasm` and `solcore-lsp` through `file:` dependencies, so a normal install links the generated wasm-pack output into Vite without publishing it. If a dev server was already running while rebuilding wasm, restart with `npm run dev:force` once to clear Vite's dependency cache.
 
+## Sharing examples
+
+Every bundled example has a stable id, and the Playground reads it from an `example` query
+parameter, so a link like this opens that example directly:
+
+```
+https://<host>/?example=trait
+```
+
+The link button next to the example picker copies the link for the currently selected example.
+Ids live in `src/examples/index.ts`; an unknown or missing id is ignored and the Playground opens
+the workspace it would otherwise restore.
+
+A shared link loads the example as it ships with that deployment — it does not carry edited code.
+Opening one replaces the locally stored workspace, and the parameter is then dropped from the
+address bar so a later reload keeps whatever the visitor edited. The previous workspace payload
+is kept under the `solcore-playground.workspace.v1.backup` localStorage key, so accidentally
+following a link does not destroy saved work beyond recovery; to restore it, run this in the
+browser console:
+
+```js
+localStorage.setItem(
+  "solcore-playground.workspace.v1",
+  localStorage.getItem("solcore-playground.workspace.v1.backup"),
+);
+location.reload();
+```
+
+An unknown id keeps the parameter in the address bar so a mistyped link stays diagnosable.
+
 ## Build
 
 ```sh
