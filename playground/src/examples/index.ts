@@ -222,6 +222,8 @@ import * from std;
 import * from std.Generic;
 import * from std.StorageGeneric;
 
+export { Option(*), checkedDiv, unwrapOr, contains };
+
 enum Option<a> {
     None,
     Some(a)
@@ -248,8 +250,6 @@ function contains<a>(option: Option<a>, value: a) returns (bool) where a: Eq {
         default { return false; }
     }
 }
-
-export { Option(*), checkedDiv, unwrapOr, contains };
 `,
       },
     ],
@@ -396,6 +396,8 @@ import * from std;
 import * from std.Generic;
 import * from std.StorageGeneric;
 
+export { Option(*), checkedDiv, unwrapOr, contains };
+
 enum Option<a> {
     None,
     Some(a)
@@ -422,8 +424,6 @@ function contains<a>(option: Option<a>, value: a) returns (bool) where a: Eq {
         default { return false; }
     }
 }
-
-export { Option(*), checkedDiv, unwrapOr, contains };
 `,
       },
       {
@@ -433,12 +433,12 @@ export { Option(*), checkedDiv, unwrapOr, contains };
 import * from std;
 import {caller} from std.opcodes;
 
+export { sender };
+
 // msg.sender: the CALLER opcode lifted from word into address.
 function sender() returns (address) {
     return address(caller());
 }
-
-export { sender };
 `,
       },
     ],
