@@ -444,6 +444,223 @@ export { sender };
     ],
   },
   {
+    id: "composition",
+    name: "Composition",
+    description: "Three deployable vaults share one engine module: traits compose where Classic Solidity builds inheritance diamonds.",
+    entry: "main.sol",
+    files: [
+      {
+        path: "main.sol",
+        content: `import * from std;
+import * from std.dispatch;
+import {settle, Direct, Signed, NoFee, FlatFee, BasisFee, Stacked} from engine;
+
+// Three deployable vaults sharing the engine module, each binding its own
+// context and fee choice. This file is the counterpart of an inheritance
+// diamond's leaf contracts; note what is absent: override lists, super
+// chains, and linearization order. The trade: each leaf repeats its two
+// storage lines, because storage stays contract-scoped. The vaults track
+// credits only; token custody is elided.
+
+contract VaultDirect {
+    balances : mapping(address => uint256);
+
+    function deposit(amount: uint256) public {
+        match (settle(Direct.Direct, NoFee.NoFee, amount)) {
+            case (who, credited) { balances[who] = balances[who] + credited; }
+        }
+    }
+
+    function balanceOf(who: address) public returns (uint256) {
+        return balances[who];
+    }
+}
+
+// Gasless deposits: anyone may relay the call, and the credited account is
+// recovered from a signature over the amount. Real code would also bind a
+// nonce, the chain id, and the vault address into the digest to prevent
+// replay.
+contract VaultGasless {
+    balances : mapping(address => uint256);
+    collected : uint256;
+    flatFee : uint256;
+
+    constructor(fee: uint256) {
+        flatFee = fee;
+    }
+
+    function depositFor(amount: uint256, v: uint256, r: bytes32, s: bytes32) public {
+        let digest = bytes32(hash1(Num.toWord(amount)));
+        match (settle(Signed.Signed(digest, v, r, s), FlatFee.FlatFee(flatFee), amount)) {
+            case (who, credited) {
+                balances[who] = balances[who] + credited;
+                collected = collected + (amount - credited);
+            }
+        }
+    }
+
+    function balanceOf(who: address) public returns (uint256) {
+        return balances[who];
+    }
+
+    function feesCollected() public returns (uint256) {
+        return collected;
+    }
+}
+
+// Stacked fees: a protocol fee in basis points, then a flat tip, ordered by
+// the expression below.
+contract VaultPremium {
+    balances : mapping(address => uint256);
+
+    function deposit(amount: uint256) public {
+        let policy = Stacked.Stacked(BasisFee.BasisFee(uint256(30)), FlatFee.FlatFee(uint256(2)));
+        match (settle(Direct.Direct, policy, amount)) {
+            case (who, credited) { balances[who] = balances[who] + credited; }
+        }
+    }
+
+    function balanceOf(who: address) public returns (uint256) {
+        return balances[who];
+    }
+}
+`,
+      },
+      {
+        path: "engine.sol",
+        content: `// The composition machinery shared by every vault in main.sol. In Classic
+// Solidity this role is played by base contracts and virtual functions; the
+// crossings then need override(...) lists. Traits have one impl per type,
+// so there is nothing to disambiguate.
+import * from std;
+import {sender} from context;
+
+export {
+    TxnContext,
+    FeePolicy,
+    settle,
+    Direct(*),
+    Signed(*),
+    NoFee(*),
+    FlatFee(*),
+    BasisFee(*),
+    Stacked(*)
+};
+
+// Axis one: where does the acting address come from?
+trait TxnContext<c> {
+    function originator(ctx: c) returns (address);
+}
+
+// A direct call: the transaction caller acts for themselves.
+enum Direct { Direct }
+
+impl TxnContext<Direct> {
+    function originator(ctx: Direct) returns (address) {
+        return sender();
+    }
+}
+
+// A relayed call: the acting address is recovered from a signature over
+// the digest the relayer hands in alongside it.
+enum Signed { Signed(bytes32, uint256, bytes32, bytes32) }
+
+impl TxnContext<Signed> {
+    function originator(ctx: Signed) returns (address) {
+        match (ctx) {
+            case Signed.Signed(digest, v, r, s) {
+                // std's ecrecover reverts on malleable, failed, or
+                // zero-address recovery, so this can never return a bogus
+                // signer. The invariant lives in one place.
+                return ecrecover(digest, v, r, s);
+            }
+        }
+    }
+}
+
+// Axis two: how much of a deposit is credited?
+trait FeePolicy<f> {
+    function afterFee(policy: f, amount: uint256) returns (uint256);
+}
+
+enum NoFee { NoFee }
+
+impl FeePolicy<NoFee> {
+    function afterFee(policy: NoFee, amount: uint256) returns (uint256) {
+        return amount;
+    }
+}
+
+enum FlatFee { FlatFee(uint256) }
+
+impl FeePolicy<FlatFee> {
+    function afterFee(policy: FlatFee, amount: uint256) returns (uint256) {
+        match (policy) {
+            case FlatFee.FlatFee(fee) {
+                if (amount > fee) { return amount - fee; }
+                return uint256(0);
+            }
+        }
+    }
+}
+
+// A percentage fee in basis points (parts per ten thousand).
+enum BasisFee { BasisFee(uint256) }
+
+impl FeePolicy<BasisFee> {
+    function afterFee(policy: BasisFee, amount: uint256) returns (uint256) {
+        match (policy) {
+            case BasisFee.BasisFee(bps) {
+                // std uint256 arithmetic is unchecked today: the multiply
+                // wraps for amounts above 2^256 / bps.
+                return amount - amount * bps / uint256(10000);
+            }
+        }
+    }
+}
+
+// Policies compose as values, applied left to right. The order is the
+// expression written at the use site, not the C3 linearization of an
+// inheritance list.
+enum Stacked<f, g> { Stacked(f, g) }
+
+impl<f, g> FeePolicy<Stacked<f, g>> where f: FeePolicy, g: FeePolicy {
+    function afterFee(policy: Stacked<f, g>, amount: uint256) returns (uint256) {
+        match (policy) {
+            case Stacked.Stacked(first, second) {
+                return FeePolicy.afterFee(second, FeePolicy.afterFee(first, amount));
+            }
+        }
+    }
+}
+
+// The engine, written once for every context and fee policy: who gets
+// credited with how much. Storage stays with each contract.
+function settle<c, f>(ctx: c, policy: f, amount: uint256) returns ((address, uint256))
+    where c: TxnContext, f: FeePolicy
+{
+    return (TxnContext.originator(ctx), FeePolicy.afterFee(policy, amount));
+}
+`,
+      },
+      {
+        path: "context.sol",
+        content: `// Candidate standard-library inventory: this module should disappear once
+// std provides transaction context helpers.
+import * from std;
+import {caller} from std.opcodes;
+
+export { sender };
+
+// msg.sender: the CALLER opcode lifted from word into address.
+function sender() returns (address) {
+    return address(caller());
+}
+`,
+      },
+    ],
+  },
+  {
     id: "comptime",
     name: "Comptime",
     description: "Evaluates a typed computation during specialization and embeds its result.",
