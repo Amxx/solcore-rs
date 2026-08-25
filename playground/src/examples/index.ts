@@ -466,7 +466,7 @@ contract VaultDirect {
     balances : mapping(address => uint256);
 
     function deposit(amount: uint256) public {
-        match (settle(Direct.Direct, NoFee.NoFee, amount)) {
+        match (settle(Direct, NoFee, amount)) {
             case (who, credited) { balances[who] = balances[who] + credited; }
         }
     }
@@ -491,7 +491,7 @@ contract VaultGasless {
 
     function depositFor(amount: uint256, v: uint256, r: bytes32, s: bytes32) public {
         let digest = bytes32(hash1(Num.toWord(amount)));
-        match (settle(Signed.Signed(digest, v, r, s), FlatFee.FlatFee(flatFee), amount)) {
+        match (settle(Signed(digest, v, r, s), FlatFee(flatFee), amount)) {
             case (who, credited) {
                 balances[who] = balances[who] + credited;
                 collected = collected + (amount - credited);
@@ -514,8 +514,8 @@ contract VaultPremium {
     balances : mapping(address => uint256);
 
     function deposit(amount: uint256) public {
-        let policy = Stacked.Stacked(BasisFee.BasisFee(uint256(30)), FlatFee.FlatFee(uint256(2)));
-        match (settle(Direct.Direct, policy, amount)) {
+        let policy = Stacked(BasisFee(uint256(30)), FlatFee(uint256(2)));
+        match (settle(Direct, policy, amount)) {
             case (who, credited) { balances[who] = balances[who] + credited; }
         }
     }
@@ -568,7 +568,7 @@ enum Signed { Signed(bytes32, uint256, bytes32, bytes32) }
 impl TxnContext<Signed> {
     function originator(ctx: Signed) returns (address) {
         match (ctx) {
-            case Signed.Signed(digest, v, r, s) {
+            case Signed(digest, v, r, s) {
                 // std's ecrecover reverts on malleable, failed, or
                 // zero-address recovery, so this can never return a bogus
                 // signer. The invariant lives in one place.
@@ -596,7 +596,7 @@ enum FlatFee { FlatFee(uint256) }
 impl FeePolicy<FlatFee> {
     function afterFee(policy: FlatFee, amount: uint256) returns (uint256) {
         match (policy) {
-            case FlatFee.FlatFee(fee) {
+            case FlatFee(fee) {
                 if (amount > fee) { return amount - fee; }
                 return uint256(0);
             }
@@ -610,7 +610,7 @@ enum BasisFee { BasisFee(uint256) }
 impl FeePolicy<BasisFee> {
     function afterFee(policy: BasisFee, amount: uint256) returns (uint256) {
         match (policy) {
-            case BasisFee.BasisFee(bps) {
+            case BasisFee(bps) {
                 // std uint256 arithmetic is unchecked today: the multiply
                 // wraps for amounts above 2^256 / bps.
                 return amount - amount * bps / uint256(10000);
@@ -627,7 +627,7 @@ enum Stacked<f, g> { Stacked(f, g) }
 impl<f, g> FeePolicy<Stacked<f, g>> where f: FeePolicy, g: FeePolicy {
     function afterFee(policy: Stacked<f, g>, amount: uint256) returns (uint256) {
         match (policy) {
-            case Stacked.Stacked(first, second) {
+            case Stacked(first, second) {
                 return FeePolicy.afterFee(second, FeePolicy.afterFee(first, amount));
             }
         }
