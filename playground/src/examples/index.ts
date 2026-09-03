@@ -23,7 +23,7 @@ export const examples: PlaygroundExample[] = [
         content: `import * from std;
 import * from std.dispatch;
 
-contract Answer {
+contract Hello {
     function main() public returns (uint256) {
         return uint256(42);
     }
