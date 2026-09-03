@@ -138,13 +138,13 @@ enum Version {
 
 function major(v: Version) returns (uint256) {
     match (v) {
-        case Version.Version(value, _) { return value; }
+        case Version(value, _) { return value; }
     }
 }
 
 function minor(v: Version) returns (uint256) {
     match (v) {
-        case Version.Version(_, value) { return value; }
+        case Version(_, value) { return value; }
     }
 }
 
@@ -166,11 +166,11 @@ contract Registry {
     newest : Version;
 
     constructor() {
-        newest = Version.Version(uint256(0), uint256(0));
+        newest = Version(uint256(0), uint256(0));
     }
 
     function publish(maj: uint256, min: uint256) public {
-        newest = max(newest, Version.Version(maj, min));
+        newest = max(newest, Version(maj, min));
     }
 
     function newestMajor() public returns (uint256) {
