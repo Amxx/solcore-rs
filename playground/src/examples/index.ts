@@ -13,6 +13,11 @@ import compositionEngine from "./composition/engine.sol?raw";
 import compositionContext from "./composition/context.sol?raw";
 import invariantsAmm from "./invariants/Amm.sol?raw";
 import invariantsPool from "./invariants/pool.sol?raw";
+import extensionsToken from "./extensions/Token.sol?raw";
+import extensionsErc20core from "./extensions/erc20core.sol?raw";
+import extensionsPausable from "./extensions/pausable.sol?raw";
+import extensionsCapped from "./extensions/capped.sol?raw";
+import extensionsContext from "./extensions/context.sol?raw";
 import comptimeAnswer from "./comptime/Answer.sol?raw";
 
 export interface ExampleFile {
@@ -114,6 +119,19 @@ export const examples: PlaygroundExample[] = [
     files: [
       { path: "Amm.sol", content: invariantsAmm },
       { path: "pool.sol", content: invariantsPool },
+    ],
+  },
+  {
+    id: "extensions",
+    name: "Extensions",
+    description: "A token composed from self-contained feature modules that own their storage at namespaced slots.",
+    entry: "Token.sol",
+    files: [
+      { path: "Token.sol", content: extensionsToken },
+      { path: "erc20core.sol", content: extensionsErc20core },
+      { path: "pausable.sol", content: extensionsPausable },
+      { path: "capped.sol", content: extensionsCapped },
+      { path: "context.sol", content: extensionsContext },
     ],
   },
   {
