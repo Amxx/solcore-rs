@@ -37,7 +37,7 @@ function swapXforY(p: Pool, dx: uint256) returns ((Pool, uint256)) {
     }
 }
 
-// LP share accounting is elided.
+// LP share accounting is omitted.
 function addLiquidity(p: Pool, dx: uint256, dy: uint256) returns (Pool) {
     match (p) {
         case Pool(x, y) {

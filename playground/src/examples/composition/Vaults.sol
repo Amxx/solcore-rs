@@ -7,7 +7,7 @@ import {settle, Direct, Signed, NoFee, FlatFee, BasisFee, Stacked} from engine;
 // diamond's leaf contracts; note what is absent: override lists, super
 // chains, and linearization order. The trade: each leaf repeats its two
 // storage lines, because storage stays contract-scoped. The vaults track
-// credits only; token custody is elided.
+// credits only; token custody is omitted.
 
 contract VaultDirect {
     balances : mapping(address => uint256);
