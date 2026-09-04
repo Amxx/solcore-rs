@@ -18,6 +18,7 @@ import extensionsErc20core from "./extensions/erc20core.sol?raw";
 import extensionsPausable from "./extensions/pausable.sol?raw";
 import extensionsCapped from "./extensions/capped.sol?raw";
 import extensionsContext from "./extensions/context.sol?raw";
+import extensionsOwnable from "./extensions/ownable.sol?raw";
 import comptimeAnswer from "./comptime/Answer.sol?raw";
 
 export interface ExampleFile {
@@ -131,6 +132,7 @@ export const examples: PlaygroundExample[] = [
       { path: "erc20core.sol", content: extensionsErc20core },
       { path: "pausable.sol", content: extensionsPausable },
       { path: "capped.sol", content: extensionsCapped },
+      { path: "ownable.sol", content: extensionsOwnable },
       { path: "context.sol", content: extensionsContext },
     ],
   },
