@@ -1,10 +1,10 @@
 ---
 source: crates/parser/tests/diagnostics.rs
 expression: value
-input_file: crates/parser/tests/fixtures/corpus/fail/test/diagnostics/parse-error.solc
+input_file: crates/parser/tests/fixtures/corpus/fail/test/diagnostics/parse-error.sol
 ---
 error[SC0001]: parse error: unexpected end of input
- --> /parse-error.solc:1:38
+ --> /parse-error.sol:1:38
   |
 1 | function main( -> word { return 0; }
   |                                     ^ unexpected token

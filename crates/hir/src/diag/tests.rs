@@ -35,7 +35,7 @@ impl crate::Db for TestDb {
 }
 
 fn source_file(db: &TestDb, name: &str, content: Option<&str>) -> SourceFile {
-    let url = format!("memory:///{name}.solc").parse().expect("valid url");
+    let url = format!("memory:///{name}.sol").parse().expect("valid url");
     SourceFile::new(db, url, content.map(ToOwned::to_owned))
 }
 
@@ -244,7 +244,7 @@ fn render_skips_contentless_def_labels_before_absolute_resolution() {
 #[test]
 fn render_decodes_file_urls_in_human_and_short_formats() {
     let db = TestDb::default();
-    let file = file_source_file(&db, "/tmp/Solcore Project/日本語/main.solc", "missing\n");
+    let file = file_source_file(&db, "/tmp/Solcore Project/日本語/main.sol", "missing\n");
     let diagnostic = Diagnostic::error("undefined name")
         .with_primary_label_span(root_span(file, 0, 7), Some("not found"));
 
@@ -252,7 +252,7 @@ fn render_decodes_file_urls_in_human_and_short_formats() {
     let short = diagnostic.render_short(&db);
 
     for rendered in [human, short] {
-        assert!(rendered.contains("/tmp/Solcore Project/日本語/main.solc"));
+        assert!(rendered.contains("/tmp/Solcore Project/日本語/main.sol"));
         assert!(!rendered.contains("%20"));
         assert!(!rendered.contains("%E6"));
     }
@@ -261,7 +261,7 @@ fn render_decodes_file_urls_in_human_and_short_formats() {
 #[test]
 fn render_decodes_memory_urls_in_human_and_short_formats() {
     let db = TestDb::default();
-    let url = url::Url::parse("memory:///Solcore%20Project/%E6%97%A5%E6%9C%AC%E8%AA%9E/main.solc")
+    let url = url::Url::parse("memory:///Solcore%20Project/%E6%97%A5%E6%9C%AC%E8%AA%9E/main.sol")
         .expect("valid memory URL");
     let file = SourceFile::new(&db, url, Some("missing\n".to_owned()));
     let diagnostic = Diagnostic::error("undefined name")
@@ -271,7 +271,7 @@ fn render_decodes_memory_urls_in_human_and_short_formats() {
     let short = diagnostic.render_short(&db);
 
     for rendered in [human, short] {
-        assert!(rendered.contains("/Solcore Project/日本語/main.solc"));
+        assert!(rendered.contains("/Solcore Project/日本語/main.sol"));
         assert!(!rendered.contains("memory:///"));
         assert!(!rendered.contains("%20"));
         assert!(!rendered.contains("%E6"));

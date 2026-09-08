@@ -1,0 +1,15 @@
+enum Bool { True, False }
+
+trait Eq<a> {
+  function eq(x: a, y: a) returns (Bool) ;
+}
+
+impl Eq<word> {
+  function eq(x: word, y: word) returns (Bool) {
+    return Bool.True;
+  }
+}
+
+function f() returns (Bool) {
+  return Eq.eq(Bool.True, Bool.False);
+}

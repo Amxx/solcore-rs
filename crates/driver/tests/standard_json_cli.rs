@@ -53,9 +53,9 @@ fn standard_json_compiles_checked_hull_without_polluting_stdout() {
     let output = run_standard_json(json!({
         "language": "Solcore",
         "sources": {
-            "main.solc": {"content": "function id(x: word) -> word { return x; }\n"}
+            "main.sol": {"content": "function id(x: word) returns (word) { return x; }\n"}
         },
-        "settings": {"solcore": {"entrypoint": "main.solc", "stage": "hull"}},
+        "settings": {"solcore": {"entrypoint": "main.sol", "stage": "hull"}},
     }));
     let response = response(&output);
 
@@ -68,10 +68,10 @@ fn standard_json_loads_multiple_virtual_source_files() {
     let output = run_standard_json(json!({
         "language": "Solcore",
         "sources": {
-            "main.solc": {"content": "import helper.{id};\nfunction main() -> word { return id(0); }\n"},
-            "helper.solc": {"content": "export { id };\nfunction id(x: word) -> word { return x; }\n"},
+            "main.sol": {"content": "import {id} from helper;\nfunction main() returns (word) { return id(0); }\n"},
+            "helper.sol": {"content": "export { id };\nfunction id(x: word) returns (word) { return x; }\n"},
         },
-        "settings": {"solcore": {"entrypoint": "main.solc", "stage": "frontend"}},
+        "settings": {"solcore": {"entrypoint": "main.sol", "stage": "frontend"}},
     }));
     let response = response(&output);
 
@@ -82,7 +82,7 @@ fn standard_json_loads_multiple_virtual_source_files() {
 fn standard_json_reports_request_errors_in_json() {
     let output = run_standard_json(json!({
         "language": "Solcore",
-        "sources": {"../escape.solc": {"content": "function main() -> word { return 0; }"}},
+        "sources": {"../escape.sol": {"content": "function main() returns (word) { return 0; }"}},
     }));
     let response = response(&output);
 

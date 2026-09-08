@@ -32,8 +32,7 @@ fn preview_span_source(source: &str, span: LexSpan, max_chars: usize) -> Option<
 }
 
 pub(super) fn top_level_recovery_message(source: &str, span: LexSpan) -> String {
-    let expected =
-        "`import`, `pragma`, `type`, `data`, `class`, `instance`, `contract`, or `function`";
+    let expected = "`import`, `pragma`, `type`, `enum`, `trait`, `impl`, `contract`, or `function`";
     match preview_span_source(source, span, 48) {
         Some(preview) => format!(
             "could not parse top-level item near `{preview}`; expected a declaration starting with {expected}"
@@ -99,7 +98,7 @@ fn is_statement_start_token(token: &Token<'_>) -> bool {
             | Token::LBrace
             | Token::Break
             | Token::Continue
-    )
+    ) || matches!(token, Token::Ident("while"))
 }
 
 pub(super) fn refine_body_parse_error<'src>(
@@ -123,7 +122,7 @@ fn refine_let_parse_error<'src>(
 ) -> Option<ParsedError> {
     let assignment_idx = tokens[let_idx + 1..]
         .iter()
-        .position(|(token, _)| matches!(token, Token::Eq | Token::ColonEq))
+        .position(|(token, _)| matches!(token, Token::Eq))
         .map(|idx| let_idx + 1 + idx)?;
 
     if let Some((Token::Semi, semi_span)) = tokens.get(assignment_idx + 1) {
@@ -169,10 +168,10 @@ fn refine_match_parse_error<'src>(
     Some(
         ParsedError::new(
             LexSpan::from(lbrace_span.start..rbrace_span.end),
-            "match statement requires at least one arm",
+            "match requires at least one `case` or `default` arm",
         )
         .with_label("empty match arm list")
-        .with_note("add a `| pattern =>` arm"),
+        .with_note("add a `case pattern { ... }` or `default { ... }` arm"),
     )
 }
 

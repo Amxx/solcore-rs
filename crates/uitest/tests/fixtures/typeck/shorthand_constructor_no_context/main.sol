@@ -1,0 +1,6 @@
+enum Option { None, Some(word) }
+
+function noContext() returns (word) {
+  let x = .Some(1);
+  return 0;
+}

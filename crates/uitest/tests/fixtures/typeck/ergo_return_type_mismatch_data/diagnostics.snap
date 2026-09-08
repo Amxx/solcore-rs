@@ -1,12 +1,12 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/ergo_return_type_mismatch_data/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/ergo_return_type_mismatch_data/main.sol
 ---
 error[SC0201]: type mismatch: expected word, found Color
- --> /main/main.solc:4:10
+ --> /main/main.sol:4:10
   |
-3 | function pick() -> word {
+3 | function pick() returns (word) {
 4 |   return Color.Red;
   |          ^^^^^^^^^ expression has mismatched type
 5 | }

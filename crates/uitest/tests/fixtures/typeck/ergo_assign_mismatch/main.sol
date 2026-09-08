@@ -1,0 +1,5 @@
+function f() returns (word) {
+  let x : word = 1;
+  x = true;
+  return x;
+}

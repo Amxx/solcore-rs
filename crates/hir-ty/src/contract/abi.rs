@@ -255,7 +255,7 @@ pub(super) fn abi_outputs<'db>(
                     span,
                     "ABI output",
                     &format!(
-                        "{} (calldata(array(t)) is input-only; the target std has no ABIEncode evidence for it)",
+                        "{} (calldata<array<t>> is input-only; the target std has no ABIEncode evidence for it)",
                         ty.display(db)
                     ),
                 ));
@@ -372,7 +372,7 @@ fn abi_type_of<'db>(
 }
 
 /// Returns the element of the one externally supported calldata location:
-/// `calldata(array(t))`. Both wrappers must be the canonical definitions from
+/// `calldata<array<t>>`. Both wrappers must be the canonical definitions from
 /// `std`; same-named user ADTs must not acquire ABI meaning by spelling alone.
 fn canonical_calldata_array_element<'db>(
     db: &'db dyn Db,
@@ -394,7 +394,7 @@ fn canonical_calldata_array_element<'db>(
     } = inner.kind(db)
     else {
         return Err(format!(
-            "{} (only calldata(array(t)) has canonical external ABI evidence)",
+            "{} (only calldata<array<t>> has canonical external ABI evidence)",
             inner.display(db)
         ));
     };
@@ -566,7 +566,7 @@ fn compiler_owned_generic_sig_string<'db>(
     }
     if !abi_evidence.has_derived_abi(user.def) {
         return Err(format!(
-            "{name} (compiler-owned ABIAttribs and ABIDecode evidence is not visible from the contract module; add an instance import of its defining module along the re-export path)"
+            "{name} (compiler-owned ABIAttribs and ABIDecode evidence is not visible from the contract module; import the module containing its defining impl along the re-export path)"
         ));
     }
     let rep = substitute_bound_tys(db, plan.rep, args);
@@ -756,13 +756,13 @@ fn canonical_location_abi_name<'db>(
     } = inner.kind(db)
     else {
         return Err(format!(
-            "{} (only memory(string) and memory(bytes) have canonical ABI evidence)",
+            "{} (only memory<string> and memory<bytes> have canonical ABI evidence)",
             inner.display(db)
         ));
     };
     if !inner_args.is_empty() {
         return Err(format!(
-            "{} (only memory(string) and memory(bytes) have canonical ABI evidence)",
+            "{} (only memory<string> and memory<bytes> have canonical ABI evidence)",
             inner.display(db)
         ));
     }
@@ -775,7 +775,7 @@ fn canonical_location_abi_name<'db>(
         return Ok(Some(inner_name));
     }
     Err(format!(
-        "{} (only memory(string) and memory(bytes) have canonical ABI evidence)",
+        "{} (only memory<string> and memory<bytes> have canonical ABI evidence)",
         inner.display(db)
     ))
 }

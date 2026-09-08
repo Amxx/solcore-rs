@@ -116,8 +116,8 @@ pub(crate) struct Label {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Pos {
-    /// UI-facing source path. `/main/foo.solc` is `foo.solc`, `/std/std.solc`
-    /// is `std:std.solc`, and `/ext/lib/foo.solc` is `ext:lib/foo.solc`.
+    /// UI-facing source path. `/main/foo.sol` is `foo.sol`, `/std/std.sol`
+    /// is `std:std.sol`, and `/ext/lib/foo.sol` is `ext:lib/foo.sol`.
     pub(crate) file: String,
     pub(crate) start_byte: u32,
     pub(crate) end_byte: u32,
@@ -136,6 +136,27 @@ struct FileOutput {
 
 /// Compiles already-deserialized input. Tests use this native helper directly.
 pub(crate) fn compile_impl(input: CompileInput) -> CompileResult {
+    if Path::new(&input.entry)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("sol")
+    {
+        return CompileResult {
+            success: false,
+            diagnostics: vec![message_diag(
+                DiagnosticSeverity::Error,
+                format!(
+                    "entry file `{}` must use the `.sol` source extension",
+                    input.entry
+                ),
+            )],
+            hull: None,
+            yul: None,
+            sonatina: None,
+            abi: None,
+        };
+    }
+
     let mut workspace = Workspace::new();
     workspace.apply_file_changes(
         input
@@ -508,22 +529,45 @@ mod tests {
     fn input(source: &str, options: Options) -> CompileInput {
         CompileInput {
             files: vec![FileInput {
-                path: "main.solc".to_owned(),
+                path: "main.sol".to_owned(),
                 content: source.to_owned(),
             }],
-            entry: "main.solc".to_owned(),
+            entry: "main.sol".to_owned(),
             options,
         }
+    }
+
+    #[test]
+    fn compile_accepts_only_sol_entry_files() {
+        let valid = compile_impl(input("function main() {}\n", Options::default()));
+        assert!(valid.success);
+        assert!(valid.diagnostics.is_empty());
+
+        let invalid = compile_impl(CompileInput {
+            files: vec![FileInput {
+                path: "main.solc".to_owned(),
+                content: "function main() {}\n".to_owned(),
+            }],
+            entry: "main.solc".to_owned(),
+            options: Options::default(),
+        });
+        assert!(!invalid.success);
+        assert!(invalid.diagnostics.iter().any(|diagnostic| {
+            diagnostic.is_error()
+                && diagnostic
+                    .message
+                    .contains("entry file `main.solc` must use the `.sol` source extension")
+        }));
     }
 
     #[test]
     fn clean_program_emits_all_playground_outputs() {
         let result = compile_impl(input(
             concat!(
-                "import std.{*};\n",
-                "import std.dispatch.{*};\n",
+                "import * from std;\n",
+                "import * from std.dispatch;\n",
                 "contract Main {\n",
-                "  public function answer() -> uint256 {\n",
+                "  function answer() public returns (uint256) {\n",
                 "    return uint256(42);\n",
                 "  }\n",
                 "}\n",
@@ -557,7 +601,7 @@ mod tests {
     #[test]
     fn sonatina_only_runs_the_shared_hull_pipeline() {
         let result = compile_impl(input(
-            "contract Main {\n  public function main() -> word {\n    return 1;\n  }\n}\n",
+            "contract Main {\n  function main() public returns (word) {\n    return 1;\n  }\n}\n",
             Options {
                 emit_hull: false,
                 emit_yul: false,
@@ -581,8 +625,8 @@ mod tests {
     fn combined_artifacts_follow_cli_fail_fast_order() {
         let result = compile_impl(input(
             concat!(
-                "contract A { public function main() -> word { return 1; } }\n",
-                "contract B { public function main() -> word { return 2; } }\n",
+                "contract A { function main() public returns (word) { return 1; } }\n",
+                "contract B { function main() public returns (word) { return 2; } }\n",
             ),
             Options {
                 emit_hull: false,
@@ -613,10 +657,10 @@ mod tests {
     fn abi_only_emits_contract_json() {
         let result = compile_impl(input(
             concat!(
-                "import std.{*};\n",
-                "import std.dispatch.{*};\n",
+                "import * from std;\n",
+                "import * from std.dispatch;\n",
                 "contract Main {\n",
-                "  public function answer() -> uint256 {\n",
+                "  function answer() public returns (uint256) {\n",
                 "    return uint256(42);\n",
                 "  }\n",
                 "}\n",
@@ -644,22 +688,24 @@ mod tests {
         let result = compile_impl(CompileInput {
             files: vec![
                 FileInput {
-                    path: "main.solc".to_owned(),
-                    content: "import a; import b; function main() -> word { return 0; }\n"
+                    path: "main.sol".to_owned(),
+                    content: "import a; import b; function main() returns (word) { return 0; }\n"
                         .to_owned(),
                 },
                 FileInput {
-                    path: "a.solc".to_owned(),
-                    content: "contract Token { public function main() -> word { return 1; } }\n"
-                        .to_owned(),
+                    path: "a.sol".to_owned(),
+                    content:
+                        "contract Token { function main() public returns (word) { return 1; } }\n"
+                            .to_owned(),
                 },
                 FileInput {
-                    path: "b.solc".to_owned(),
-                    content: "contract Token { public function main() -> word { return 2; } }\n"
-                        .to_owned(),
+                    path: "b.sol".to_owned(),
+                    content:
+                        "contract Token { function main() public returns (word) { return 2; } }\n"
+                            .to_owned(),
                 },
             ],
-            entry: "main.solc".to_owned(),
+            entry: "main.sol".to_owned(),
             options: Options {
                 emit_hull: false,
                 emit_yul: false,
@@ -686,15 +732,16 @@ mod tests {
         let mut workspace = Workspace::new();
         workspace.set_external_file(
             "pkg",
-            "token.solc",
-            "contract ExternalToken { public function main() -> word { return 7; } }\n".to_owned(),
-        );
-        workspace.set_file(
-            "main.solc",
-            "import @pkg.token; contract Local { public function main() -> word { return 1; } }\n"
+            "token.sol",
+            "contract ExternalToken { function main() public returns (word) { return 7; } }\n"
                 .to_owned(),
         );
-        workspace.set_entry("main.solc");
+        workspace.set_file(
+            "main.sol",
+            "import @pkg.token; contract Local { function main() public returns (word) { return 1; } }\n"
+                .to_owned(),
+        );
+        workspace.set_entry("main.sol");
         assert!(workspace.diagnostics().is_empty());
         let entry = workspace.entry_module().expect("entry module");
 
@@ -722,9 +769,9 @@ mod tests {
     fn backend_diagnostic_uses_shared_vfs_conversion() {
         let result = compile_impl(input(
             concat!(
-                "import std.{string};\n",
+                "import {string} from std;\n",
                 "contract Main {\n",
-                "  public function main() -> string { return \"nope\"; }\n",
+                "  function main() public returns (string) { return \"nope\"; }\n",
                 "}\n",
             ),
             Options {
@@ -752,7 +799,7 @@ mod tests {
     #[test]
     fn bad_program_reports_position_and_skips_backend() {
         let result = compile_impl(input(
-            "function f() -> word {\n  return true;\n}\n",
+            "function f() returns (word) {\n  return true;\n}\n",
             Options {
                 emit_hull: true,
                 emit_yul: true,

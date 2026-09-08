@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/yul_opcode_errors/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/yul_opcode_errors/main.sol
 ---
 error[SC0203]: Yul call `add` expects 2 arguments, but 1 was provided
- --> /main/main.solc:4:16
+ --> /main/main.sol:4:16
   |
 3 |   assembly {
 4 |     let one := add(1)
@@ -16,7 +16,7 @@ error[SC0203]: Yul call `add` expects 2 arguments, but 1 was provided
 ---
 
 error[SC0201]: type mismatch: expected word, found string
- --> /main/main.solc:5:20
+ --> /main/main.sol:5:20
   |
 4 |     let one := add(1)
 5 |     let two := add("bad", 1)
@@ -28,7 +28,7 @@ error[SC0201]: type mismatch: expected word, found string
 ---
 
 error[SC0203]: Yul assignment expects 1 argument, but 0 were provided
- --> /main/main.solc:6:5
+ --> /main/main.sol:6:5
   |
 5 |     let two := add("bad", 1)
 6 |     x := mstore(1, 1)
@@ -40,7 +40,7 @@ error[SC0203]: Yul assignment expects 1 argument, but 0 were provided
 ---
 
 error[SC0211]: unknown Yul identifier or function: missing
- --> /main/main.solc:7:14
+ --> /main/main.sol:7:14
   |
 6 |     x := mstore(1, 1)
 7 |     x := add(missing, 1)

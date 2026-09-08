@@ -1,0 +1,10 @@
+function h(x: bool) returns (word) {
+  match (x) {
+case true {
+return 1;
+}
+case false {
+return true;
+}
+}
+}

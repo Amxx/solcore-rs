@@ -506,7 +506,7 @@ fn check_instance_methods<'db>(
         .class
         .def_id_value(db)
         .name(db)
-        .unwrap_or_else(|| "<class>".to_owned());
+        .unwrap_or_else(|| "<trait>".to_owned());
     let methods = instance.methods(db);
     let method_names = methods
         .iter()
@@ -691,7 +691,7 @@ fn check_builtin_str_method_signature<'db>(
         span: LabelSpan::from_span(db, method.sig(db).span(db)),
         method: METHOD_NAME.to_owned(),
         reason: format!(
-            "expected (string) -> {}, got {}",
+            "expected function(string) returns ({}), got {}",
             display_ty_source(db, *main, &inherited_names),
             display_ty_source(db, actual, &inherited_names)
         ),

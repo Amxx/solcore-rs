@@ -1,0 +1,9 @@
+enum Bool { True, False }
+
+trait Same<a> {
+  function same(x: a, y: a) returns (Bool) ;
+}
+
+function f<a>(x: a) returns (Bool) {
+  return Same.same(x, x);
+}

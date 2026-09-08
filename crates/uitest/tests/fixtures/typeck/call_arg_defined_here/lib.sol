@@ -1,0 +1,7 @@
+export { Color(*), paint };
+
+enum Color { Red, Green }
+
+function paint(name: word, c: Color) returns (Color) {
+  return c;
+}

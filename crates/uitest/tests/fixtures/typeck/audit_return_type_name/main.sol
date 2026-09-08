@@ -1,0 +1,5 @@
+enum Opt { Some(word), None }
+
+function f() returns (Opt) {
+  return Opt;
+}

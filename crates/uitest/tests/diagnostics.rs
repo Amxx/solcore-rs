@@ -17,14 +17,14 @@ define_frontend_test_db!(TestDb, hir_ty);
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/parse",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn parse_fail_diagnostics(fixture: Fixture<&str>) {
     let path = fixture.path().to_owned();
     let source = fixture.content().to_string();
     run_in_large_stack(move || {
         let db = TestDb::default();
-        let diagnostics = parse_diagnostics_for_source(&db, "main.solc", &source);
+        let diagnostics = parse_diagnostics_for_source(&db, "main.sol", &source);
         assert_failure_snapshot(
             &db,
             Path::new(&path).parent().expect("case dir"),
@@ -35,7 +35,7 @@ fn parse_fail_diagnostics(fixture: Fixture<&str>) {
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/nameres",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn nameres_fail_diagnostics(fixture: Fixture<&str>) {
     run_fixture_case(fixture, |db, entry| nameres_diagnostics(db, &entry));
@@ -43,7 +43,7 @@ fn nameres_fail_diagnostics(fixture: Fixture<&str>) {
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/typeck",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn typeck_fail_diagnostics(fixture: Fixture<&str>) {
     run_fixture_case_with_dependencies(fixture, full_frontend_diagnostics);
@@ -51,7 +51,7 @@ fn typeck_fail_diagnostics(fixture: Fixture<&str>) {
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/solver",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn solver_fail_diagnostics(fixture: Fixture<&str>) {
     run_fixture_case_with_dependencies(fixture, full_frontend_diagnostics);
@@ -59,7 +59,7 @@ fn solver_fail_diagnostics(fixture: Fixture<&str>) {
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/comptime",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn comptime_fail_diagnostics(fixture: Fixture<&str>) {
     run_fixture_case(fixture, specialize_diagnostics);
@@ -67,7 +67,7 @@ fn comptime_fail_diagnostics(fixture: Fixture<&str>) {
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/specialize",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn specialize_fail_diagnostics(fixture: Fixture<&str>) {
     run_fixture_case(fixture, specialize_diagnostics);
@@ -75,7 +75,7 @@ fn specialize_fail_diagnostics(fixture: Fixture<&str>) {
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/hull",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn hull_fail_diagnostics(fixture: Fixture<&str>) {
     run_fixture_case_with_dependencies(fixture, hull_diagnostics);

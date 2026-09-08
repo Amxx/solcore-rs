@@ -208,7 +208,7 @@ fn instance_symbol<'db>(
         db,
         line_index,
         uri,
-        format!("instance {}", class.atom().text(db)),
+        format!("impl {}", class.atom().text(db)),
         SymbolKind::OBJECT,
         class.span(db),
         None,
@@ -267,17 +267,17 @@ mod tests {
 
     fn world_with_main(source: &str) -> (WorldState, Url) {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         (world, uri)
     }
 
     #[test]
     fn query_returns_matching_functions_from_each_open_document() {
-        let main_source = "function target_main() -> word {\n  return 1;\n}\n";
-        let util_source = "function target_util() -> word {\n  return 2;\n}\n";
+        let main_source = "function target_main() returns (word) {\n  return 1;\n}\n";
+        let util_source = "function target_util() returns (word) {\n  return 2;\n}\n";
         let (mut world, main_uri) = world_with_main(main_source);
-        let util_uri = Url::parse("file:///main/util.solc").expect("uri");
+        let util_uri = Url::parse("file:///main/util.sol").expect("uri");
         assert!(world.open_document(util_uri.clone(), util_source.to_owned()));
 
         let symbols = handle_workspace_symbol(&world, "TARGET").expect("workspace symbols");
@@ -305,19 +305,19 @@ mod tests {
         let mut world = WorldState::new();
         let root_path = std::env::temp_dir().join("solcore-lsp-symbol-project");
         let root = Url::from_directory_path(&root_path).expect("root uri");
-        let main_uri = Url::from_file_path(root_path.join("main.solc")).expect("main uri");
-        let util_uri = Url::from_file_path(root_path.join("util.solc")).expect("util uri");
+        let main_uri = Url::from_file_path(root_path.join("main.sol")).expect("main uri");
+        let util_uri = Url::from_file_path(root_path.join("util.sol")).expect("util uri");
         assert_eq!(
             world.load_workspace_documents(
                 root,
                 [
                     (
                         main_uri,
-                        "function main_symbol() -> word { return 1; }\n".to_owned()
+                        "function main_symbol() returns (word) { return 1; }\n".to_owned()
                     ),
                     (
                         util_uri.clone(),
-                        "function unopened_symbol() -> word { return 2; }\n".to_owned()
+                        "function unopened_symbol() returns (word) { return 2; }\n".to_owned()
                     ),
                 ]
             ),
@@ -335,17 +335,7 @@ mod tests {
 
     #[test]
     fn empty_query_returns_top_level_symbols_and_non_matching_query_is_empty() {
-        let source = "\
-function alpha() -> word {
-  return 1;
-}
-
-type Alias = word;
-
-data Choice = One | Two;
-
-contract Vault {}
-";
+        let source = "function alpha() returns (word) {\n  return 1;\n}\n\ntype Alias = word;\n\nenum Choice {One , Two}\n\ncontract Vault {}\n";
         let (world, uri) = world_with_main(source);
 
         let symbols = handle_workspace_symbol(&world, "").expect("workspace symbols");
@@ -372,14 +362,7 @@ contract Vault {}
 
     #[test]
     fn contract_member_symbols_keep_container_name() {
-        let source = "\
-contract Vault {
-  balance: word;
-  function read() -> word {
-    return balance;
-  }
-}
-";
+        let source = "contract Vault {\n  balance: word;\n  function read() returns (word) {\n    return balance;\n  }\n}\n";
         let (world, uri) = world_with_main(source);
 
         let field = handle_workspace_symbol(&world, "balance")

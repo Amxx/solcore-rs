@@ -40,11 +40,11 @@ pub struct ModuleTree {
 /// expected to use the same normalized roots as [`ModuleTree`].
 #[salsa::input(debug)]
 pub struct ModuleFsSnapshot {
-    /// Absolute `.solc` source files observed on disk.
+    /// Absolute `.sol` source files observed on disk.
     #[returns(ref)]
     pub existing_files: BTreeSet<PathBuf>,
 
-    /// Sibling `.solc` file stems by parent directory.
+    /// Sibling `.sol` file stems by parent directory.
     #[returns(ref)]
     pub sibling_stems: BTreeMap<PathBuf, Vec<String>>,
 }

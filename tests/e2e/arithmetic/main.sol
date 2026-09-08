@@ -1,0 +1,18 @@
+import * from std;
+import * from std.dispatch;
+
+contract Arithmetic {
+  constructor() {}
+
+  // #[(0, 1) -> 1]
+  // #[(1, 1) -> 2]
+  function add(x: uint256, y: uint256) public returns (uint256) {
+    return Add.add(x, y);
+  }
+
+  // #[(10, 2) -> 8]
+  // #[(2, 0) -> 2]
+  function sub(x: uint256, y: uint256) public returns (uint256) {
+    return Sub.sub(x, y);
+  }
+}

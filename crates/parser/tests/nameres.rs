@@ -36,7 +36,7 @@ impl hir::Db for TestDb {
 impl solcore_parser::Db for TestDb {}
 
 fn source_file(db: &TestDb, name: &str, src: &str) -> SourceFile {
-    let url = format!("memory:///{name}.solc").parse().expect("valid url");
+    let url = format!("memory:///{name}.sol").parse().expect("valid url");
     SourceFile::new(db, url, Some(src.to_owned()))
 }
 
@@ -216,9 +216,9 @@ fn derive_targets_resolve_in_source_order_for_top_level_and_contract_adts() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "class a:Eq {}\n\
-         #[derive(Eq, Eq)] data Top;\n\
-         contract C { #[derive(Eq)] data Local; }",
+        "trait Eq<a> {}\n\
+         #[derive(Eq, Eq)] enum Top {}\n\
+         contract C { #[derive(Eq)] enum Local {} }",
     );
     let resolution = resolve_module(&db, module);
     assert!(resolution.diagnostics.is_empty());
@@ -249,7 +249,7 @@ fn derive_targets_report_unknown_and_wrong_kind_names() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "data NotAClass; #[derive(Missing, NotAClass)] data Target;",
+        "enum NotAClass {} #[derive(Missing, NotAClass)] enum Target {}",
     );
     let resolution = resolve_module(&db, module);
     let undefined = resolution
@@ -273,7 +273,7 @@ fn derive_targets_report_unknown_and_wrong_kind_names() {
 #[test]
 fn qualified_derive_target_uses_the_exact_imported_class_path() {
     let db = TestDb::default();
-    let module = parse_module(&db, "class a:Eq {} #[derive(pkg.Eq)] data Target;");
+    let module = parse_module(&db, "trait Eq<a> {} #[derive(pkg.Eq)] enum Target {}");
     let class = module
         .items(&db)
         .iter()
@@ -301,38 +301,39 @@ fn parse_recovery_suppression_policy_silences_name_lookup_cascades() {
     let cases = [
         (
             "body_expr_error",
-            "function f() -> word {
+            "function f() returns (word) {
                let x = ;
                return missing;
              }",
         ),
         (
             "lost_function_signature",
-            "lost(x: word) -> word { return 0; }
-             function caller() -> word { return lost(0); }",
+            // syntax-migration: preserve-next-literal
+            "lost(x: word) returns (word) { return 0; }
+             function caller() returns (word) { return lost(0); }",
         ),
         (
             "broken_import",
             "impoort util;
-             function caller() -> word { return missing; }",
+             function caller() returns (word) { return missing; }",
         ),
         (
             "broken_type_annotation",
             "typeish Alias = word;
-             function caller(x: Alias) -> word { return 0; }",
+             function caller(x: Alias) returns (word) { return 0; }",
         ),
         (
             "top_level_item_error",
             "function first() {}
              unknown nonsense tokens
              function second() {}
-             function caller() -> word { return missing; }",
+             function caller() returns (word) { return missing; }",
         ),
         (
             "broken_contract_member",
             "contract C {
                broken :
-               function get() -> word { return broken; }
+               function get() returns (word) { return broken; }
              }",
         ),
     ];
@@ -377,18 +378,18 @@ fn undefined_name_kind_distinguishes_bare_terms_from_path_lookups() {
     let (file, module) = parse_and_module(
         &db,
         "undefined_name_kinds",
-        "data Local = Present;
-         function bare() -> word { return missing; }
-         function qualified() -> word { return math.value(); }
-         function ctorExpr() -> word { return Option.Some(0); }
-         function ctorPat(x: word) -> word {
-           match x {
-           | Option.Some(y) => return y;
-           | _ => return 0;
+        "enum Local { Present }
+         function bare() returns (word) { return missing; }
+         function qualified() returns (word) { return math.value(); }
+         function ctorExpr() returns (word) { return Option.Some(0); }
+         function ctorPat(x: word) returns (word) {
+           match (x) {
+           case Option.Some(y) { return y; }
+           case _ { return 0; }
            }
          }
-         function valueMember(x: word) -> word { return x.absent; }
-         function member() -> word { return Local.absent; }",
+         function valueMember(x: word) returns (word) { return x.absent; }
+         function member() returns (word) { return Local.absent; }",
     );
     assert!(parse_diagnostics(&db, file).is_empty());
 
@@ -437,8 +438,8 @@ fn missing_resolved_module_member_has_qualified_lookup_context() {
     let (file, module) = parse_and_module(
         &db,
         "missing_module_member",
-        "data Local = Present;
-         function missing() -> word {
+        "enum Local { Present }
+         function missing() returns (word) {
            let fromModule = math.value();
            return Local.absent;
          }",
@@ -485,11 +486,11 @@ fn missing_constructor_on_resolved_type_is_not_an_import_context() {
     let (file, module) = parse_and_module(
         &db,
         "missing_local_constructor",
-        "data Option = None;
-         function missing(value: Option) -> word {
-           match value {
-           | Option.Some => return 1;
-           | _ => return 0;
+        "enum Option { None }
+         function missing(value: Option) returns (word) {
+           match (value) {
+           case Option.Some { return 1; }
+           case _ { return 0; }
            }
          }",
     );
@@ -563,12 +564,12 @@ fn field_ufcs_resolves_a_unique_local_class_method() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "forall self . class self:Combiner {
-           function combine(x: self, y: word) -> word;
+        "trait Combiner<self> {
+           function combine(x: self, y: word) returns (word);
          }
          contract C {
            value: word;
-           function viaUfcs(y: word) -> word { return value.combine(y); }
+           function viaUfcs(y: word) returns (word) { return value.combine(y); }
          }",
     );
     let resolution = resolve_module(&db, module);
@@ -602,8 +603,8 @@ fn field_ufcs_resolves_a_unique_imported_class_method() {
     let db = TestDb::default();
     let provider = parse_module(
         &db,
-        "forall self . class self:RemoteOps {
-           function touch(x: self) -> word;
+        "trait RemoteOps<self> {
+           function touch(x: self) returns (word);
          }",
     );
     let class = top_class_id(&db, provider, "RemoteOps");
@@ -611,7 +612,7 @@ fn field_ufcs_resolves_a_unique_imported_class_method() {
         &db,
         "contract C {
            value: word;
-           function viaImport() -> word { return value.touch(); }
+           function viaImport() returns (word) { return value.touch(); }
          }",
     );
     let imports = ClassMethodImports {
@@ -654,21 +655,21 @@ fn ufcs_reports_undefined_name_when_visible_methods_conflict() {
     let db = TestDb::default();
     let provider = parse_module(
         &db,
-        "forall self . class self:RemoteOps {
-           function collide(x: self) -> word;
+        "trait RemoteOps<self> {
+           function collide(x: self) returns (word);
          }",
     );
     let remote_class = top_class_id(&db, provider, "RemoteOps");
     let module = parse_module(
         &db,
-        "forall self . class self:LocalOps {
-           function collide(x: self) -> word;
+        "trait LocalOps<self> {
+           function collide(x: self) returns (word);
          }
          contract C {
            value: word;
-           function ambiguous() -> word { return value.collide(); }
-           function ambiguousParameter(value: word) -> word { return value.collide(); }
-           function missing() -> word { return value.absent(); }
+           function ambiguous() returns (word) { return value.collide(); }
+           function ambiguousParameter(value: word) returns (word) { return value.collide(); }
+           function missing() returns (word) { return value.absent(); }
          }",
     );
     let imports = ClassMethodImports {
@@ -720,8 +721,7 @@ fn ufcs_reports_undefined_name_when_visible_methods_conflict() {
         .expect("parameter body map");
     assert!(ident_resolutions(&db, parameter_body, parameter_map)
         .into_iter()
-        .any(|(name, resolution)| name == "value"
-            && matches!(resolution, Resolution::Param(_))));
+        .any(|(name, resolution)| name == "value" && matches!(resolution, Resolution::Param(_))));
     assert!(
         field_resolutions(&db, parameter_body, parameter_map)
             .into_iter()
@@ -747,26 +747,26 @@ fn value_ufcs_resolves_parameters_and_locals_while_preserving_qualified_calls() 
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "forall self . class self:Combiner {
-           function combine(x: self, y: word) -> word;
+        "trait Combiner<self> {
+           function combine(x: self, y: word) returns (word);
          }
          contract C {
            value: word;
            Combiner: word;
-           function qualified(y: word) -> word {
+           function qualified(y: word) returns (word) {
              return Combiner.combine(value, y);
            }
-           function sameNameQualifier(y: word) -> word {
+           function sameNameQualifier(y: word) returns (word) {
              return Combiner.combine(Combiner, y);
            }
-           function parameter(value: word, y: word) -> word {
+           function parameter(value: word, y: word) returns (word) {
              return value.combine(y);
            }
-           function local(value: word, y: word) -> word {
+           function local(value: word, y: word) returns (word) {
              let receiver = value;
              return receiver.combine(y);
            }
-           function arbitrary(y: word) -> word {
+           function arbitrary(y: word) returns (word) {
              return (value + y).combine(y);
            }
          }",
@@ -844,8 +844,7 @@ fn value_ufcs_resolves_parameters_and_locals_while_preserving_qualified_calls() 
         .expect("parameter body map");
     assert!(ident_resolutions(&db, parameter_body, parameter_map)
         .into_iter()
-        .any(|(name, resolution)| name == "value"
-            && matches!(resolution, Resolution::Param(_))));
+        .any(|(name, resolution)| name == "value" && matches!(resolution, Resolution::Param(_))));
     assert!(
         field_resolutions(&db, parameter_body, parameter_map)
             .into_iter()
@@ -892,7 +891,7 @@ fn let_initializer_resolves_before_binder_and_then_shadows() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "function f(x: word) -> word {
+        "function f(x: word) returns (word) {
            let x = x;
            return x;
          }",
@@ -917,7 +916,7 @@ fn explicit_blocks_scope_locals_but_for_body_lets_leak() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "function f(x: word) -> word {
+        "function f(x: word) returns (word) {
            {
              let x = x;
            }
@@ -947,11 +946,11 @@ fn contract_fields_beat_top_level_functions_and_params_shadow_fields() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "function balance() -> word { return 0; }
+        "function balance() returns (word) { return 0; }
          contract C {
            balance: word;
-           function f() -> word { return balance; }
-           function g(balance: word) -> word { return balance; }
+           function f() returns (word) { return balance; }
+           function g(balance: word) returns (word) { return balance; }
          }",
     );
     assert!(diagnostic_codes(&db, module).is_empty());
@@ -976,9 +975,9 @@ fn unqualified_call_callee_prefers_contract_function_over_same_name_field() {
         &db,
         "contract C {
            balance: word;
-           function balance() -> word { return 7; }
-           function call() -> word { return balance(); }
-           function bare() -> word { return balance; }
+           function balance() returns (word) { return 7; }
+           function call() returns (word) { return balance(); }
+           function bare() returns (word) { return balance; }
          }",
     );
     assert!(diagnostic_codes(&db, module).is_empty());
@@ -1015,13 +1014,13 @@ fn qualified_ctor_class_method_and_dot_ctor_resolve_as_expected() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "data Option = None | Some(word);
-         data Foo = Foo(word);
-         forall self . class self:Show { function show(x: self) -> word; }
-         function good(x: word) -> Option { return Option.Some(x); }
-         function classCall(x: word) -> word { return Show.show(x); }
-         function dot(x: word) -> Option { return .Some(x); }
-         function sameName(x: word) -> Foo { return Foo(x); }",
+        "enum Option { None, Some(word) }
+         enum Foo { Foo(word) }
+         trait Show<self> { function show(x: self) returns (word); }
+         function good(x: word) returns (Option) { return Option.Some(x); }
+         function classCall(x: word) returns (word) { return Show.show(x); }
+         function dot(x: word) returns (Option) { return .Some(x); }
+         function sameName(x: word) returns (Foo) { return Foo(x); }",
     );
     let codes = diagnostic_codes(&db, module);
     assert!(codes.is_empty());
@@ -1055,20 +1054,20 @@ fn self_qualified_contract_methods_do_not_shadow_same_named_local_adt_constructo
         &db,
         r#"
 contract Option {
-  data Option(a) = None | Some(a);
+  enum Option<a> { None, Some(a) }
 
-  function some(x : word) -> Option(word) {
+  function some(x: word) returns (Option<word>) {
     return Option.Some(x);
   }
 
-  function none() -> Option(word) {
+  function none() returns (Option<word>) {
     return Option.None;
   }
 
-  function read(o : Option(word)) -> word {
-    match o {
-    | Option.Some(x) => return x;
-    | Option.None => return 0;
+  function read(o: Option<word>) returns (word) {
+    match (o) {
+    case Option.Some(x) { return x; }
+    case Option.None { return 0; }
     }
   }
 }
@@ -1108,7 +1107,7 @@ fn definite_same_name_constructor_beats_unknown_wildcard_import() {
     let db = TestDb::default();
     let module = parse_module(
         &db,
-        "data Unit = Unit; function make() -> Unit { return Unit; }",
+        "enum Unit { Unit } function make() returns (Unit) { return Unit; }",
     );
     let function = top_function(&db, module, "make");
     let body = function.body(&db).expect("body");

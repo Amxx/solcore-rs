@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/ergo_hull_asm_undefined_var/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/ergo_hull_asm_undefined_var/main.sol
 ---
 error[SC0211]: unknown Yul identifier or function: someUndefinedThing
- --> /main/main.solc:5:12
+ --> /main/main.sol:5:12
   |
 4 |     assembly {
 5 |       x := someUndefinedThing

@@ -1,14 +1,14 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/nameres/ergo_unqual_ctor_sc0106/main.solc
+input_file: crates/uitest/tests/fixtures/nameres/ergo_unqual_ctor_sc0106/main.sol
 ---
 error[SC0106]: unqualified constructor: On
-  --> /main/main.solc:12:15
+  --> /main/main.sol:16:15
    |
-11 | function main() -> word {
-12 |   return isOn(On);
+15 | function main() returns (word) {
+16 |   return isOn(On);
    |               ^^ constructor must be qualified
-13 | }
+17 | }
    |
    = help: use `Light.On`

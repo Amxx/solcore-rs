@@ -1,0 +1,4 @@
+function f() returns (word) {
+  let y : word = 7;
+  return y;
+}

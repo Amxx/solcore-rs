@@ -22,9 +22,15 @@ pub(crate) fn display_ty_source<'db>(db: &'db dyn Db, ty: Ty<'db>, names: &[Stri
             let name = display_ty_ctor_source(db, *ctor);
             if args.is_empty() {
                 name
+            } else if name == "mapping" && args.len() == 2 {
+                format!(
+                    "mapping({} => {})",
+                    display_ty_source(db, args[0], names),
+                    display_ty_source(db, args[1], names)
+                )
             } else {
                 format!(
-                    "{name}({})",
+                    "{name}<{}>",
                     args.iter()
                         .map(|arg| display_ty_source(db, *arg, names))
                         .collect::<Vec<_>>()
@@ -38,7 +44,10 @@ pub(crate) fn display_ty_source<'db>(db: &'db dyn Db, ty: Ty<'db>, names: &[Stri
                 .map(|param| display_ty_source(db, *param, names))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("({params}) -> {}", display_ty_source(db, *ret, names))
+            format!(
+                "function({params}) returns ({})",
+                display_ty_source(db, *ret, names)
+            )
         }
         TyKind::Tuple(elems) => {
             if elems.is_empty() {
@@ -54,7 +63,9 @@ pub(crate) fn display_ty_source<'db>(db: &'db dyn Db, ty: Ty<'db>, names: &[Stri
                 )
             }
         }
-        TyKind::Comptime(inner) => format!("comptime {}", display_ty_source(db, *inner, names)),
+        TyKind::Comptime(inner) => {
+            format!("comptime<{}>", display_ty_source(db, *inner, names))
+        }
     }
 }
 
@@ -87,14 +98,14 @@ pub(crate) fn display_pred_source<'db>(
             let main = display_ty_source(db, *main, names);
             let class = display_class_source(db, *class);
             if args.is_empty() {
-                format!("{main} : {class}")
+                format!("{main}: {class}")
             } else {
                 let args = args
                     .iter()
                     .map(|arg| display_ty_source(db, *arg, names))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{main} : {class}({args})")
+                format!("{main}: {class}<{args}>")
             }
         }
         PredKind::Eq { lhs, rhs } => format!(
@@ -118,23 +129,32 @@ pub(crate) fn display_type_ref_source<'db>(db: &'db dyn HirDb, ty: TypeRef<'db>)
                 out.push_str(&ident_text(db, qualifier));
                 out.push('.');
             }
-            out.push_str(&ident_text(db, name));
+            let name_text = ident_text(db, name);
+            out.push_str(&name_text);
             if !args.atom().is_empty() {
-                out.push('(');
-                out.push_str(
-                    &args
-                        .atom()
-                        .iter()
-                        .map(|arg| display_type_ref_source(db, *arg))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                out.push(')');
+                if name_text == "mapping" && args.atom().len() == 2 {
+                    out.push('(');
+                    out.push_str(&display_type_ref_source(db, args.atom()[0]));
+                    out.push_str(" => ");
+                    out.push_str(&display_type_ref_source(db, args.atom()[1]));
+                    out.push(')');
+                } else {
+                    out.push('<');
+                    out.push_str(
+                        &args
+                            .atom()
+                            .iter()
+                            .map(|arg| display_type_ref_source(db, *arg))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    out.push('>');
+                }
             }
             out
         }
         TypeRefKind::Fn { params, ret } => format!(
-            "({}) -> {}",
+            "function({}) returns ({})",
             params
                 .atom()
                 .iter()
@@ -144,7 +164,7 @@ pub(crate) fn display_type_ref_source<'db>(db: &'db dyn HirDb, ty: TypeRef<'db>)
             display_type_ref_source(db, *ret)
         ),
         TypeRefKind::Comptime { inner, .. } => {
-            format!("comptime {}", display_type_ref_source(db, *inner))
+            format!("comptime<{}>", display_type_ref_source(db, *inner))
         }
         TypeRefKind::Tuple { elems } => {
             format!(

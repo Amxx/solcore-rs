@@ -1,58 +1,58 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/nameres/unqualified_constructor_all_forms/main.solc
+input_file: crates/uitest/tests/fixtures/nameres/unqualified_constructor_all_forms/main.sol
 ---
 error[SC0106]: unqualified constructor: Some
- --> /main/main.solc:4:47
+ --> /main/main.sol:4:54
   |
 3 |
-4 | function exprCall(x: word) -> Option { return Some(x); }
-  |                                               ^^^^ constructor must be qualified
-5 | function exprBare(f: flag) -> flag { return on; }
+4 | function exprCall(x: word) returns (Option) { return Some(x); }
+  |                                                      ^^^^ constructor must be qualified
+5 | function exprBare(f: flag) returns (flag) { return on; }
   |
   = help: use `Option.Some`
 ---
 
 error[SC0106]: unqualified constructor: on
- --> /main/main.solc:5:45
+ --> /main/main.sol:5:52
   |
-4 | function exprCall(x: word) -> Option { return Some(x); }
-5 | function exprBare(f: flag) -> flag { return on; }
-  |                                             ^^ constructor must be qualified
+4 | function exprCall(x: word) returns (Option) { return Some(x); }
+5 | function exprBare(f: flag) returns (flag) { return on; }
+  |                                                    ^^ constructor must be qualified
 6 |
   |
   = help: use `flag.on`
 ---
 
 error[SC0106]: unqualified constructor: off
-  --> /main/main.solc:9:5
+  --> /main/main.sol:9:6
    |
- 8 |   match f {
- 9 |   | off => return 0;
-   |     ^^^ constructor must be qualified
-10 |   | on => return 1;
+ 8 |   match (f) {
+ 9 | case off {
+   |      ^^^ constructor must be qualified
+10 | return 0;
    |
    = help: use `flag.off`
 ---
 
 error[SC0106]: unqualified constructor: on
-  --> /main/main.solc:10:5
+  --> /main/main.sol:12:6
    |
- 9 |   | off => return 0;
-10 |   | on => return 1;
-   |     ^^ constructor must be qualified
-11 |   }
+11 | }
+12 | case on {
+   |      ^^ constructor must be qualified
+13 | return 1;
    |
    = help: use `flag.on`
 ---
 
 error[SC0106]: unqualified constructor: None
-  --> /main/main.solc:16:5
+  --> /main/main.sol:20:6
    |
-15 |   match o {
-16 |   | None => return 0;
-   |     ^^^^ constructor must be qualified
-17 |   | _ => return 1;
+19 |   match (o) {
+20 | case None {
+   |      ^^^^ constructor must be qualified
+21 | return 0;
    |
    = help: use `Option.None`

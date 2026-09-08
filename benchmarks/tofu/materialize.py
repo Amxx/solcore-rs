@@ -11,18 +11,18 @@ HERE = Path(__file__).resolve().parent
 REPOSITORY = HERE.parents[1]
 CASES = {
     "std-free": {
-        "main.solc": REPOSITORY
-        / "crates/parser/tests/fixtures/corpus/ok/test/examples/cases/SingleFun.solc",
+        "main.sol": REPOSITORY
+        / "crates/parser/tests/fixtures/corpus/ok/test/examples/cases/SingleFun.sol",
     },
     "dispatch-small": {
-        "main.solc": REPOSITORY / "tests/e2e/022add/main.solc",
+        "main.sol": REPOSITORY / "tests/e2e/022add/main.sol",
     },
     "erc20-large": {
-        "main.solc": REPOSITORY / "tests/e2e/128minierc20/main.solc",
+        "main.sol": REPOSITORY / "tests/e2e/128minierc20/main.sol",
     },
     "multi-file": {
-        "main.solc": REPOSITORY / "tests/e2e/ltimp/main.solc",
-        "ltproxy.solc": REPOSITORY / "tests/e2e/ltimp/ltproxy.solc",
+        "main.sol": REPOSITORY / "tests/e2e/ltimp/main.sol",
+        "ltproxy.sol": REPOSITORY / "tests/e2e/ltimp/ltproxy.sol",
     },
 }
 
@@ -36,7 +36,7 @@ def standard_json(sources):
         },
         "settings": {
             "solcore": {
-                "entrypoint": "main.solc",
+                "entrypoint": "main.sol",
                 "stage": "hull",
             },
             "outputSelection": {"*": {"*": []}},

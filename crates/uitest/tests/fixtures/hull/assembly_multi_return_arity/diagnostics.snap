@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/hull/assembly_multi_return_arity/main.solc
+input_file: crates/uitest/tests/fixtures/hull/assembly_multi_return_arity/main.sol
 ---
 error[SC0445]: inline assembly assignment returns 2 values, expected 3
-  --> /main/main.solc:11:18
+  --> /main/main.sol:11:18
    |
 10 |       }
 11 |       x, y, z := pair()

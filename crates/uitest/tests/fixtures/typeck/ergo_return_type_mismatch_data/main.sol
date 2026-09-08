@@ -1,0 +1,5 @@
+enum Color { Red, Green }
+
+function pick() returns (word) {
+  return Color.Red;
+}

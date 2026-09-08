@@ -3,16 +3,16 @@ import test from "node:test";
 
 import { workspaceEditTargetsAreCurrent } from "./workspaceEdit.js";
 
-const changes = { "file:///main/main.solc": [{ newText: "renamed" }] };
+const changes = { "file:///main/main.sol": [{ newText: "renamed" }] };
 
 test("workspace edit rejects a model changed after the request", () => {
-  const expected = new Map([["file:///main/main.solc", 7]]);
+  const expected = new Map([["file:///main/main.sol", 7]]);
   const getModel = () => ({ getVersionId: () => 8 });
   assert.equal(workspaceEditTargetsAreCurrent(changes, expected, getModel), false);
 });
 
 test("workspace edit accepts unchanged target models", () => {
-  const expected = new Map([["file:///main/main.solc", 7]]);
+  const expected = new Map([["file:///main/main.sol", 7]]);
   const getModel = () => ({ getVersionId: () => 7 });
   assert.equal(workspaceEditTargetsAreCurrent(changes, expected, getModel), true);
 });

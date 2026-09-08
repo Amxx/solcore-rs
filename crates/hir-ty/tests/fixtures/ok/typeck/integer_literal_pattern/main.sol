@@ -1,0 +1,10 @@
+function classify(n: integer) returns (integer) {
+  match (n) {
+case 0 {
+return 1;
+}
+default {
+return n;
+}
+}
+}

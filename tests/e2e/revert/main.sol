@@ -1,0 +1,13 @@
+import * from std;
+import * from std.dispatch;
+
+contract RevertExpectation {
+  // #[(7) -> revert(0xdeadbeef)]
+  function fail(x: uint256) public returns (uint256) {
+    assembly {
+      mstore(0, 0xdeadbeef)
+      revert(28, 4)
+    }
+    return x;
+  }
+}

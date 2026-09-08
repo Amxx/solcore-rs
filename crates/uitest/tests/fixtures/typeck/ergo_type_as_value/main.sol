@@ -1,0 +1,6 @@
+enum Pair { MkPair(word, word) }
+
+function main() returns (word) {
+  let p = Pair;
+  return 0;
+}

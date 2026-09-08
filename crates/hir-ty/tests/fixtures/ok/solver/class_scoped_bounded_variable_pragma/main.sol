@@ -1,0 +1,7 @@
+pragma no-bounded-variable-condition Container;
+
+enum Box<a> { Box(word) }
+trait Eq<a> {}
+trait Container<a, b> {}
+
+impl<a, c> Container<Box<a>, a> where c: Eq {}

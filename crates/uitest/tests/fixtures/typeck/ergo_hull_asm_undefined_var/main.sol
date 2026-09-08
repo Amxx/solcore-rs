@@ -1,0 +1,9 @@
+contract C {
+  function main() public returns (word) {
+    let x : word;
+    assembly {
+      x := someUndefinedThing
+    }
+    return x;
+  }
+}

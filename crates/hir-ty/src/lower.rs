@@ -446,7 +446,7 @@ impl<'db> TypeLowering<'db> {
             hir_nameres::Resolution::Def {
                 def,
                 kind: hir_nameres::DefResolutionKind::Class,
-            } => Some(def.name(self.db).unwrap_or_else(|| "class".to_owned())),
+            } => Some(def.name(self.db).unwrap_or_else(|| "trait".to_owned())),
             _ => None,
         }
     }

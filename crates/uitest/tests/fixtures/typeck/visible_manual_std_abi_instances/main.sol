@@ -1,0 +1,23 @@
+import * from std;
+import * from std.dispatch;
+
+impl ABIAttribs<word> {
+  function headSize(p: Proxy<word>) returns (word) { return 32; }
+  function isStatic(p: Proxy<word>) returns (bool) { return true; }
+}
+
+impl ABIEncode<word> {
+  function encodeInto(x: word, base: word, offset: word, tail: word) returns (word) { return tail; }
+}
+
+impl ABIDecode<ABIDecoder<word, CalldataWordReader>, word> {
+  function decode(d: ABIDecoder<word, CalldataWordReader>, offset: word) returns (word) { return 0; }
+}
+
+impl SigString<word> {
+  function sigStr(p: Proxy<word>) returns (string) { return "uint256"; }
+}
+
+contract C {
+  function echo(value: word) public returns (word) { return value; }
+}

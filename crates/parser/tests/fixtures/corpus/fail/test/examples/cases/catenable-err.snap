@@ -1,15 +1,15 @@
 ---
 source: crates/parser/tests/diagnostics.rs
 expression: value
-input_file: crates/parser/tests/fixtures/corpus/fail/test/examples/cases/catenable-err.solc
+input_file: crates/parser/tests/fixtures/corpus/fail/test/examples/cases/catenable-err.sol
 ---
-error[SC0001]: parse error: unexpected `}`
- --> /catenable-err.solc:3:1
+error[SC0001]: parse error: unexpected `->`
+ --> /catenable-err.sol:2:21
   |
-1 | forall t.class t:Catenable {
+1 | trait Catenable<t> {
 2 |   function cat(x:t) -> memory(bytes)
+  |                     ^^ unexpected token
 3 | }
-  | ^ unexpected token
   |
-  = note: expecting `->`, or `;`
-  = note: while parsing type
+  = note: expecting `;`, `payable`, or `public`
+  = note: while parsing function signature

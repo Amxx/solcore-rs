@@ -1,0 +1,3 @@
+enum T { A }
+
+export { T };

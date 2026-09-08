@@ -1,13 +1,14 @@
 # Solcore 2f372bde frontend corpus
 
-This corpus vendors every `.solc` source under `test/examples/` from
+This corpus ports every source under `test/examples/` from
 [`argotorg/solcore@2f372bde`](https://github.com/argotorg/solcore/tree/2f372bde2801612814015a22319d0bc51486cbf0/test/examples).
-The 499 example paths and their contents are byte-identical to that snapshot.
+The 499 examples keep the snapshot's module layout and semantics while using
+the canonical `.sol` syntax.
 Sources accepted by the reference frontend live under `ok/test/examples/`;
 reference failures and timeouts live under `fail/test/examples/`.
 
-The standard-library sources in `ok/std/` are the matching 2f372bde snapshot.
-They are also byte-identical to [`std/`](../../../../../std/); see
+The standard-library sources in `ok/std/` are the syntax-migrated 2f372bde
+snapshot. They are byte-identical to [`std/`](../../../../../std/); see
 [`std/README.md`](../../../../../std/README.md) for the synchronization
 policy. The `test/imports/` and `known-diagnostic-gaps/` trees are Rust-specific
 regressions and are not part of the reference example snapshot.
@@ -26,10 +27,11 @@ sol-core --file <2f372bde>/test/examples/<path> \
   --color never --unicode never --diagnostic-format short
 ```
 
-The snapshot contains 337 passes, 160 failures, and two timeouts. `code` is the
+The original snapshot contains 337 passes, 160 failures, and two timeouts.
+Ledger paths map to the migrated `.sol` files by module stem. `code` is the
 first structured `SCnnnn` diagnostic emitted for a failure; `-` means that no
 structured code applies. The two timeout rows are
-`cases/tabled-cycle-fail.solc` and `cases/tabled-left-recursive-fail.solc`.
+`cases/tabled-cycle-fail.sol` and `cases/tabled-left-recursive-fail.sol`.
 These verdicts describe the legacy frontend with specialization and generated
 dispatch disabled, not the full compiler or the tabled resolver.
 

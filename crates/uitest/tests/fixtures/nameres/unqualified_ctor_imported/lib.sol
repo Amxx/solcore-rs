@@ -1,0 +1,3 @@
+export { Token(Ok, Err) };
+
+enum Token { Ok(word), Err(word) }

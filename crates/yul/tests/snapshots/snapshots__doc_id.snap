@@ -422,7 +422,6 @@ object "IdDocDeploy" {
       }
       function usr$std_set_free_memory_d65c817cd(src$loc_98) {
         usr$opcodes_mstore_d7415bc7e(0x40, src$loc_98)
-        leave
       }
       usr$doc_id_IdDoc_main_d45c46589()
     }

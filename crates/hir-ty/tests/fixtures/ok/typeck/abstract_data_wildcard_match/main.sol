@@ -1,0 +1,9 @@
+enum Opaque {}
+
+function keep(value: Opaque) returns (Opaque) {
+    match (value) {
+default {
+return value;
+}
+}
+}

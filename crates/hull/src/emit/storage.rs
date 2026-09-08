@@ -256,7 +256,7 @@ impl<'db> Emitter<'db> {
         }
     }
 
-    /// Mirrors the reference std's `storage(mapping(k, v)) : CanStore`
+    /// Mirrors the reference std's `storage<mapping(k => v)>: CanStore`
     /// instance, whose `load`/`store` bodies are `unimplemented()`: touching a
     /// whole mapping field as a value compiles, but reverts at runtime with
     /// the std `Unimplemented` error, nominally yielding the field's base

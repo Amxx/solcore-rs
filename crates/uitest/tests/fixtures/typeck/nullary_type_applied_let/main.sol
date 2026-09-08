@@ -1,0 +1,6 @@
+enum M { Mk }
+
+function f() returns (word) {
+  let x: M<word> = M.Mk;
+  return 0;
+}

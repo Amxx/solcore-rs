@@ -1,6 +1,6 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/hull/ok_dispatch_storage/main.solc
+input_file: crates/uitest/tests/fixtures/hull/ok_dispatch_storage/main.sol
 ---
 no diagnostics

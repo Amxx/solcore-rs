@@ -1,0 +1,5 @@
+enum M { Mk }
+
+function f(x: M<word>) returns (word) {
+  return 0;
+}

@@ -13,8 +13,9 @@ fn run_frontend(source: &str) {
 }
 
 fn generated_program(literal: u64, depth: usize, result_kind: u8) -> String {
-    let mut source =
-        format!("function main(value : word) -> word {{\n  let value0 : word = {literal};\n");
+    let mut source = format!(
+        "function main(value : word) returns (word) {{\n  let value0 : word = {literal};\n"
+    );
     for index in 1..=depth {
         source.push_str(&format!(
             "  let value{index} : word = value{};\n",
@@ -25,7 +26,7 @@ fn generated_program(literal: u64, depth: usize, result_kind: u8) -> String {
         0 => format!("value{depth}"),
         1 => "true".to_owned(),
         2 => "missing".to_owned(),
-        _ => format!("if true then value else value{depth}"),
+        _ => format!("true ? value : value{depth}"),
     };
     source.push_str(&format!("  return {result};\n}}\n"));
     source

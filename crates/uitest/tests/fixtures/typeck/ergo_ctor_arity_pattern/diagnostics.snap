@@ -1,15 +1,15 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/ergo_ctor_arity_pattern/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/ergo_ctor_arity_pattern/main.sol
 ---
 error[SC0203]: constructor pattern expects 2 arguments, but 1 was provided
- --> /main/main.solc:5:5
+ --> /main/main.sol:5:6
   |
-4 |   match p {
-5 |   | Pair.Mk(x) => return x;
-  |     ^^^^^^^^^^ wrong number of arguments
-6 |   }
+4 |   match (p) {
+5 | case Pair.Mk(x) {
+  |      ^^^^^^^^^^ wrong number of arguments
+6 | return x;
   |
   = note: expected 2 arguments
   = note: found 1 argument

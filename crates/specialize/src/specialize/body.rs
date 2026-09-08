@@ -1910,11 +1910,11 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
         };
         Some(MonoExpr {
             span,
-            ty: self.driver.mono_ty(result_ty, "class call result", span)?,
+            ty: self.driver.mono_ty(result_ty, "trait call result", span)?,
             kind: MonoExprKind::Call {
                 callee: MonoId {
                     name,
-                    ty: self.driver.mono_ty(callee_ty, "class call callee", span)?,
+                    ty: self.driver.mono_ty(callee_ty, "trait call callee", span)?,
                     span,
                 },
                 args,
@@ -1965,13 +1965,13 @@ impl<'a, 'db> BodyCtx<'a, 'db> {
             span,
             ty: self
                 .driver
-                .mono_ty(result_ty, "contract field class call result", span)?,
+                .mono_ty(result_ty, "contract field trait call result", span)?,
             kind: MonoExprKind::Call {
                 callee: MonoId {
                     name,
                     ty: self
                         .driver
-                        .mono_ty(callee_ty, "contract field class call callee", span)?,
+                        .mono_ty(callee_ty, "contract field trait call callee", span)?,
                     span,
                 },
                 args,

@@ -1,0 +1,12 @@
+enum Option { None, Some(word) }
+
+function unwrap(o: Option) returns (word) {
+  match (o) {
+case Option.Nope {
+return 0;
+}
+case Option.Some(v) {
+return v;
+}
+}
+}

@@ -98,7 +98,7 @@ impl solcore_nameres::Db for TestDb {
 #[test]
 fn module_keys_reject_parent_directory_components() {
     let root = Path::new("workspace");
-    let spelled_with_parent = Path::new("workspace/src/../src/main.solc");
+    let spelled_with_parent = Path::new("workspace/src/../src/main.sol");
 
     assert!(
         module_key_for_path(LibraryId::Main, root, spelled_with_parent).is_none(),
@@ -130,17 +130,20 @@ fn auto_imports_index_unreachable_public_symbols_and_rank_direct_exports_first()
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "export { wanted }; function wanted() -> word { return 0; }",
+            "export { wanted }; function wanted() returns (word) { return 0; }",
         ),
         (
             vec!["direct"],
-            "export { wanted, Thing, Eqish }; function wanted() -> word { return 1; } data Thing = Thing; class a:Eqish {}",
+            "export { wanted, Thing, Eqish }; function wanted() returns (word) { return 1; } enum Thing { Thing } trait Eqish<a> {}",
         ),
         (vec!["wrapper"], "export direct.{wanted};"),
-        (vec!["private"], "function wanted() -> word { return 2; }"),
+        (
+            vec!["private"],
+            "function wanted() returns (word) { return 2; }",
+        ),
         (
             vec!["broken"],
-            "export { wanted }; lost(x: word) -> word { return 0; } function wanted() -> word { return 3; }",
+            "export { wanted }; lost(x) returns (word) { return 0; } function wanted() returns (word) { return 3; }",
         ),
         (vec!["broken_wrapper"], "export broken.{wanted};"),
         (
@@ -149,15 +152,15 @@ fn auto_imports_index_unreachable_public_symbols_and_rank_direct_exports_first()
         ),
         (
             vec!["other"],
-            "export { wanted }; function wanted() -> word { return 4; }",
+            "export { wanted }; function wanted() returns (word) { return 4; }",
         ),
         (
             vec!["term_collision"],
-            "export { Clash }; function Clash() -> word { return 5; }",
+            "export { Clash }; function Clash() returns (word) { return 5; }",
         ),
         (
             vec!["type_collision"],
-            "export { Clash }; data Clash = Clash;",
+            "export { Clash }; enum Clash { Clash }",
         ),
         (
             vec!["namespace_ambiguous"],
@@ -246,15 +249,15 @@ fn constructor_auto_imports_require_the_requested_constructor_to_be_visible() {
         (vec!["main"], "function main() {}"),
         (
             vec!["full"],
-            "export { Option(*) }; data Option = None | Some(word);",
+            "export { Option(*) }; enum Option { None, Some(word) }",
         ),
         (
             vec!["opaque"],
-            "export { Option }; data Option = None | Some(word);",
+            "export { Option }; enum Option { None, Some(word) }",
         ),
         (
             vec!["partial"],
-            "export { Option(Some) }; data Option = None | Some(word);",
+            "export { Option(Some) }; enum Option { None, Some(word) }",
         ),
         (vec!["wrapper"], "export full.{Option(Some)};"),
     ]);
@@ -281,24 +284,24 @@ fn module_auto_imports_match_the_default_qualifier_and_public_member() {
         (vec!["main"], "function main() {}"),
         (
             vec!["one", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
         (
             vec!["two", "math"],
-            "export { value }; function value() -> word { return 2; }",
+            "export { value }; function value() returns (word) { return 2; }",
         ),
         (vec!["aaa", "math"], "export lib.one.math.{value};"),
         (
             vec!["private", "math"],
-            "function value() -> word { return 3; }",
+            "function value() returns (word) { return 3; }",
         ),
         (
             vec!["broken", "math"],
-            "export { value }; lost(x: word) -> word { return 0; } function value() -> word { return 4; }",
+            "export { value }; lost(x) returns (word) { return 0; } function value() returns (word) { return 4; }",
         ),
         (
             vec!["other"],
-            "export { value }; function value() -> word { return 5; }",
+            "export { value }; function value() returns (word) { return 5; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -324,12 +327,12 @@ fn module_auto_imports_require_an_immediate_term_member() {
         (vec!["main"], "function main() {}"),
         (
             vec!["types", "math"],
-            "export { Value }; data Value = Value(word);",
+            "export { Value }; enum Value { Value(word) }",
         ),
         (vec!["aliases", "math"], "export lib.target as nested;"),
         (
             vec!["target"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -344,11 +347,11 @@ fn module_auto_imports_do_not_create_duplicate_default_qualifiers() {
         (vec!["main"], "import lib.existing.math; function main() {}"),
         (
             vec!["existing", "math"],
-            "export { old }; function old() -> word { return 1; }",
+            "export { old }; function old() returns (word) { return 1; }",
         ),
         (
             vec!["candidate", "math"],
-            "export { value }; function value() -> word { return 2; }",
+            "export { value }; function value() returns (word) { return 2; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -357,15 +360,15 @@ fn module_auto_imports_do_not_create_duplicate_default_qualifiers() {
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "import lib.existing as math; function main() {}",
+            "import * as math from lib.existing; function main() {}",
         ),
         (
             vec!["existing"],
-            "export { old }; function old() -> word { return 1; }",
+            "export { old }; function old() returns (word) { return 1; }",
         ),
         (
             vec!["candidate", "math"],
-            "export { value }; function value() -> word { return 2; }",
+            "export { value }; function value() returns (word) { return 2; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -375,11 +378,11 @@ fn module_auto_imports_do_not_create_duplicate_default_qualifiers() {
         (vec!["main"], "import lib.math.deep; function main() {}"),
         (
             vec!["math", "deep"],
-            "export { old }; function old() -> word { return 1; }",
+            "export { old }; function old() returns (word) { return 1; }",
         ),
         (
             vec!["other", "math"],
-            "export { value }; function value() -> word { return 2; }",
+            "export { value }; function value() returns (word) { return 2; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -391,25 +394,28 @@ fn module_auto_imports_do_not_conflict_with_unqualified_bindings() {
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "function math() -> word { return 0; } function main() {}",
+            "function math() returns (word) { return 0; } function main() {}",
         ),
         (
             vec!["candidate", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
     assert!(auto_import_module_candidates(&db, importing, "math", "value").is_empty());
 
     let (db, entry) = load_sources([
-        (vec!["main"], "import lib.names.{math}; function main() {}"),
+        (
+            vec!["main"],
+            "import {math} from lib.names; function main() {}",
+        ),
         (
             vec!["names"],
-            "export { math }; function math() -> word { return 0; }",
+            "export { math }; function math() returns (word) { return 0; }",
         ),
         (
             vec!["candidate", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -419,16 +425,19 @@ fn module_auto_imports_do_not_conflict_with_unqualified_bindings() {
 #[test]
 fn module_qualifier_conflicts_with_selected_term_in_either_import_order() {
     for imports in [
-        "import util; import other.{util};",
-        "import other.{util}; import util;",
+        "import util; import {util} from other;",
+        "import {util} from other; import util;",
     ] {
         let main = format!("{imports} function main() {{}}");
         let (db, entry) = load_sources([
             (vec!["main"], main.as_str()),
-            (vec!["util"], "function value() -> word { return 0; }"),
+            (
+                vec!["util"],
+                "function value() returns (word) { return 0; }",
+            ),
             (
                 vec!["other"],
-                "export { util }; function util() -> word { return 1; }",
+                "export { util }; function util() returns (word) { return 1; }",
             ),
         ]);
         let module = module_id_from_key(&db, &entry);
@@ -445,15 +454,15 @@ fn module_auto_imports_check_every_generated_prefix_binding() {
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "function one() -> word { return 0; } function main() {}",
+            "function one() returns (word) { return 0; } function main() {}",
         ),
         (
             vec!["one", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
         (
             vec!["two", "math"],
-            "export { value }; function value() -> word { return 2; }",
+            "export { value }; function value() returns (word) { return 2; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -464,24 +473,27 @@ fn module_auto_imports_check_every_generated_prefix_binding() {
     assert_eq!(paths, ["lib.two.math"]);
 
     let (db, entry) = load_sources([
-        (vec!["main"], "data one = One; function main() {}"),
+        (vec!["main"], "enum one { One } function main() {}"),
         (
             vec!["one", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
     assert!(auto_import_module_candidates(&db, importing, "math", "value").is_empty());
 
     let (db, entry) = load_sources([
-        (vec!["main"], "import lib.names.{one}; function main() {}"),
+        (
+            vec!["main"],
+            "import {one} from lib.names; function main() {}",
+        ),
         (
             vec!["names"],
-            "export { one }; function one() -> word { return 0; }",
+            "export { one }; function one() returns (word) { return 0; }",
         ),
         (
             vec!["one", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -493,24 +505,19 @@ fn module_auto_imports_check_contract_local_prefix_bindings() {
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "contract C {
-                one: word;
-                data two = Two;
-                function three() -> word { return 0; }
-                function main() {}
-            }",
+            "contract C {\n                one: word;\n                enum two {Two}\n                function three() returns (word) { return 0; }\n                function main() {}\n            }",
         ),
         (
             vec!["one", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
         (
             vec!["two", "math"],
-            "export { value }; function value() -> word { return 2; }",
+            "export { value }; function value() returns (word) { return 2; }",
         ),
         (
             vec!["three", "math"],
-            "export { value }; function value() -> word { return 3; }",
+            "export { value }; function value() returns (word) { return 3; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -523,11 +530,11 @@ fn module_auto_imports_check_resolved_and_unresolved_plain_import_prefixes() {
         (vec!["main"], "import lib.one.deep; function main() {}"),
         (
             vec!["one", "deep"],
-            "export { old }; function old() -> word { return 0; }",
+            "export { old }; function old() returns (word) { return 0; }",
         ),
         (
             vec!["one", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -537,7 +544,7 @@ fn module_auto_imports_check_resolved_and_unresolved_plain_import_prefixes() {
         (vec!["main"], "import lib.missing.deep; function main() {}"),
         (
             vec!["missing", "math"],
-            "export { value }; function value() -> word { return 1; }",
+            "export { value }; function value() returns (word) { return 1; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -549,11 +556,11 @@ fn module_auto_imports_allow_a_separate_plain_import_after_a_selective_import() 
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "import lib.one.math.{other}; function main() {}",
+            "import {other} from lib.one.math; function main() {}",
         ),
         (
             vec!["one", "math"],
-            "export { other, value }; function other() -> word { return 0; } function value() -> word { return 1; }",
+            "export { other, value }; function other() returns (word) { return 0; } function value() returns (word) { return 1; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -568,11 +575,7 @@ fn auto_imports_exclude_namespace_blind_selector_collisions_within_one_provider(
         (vec!["main"], "function main() {}"),
         (
             vec!["provider"],
-            "export { Shared, term_only, TypeOnly };
-             function Shared() -> word { return 1; }
-             data Shared = Shared;
-             function term_only() -> word { return 2; }
-             data TypeOnly = TypeOnly;",
+            "export { Shared, term_only, TypeOnly };\n             function Shared() returns (word) { return 1; }\n             enum Shared {Shared}\n             function term_only() returns (word) { return 2; }\n             enum TypeOnly {TypeOnly}",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -595,14 +598,14 @@ fn auto_imports_exclude_namespace_blind_selector_collisions_within_one_provider(
 #[test]
 fn auto_imports_suppress_different_target_for_explicit_selector_but_keep_same_target() {
     let (db, entry) = load_sources([
-        (vec!["main"], "import lib.a.{Foo}; function main() {}"),
+        (vec!["main"], "import {Foo} from lib.a; function main() {}"),
         (
             vec!["a"],
-            "export { Foo }; function Foo() -> word { return 1; }",
+            "export { Foo }; function Foo() returns (word) { return 1; }",
         ),
         (
             vec!["b"],
-            "export { Foo }; function Foo() -> word { return 2; }",
+            "export { Foo }; function Foo() returns (word) { return 2; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -620,15 +623,15 @@ fn auto_imports_consider_selector_aliases_by_their_local_name() {
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "import lib.a.{Original as Foo}; function main() {}",
+            "import {Original as Foo} from lib.a; function main() {}",
         ),
         (
             vec!["a"],
-            "export { Original }; function Original() -> word { return 1; }",
+            "export { Original }; function Original() returns (word) { return 1; }",
         ),
         (
             vec!["b"],
-            "export { Foo }; function Foo() -> word { return 2; }",
+            "export { Foo }; function Foo() returns (word) { return 2; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -639,14 +642,14 @@ fn auto_imports_consider_selector_aliases_by_their_local_name() {
 #[test]
 fn auto_imports_consider_bindings_from_wildcard_selectors() {
     let (db, entry) = load_sources([
-        (vec!["main"], "import lib.a.{*}; function main() {}"),
+        (vec!["main"], "import * from lib.a; function main() {}"),
         (
             vec!["a"],
-            "export { Foo }; function Foo() -> word { return 1; }",
+            "export { Foo }; function Foo() returns (word) { return 1; }",
         ),
         (
             vec!["b"],
-            "export { Foo }; function Foo() -> word { return 2; }",
+            "export { Foo }; function Foo() returns (word) { return 2; }",
         ),
     ]);
     let importing = module_id_from_key(&db, &entry);
@@ -659,12 +662,12 @@ fn auto_imports_consider_bindings_from_wildcard_selectors() {
 #[test]
 fn auto_imports_suppress_cross_namespace_collisions_from_different_targets() {
     let (db, entry) = load_sources([
-        (vec!["main"], "import lib.a.{Foo}; function main() {}"),
+        (vec!["main"], "import {Foo} from lib.a; function main() {}"),
         (
             vec!["a"],
-            "export { Foo }; function Foo() -> word { return 1; }",
+            "export { Foo }; function Foo() returns (word) { return 1; }",
         ),
-        (vec!["b"], "export { Foo }; data Foo = Foo;"),
+        (vec!["b"], "export { Foo }; enum Foo { Foo }"),
     ]);
     let importing = module_id_from_key(&db, &entry);
 
@@ -683,11 +686,11 @@ fn auto_imports_keep_main_workspace_namespaces_isolated() {
         ),
         (
             vec!["__solcore_workspace__", workspace_a, "nested", "util"],
-            "export { wanted }; function wanted() -> word { return 1; }",
+            "export { wanted }; function wanted() returns (word) { return 1; }",
         ),
         (
             vec!["__solcore_workspace__", workspace_b, "nested", "util"],
-            "export { wanted }; function wanted() -> word { return 2; }",
+            "export { wanted }; function wanted() returns (word) { return 2; }",
         ),
         (
             vec!["__solcore_detached__", detached, "main"],
@@ -695,7 +698,7 @@ fn auto_imports_keep_main_workspace_namespaces_isolated() {
         ),
         (
             vec!["__solcore_detached__", detached, "nested", "util"],
-            "export { wanted }; function wanted() -> word { return 3; }",
+            "export { wanted }; function wanted() returns (word) { return 3; }",
         ),
     ]);
     let importing = module_id_from_key(
@@ -788,8 +791,8 @@ fn source_import_paths_use_canonical_library_syntax() {
     let sources = [
         "function main() {}",
         "function local_only() {}",
-        "export { std_value }; function std_value() -> word { return 1; }",
-        "export { external_value }; function external_value() -> word { return 2; }",
+        "export { std_value }; function std_value() returns (word) { return 1; }",
+        "export { external_value }; function external_value() returns (word) { return 2; }",
     ];
     for (key, source) in keys.iter().zip(sources) {
         let file = SourceFile::new(&db, fixture_url(key), Some(source.to_owned()));
@@ -823,7 +826,7 @@ fn source_import_paths_use_canonical_library_syntax() {
     {
         let file = SourceFile::new(
             &db,
-            format!("memory:///roundtrip-{index}.solc")
+            format!("memory:///roundtrip-{index}.sol")
                 .parse()
                 .expect("round-trip test URL"),
             Some(format!("import {path};")),
@@ -928,18 +931,15 @@ fn glob_hiding_uses_the_renamed_reexport_name() {
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "import lib.wrapper.{*} hiding {renamed};\n\
-             function renamed() -> word { return 1; }",
+            "import * from lib.wrapper hiding {renamed};\nfunction renamed() returns (word) { return 1; }",
         ),
         (
             vec!["base"],
-            "export { original };\n\
-             function original() -> word { return 0; }",
+            "export { original };\nfunction original() returns (word) { return 0; }",
         ),
         (
             vec!["wrapper"],
-            "import lib.base.{original as renamed};\n\
-             export { renamed };",
+            "import {original as renamed} from lib.base;\nexport { renamed };",
         ),
     ]);
 
@@ -991,10 +991,28 @@ fn wildcard_hiding_validates_against_source_interface() {
 }
 
 #[test]
+fn selective_alias_hiding_uses_the_source_name() {
+    let (db, entry) = load_sources([
+        (
+            vec!["main"],
+            "import {original as renamed} from lib hiding {original};\n\
+             function renamed() returns (word) { return 1; }\n\
+             function main() returns (word) { return renamed(); }",
+        ),
+        (
+            vec!["lib"],
+            "export {original}; function original() returns (word) { return 0; }",
+        ),
+    ]);
+
+    let (_, diagnostics) = run(&db, &entry);
+    assert_no_diagnostics(&db, &diagnostics);
+}
+
+#[test]
 fn parse_broken_selected_import_does_not_blame_importer() {
     let (db, entry) = load_sources(parse_broken_provider_sources(
-        "import util.{lost};
-         function main() -> word { return lost(0); }",
+        "import {lost} from util;\n         function main() returns (word) { return lost(0); }",
     ));
     let main = module_id_from_key(&db, &entry);
     assert_eq!(module_diagnostic_codes(&db, main), Vec::<String>::new());
@@ -1011,8 +1029,7 @@ fn parse_broken_selected_import_does_not_blame_importer() {
 #[test]
 fn parse_broken_qualified_import_does_not_blame_importer() {
     let (db, entry) = load_sources(parse_broken_provider_sources(
-        "import util;
-         function main() -> word { return util.lost(0); }",
+        "import util;\n         function main() returns (word) { return util.lost(0); }",
     ));
     let main = module_id_from_key(&db, &entry);
     assert_eq!(module_diagnostic_codes(&db, main), Vec::<String>::new());
@@ -1023,13 +1040,16 @@ fn parse_broken_leaf_does_not_mark_unrelated_module_prefixes_incomplete() {
     let (db, entry) = load_sources([
         (
             vec!["main"],
-            "import lib.a.b.c; import lib.a.x; function main() -> word { return a.missing(); }",
+            "import lib.a.b.c; import lib.a.x; function main() returns (word) { return a.missing(); }",
         ),
         (
             vec!["a", "b", "c"],
-            "function value() -> word { let broken = ; return 1; }",
+            "function value() returns (word) { let broken = ; return 1; }",
         ),
-        (vec!["a", "x"], "function other() -> word { return 2; }"),
+        (
+            vec!["a", "x"],
+            "function other() returns (word) { return 2; }",
+        ),
     ]);
     let main = module_id_from_key(&db, &entry);
     let leaf = module_id_from_key(&db, &module_key(["a", "b", "c"]));
@@ -1061,10 +1081,7 @@ fn parse_broken_leaf_does_not_mark_unrelated_module_prefixes_incomplete() {
 fn parse_broken_module_diagnostics_publish_only_parse_errors() {
     let (db, entry) = load_sources([(
         vec!["main"],
-        "function main() -> word {
-           let x = ;
-           return missing;
-         }",
+        "function main() returns (word) {\n           let x = ;\n           return missing;\n         }",
     )]);
     let main = module_id_from_key(&db, &entry);
     let diagnostics = lowered_module_diagnostics(&db, main);
@@ -1186,7 +1203,7 @@ fn load_fixture(root: &Path, external_roots: BTreeMap<String, PathBuf>) -> (Test
         );
     }
 
-    let entry_path = root.join("main.solc");
+    let entry_path = root.join("main.sol");
     let entry_key = module_key_for_path(LibraryId::Main, root, &entry_path).expect("entry key");
     (db, entry_key)
 }
@@ -1227,8 +1244,7 @@ fn parse_broken_provider_sources(main: &str) -> [(Vec<&str>, &str); 2] {
         (vec!["main"], main),
         (
             vec!["util"],
-            "lost(x: word) -> word { return 0; }
-             function other() {}",
+            "lost(x) returns (word) { return 0; }\n             function other() {}",
         ),
     ]
 }
@@ -1352,7 +1368,7 @@ fn collect_module_fs_snapshot(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("solc") {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("sol") {
             if path.is_file() {
                 existing_files.insert(path.clone());
             }
@@ -1374,7 +1390,7 @@ fn load_library_files(db: &mut TestDb, library: LibraryId, root: &Path, dir: &Pa
         let path = entry.expect("fixture entry").path();
         if path.is_dir() {
             load_library_files(db, library.clone(), root, &path);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("solc") {
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("sol") {
             let key = module_key_for_path(library.clone(), root, &path).expect("module key");
             let source = fs::read_to_string(&path).expect("fixture source");
             let url = fixture_url(&key);
@@ -1391,7 +1407,7 @@ fn fixture_url(key: &ModuleKey) -> Url {
         LibraryId::External(name) => format!("external/{name}"),
     };
     let path = key.logical_path.join("/");
-    format!("memory:///{library}/{path}.solc")
+    format!("memory:///{library}/{path}.sol")
         .parse()
         .expect("fixture memory URL")
 }
@@ -1476,398 +1492,398 @@ fn known_divergence(path: &str) -> Option<KnownDivergence> {
 
 const KNOWN_DIVERGENCES: &[KnownDivergence] = &[
     KnownDivergence {
-        path: "hidden_ctor_nonexhaustive_fail.solc",
+        path: "hidden_ctor_nonexhaustive_fail.sol",
         reason: "reference fails later exhaustiveness checking for partial constructor visibility; Rust nameres records partial-data metadata but does not run exhaustiveness",
     },
     KnownDivergence {
-        path: "symlink_identity_fail.solc",
+        path: "symlink_identity_fail.sol",
         reason: "reference rejects distinct module identities for equivalent helper sources; Rust nameres does not canonicalize/symlink-check type identity in this pass",
     },
     KnownDivergence {
-        path: "private_bad_main.solc",
+        path: "private_bad_main.sol",
         reason: "reference type-checks private helper bodies and rejects the unexported broken function; Rust nameres intentionally reports only name-resolution diagnostics",
     },
     KnownDivergence {
-        path: "pragma_scope_main.solc",
+        path: "pragma_scope_main.sol",
         reason: "reference fails pragma-scoped typeclass/termination validation; Rust nameres does not implement that semantic check",
     },
 ];
 
 const IMPORT_CORPUS_CASES: &[ImportCorpusCase] = &[
     ImportCorpusCase {
-        path: "booldef.solc",
+        path: "booldef.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "boolmain.solc",
+        path: "boolmain.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "unordered_imports_main.solc",
+        path: "unordered_imports_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "boolalias.solc",
+        path: "boolalias.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "alias_hides_original_fail.solc",
+        path: "alias_hides_original_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "boolalias_open_fail.solc",
+        path: "boolalias_open_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "boolqualified.solc",
+        path: "boolqualified.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "boolqualifiedtype.solc",
+        path: "boolqualifiedtype.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "boolaliastype.solc",
+        path: "boolaliastype.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "module_unqualified_fun_fail.solc",
+        path: "module_unqualified_fun_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "alias_unqualified_fun_fail.solc",
+        path: "alias_unqualified_fun_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "module_unqualified_type_fail.solc",
+        path: "module_unqualified_type_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "alias_unqualified_type_fail.solc",
+        path: "alias_unqualified_type_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "module_unqualified_constr_fail.solc",
+        path: "module_unqualified_constr_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "alias_unqualified_constr_fail.solc",
+        path: "alias_unqualified_constr_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "selective_unqualified_fun_ok.solc",
+        path: "selective_unqualified_fun_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "transitive_dep_main_module.solc",
+        path: "transitive_dep_main_module.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "transitive_dep_main_select.solc",
+        path: "transitive_dep_main_select.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "opaque_alias_main.solc",
+        path: "opaque_alias_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "opaque_select_alias_main.solc",
+        path: "opaque_select_alias_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "opaque_alias_leak_fail.solc",
+        path: "opaque_alias_leak_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "opaque_alias_qualifier_leak_fail.solc",
+        path: "opaque_alias_qualifier_leak_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "opaque_select_direct_leak_fail.solc",
+        path: "opaque_select_direct_leak_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "module_name_shadow.solc",
+        path: "module_name_shadow.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "wrapper_shadow_success.solc",
+        path: "wrapper_shadow_success.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "ns_cross_ok.solc",
+        path: "ns_cross_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "ns_constr_dup.solc",
+        path: "ns_constr_dup.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "strict_open_fail.solc",
+        path: "strict_open_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "boolselect.solc",
+        path: "boolselect.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "boolconselect_ok.solc",
+        path: "boolconselect_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "boolconselect_fail.solc",
+        path: "boolconselect_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "nested_alias.solc",
+        path: "nested_alias.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "nested_select.solc",
+        path: "nested_select.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "nested_foo_and_bar.solc",
+        path: "nested_foo_and_bar.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "nested_direct_qualifier.solc",
+        path: "nested_direct_qualifier.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "nested_deep_qualifier.solc",
+        path: "nested_deep_qualifier.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "glob_import_ok.solc",
+        path: "glob_import_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "glob_import_mixed.solc",
+        path: "glob_import_mixed.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "glob_import_hiding.solc",
+        path: "glob_import_hiding.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "glob_hiding_amb_ok.solc",
+        path: "glob_hiding_amb_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "glob_import_dup.solc",
+        path: "glob_import_dup.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "glob_export_mixed.solc",
+        path: "glob_export_mixed.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "glob_amb_main_fail.solc",
+        path: "glob_amb_main_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "glob_import_hiding_unknown_fail.solc",
+        path: "glob_import_hiding_unknown_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "select_hiding_ok.solc",
+        path: "select_hiding_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "select_hiding_fail.solc",
+        path: "select_hiding_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "export_item_dup_fail.solc",
+        path: "export_item_dup_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "export_module_dup_fail.solc",
+        path: "export_module_dup_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "select_ok.solc",
+        path: "select_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "select_shadow_local.solc",
+        path: "select_shadow_local.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "select_shadow_param_ok.solc",
+        path: "select_shadow_param_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "select_fail.solc",
+        path: "select_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "select_unknown.solc",
+        path: "select_unknown.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "select_dup_item.solc",
+        path: "select_dup_item.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "alias_dup.solc",
+        path: "alias_dup.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "amb_main.solc",
+        path: "amb_main.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "amb_ok.solc",
+        path: "amb_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "dupqual_main.solc",
+        path: "dupqual_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "dupqual_module_main.solc",
+        path: "dupqual_module_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "private_helper_main.solc",
+        path: "private_helper_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "module_qualified_constructor.solc",
+        path: "module_qualified_constructor.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "module_qualified_constructor_pattern.solc",
+        path: "module_qualified_constructor_pattern.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "module_qualified_constructor_alias.solc",
+        path: "module_qualified_constructor_alias.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "type_collision_main.solc",
+        path: "type_collision_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "dot_context_expr.solc",
+        path: "dot_context_expr.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "reexport_items_main.solc",
+        path: "reexport_items_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "reexport_select_main.solc",
+        path: "reexport_select_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "reexport_select_alias_main.solc",
+        path: "reexport_select_alias_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "reexport_module_main.solc",
+        path: "reexport_module_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "reexport_module_alias_main.solc",
+        path: "reexport_module_alias_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "reexport_ctor_pattern.solc",
+        path: "reexport_ctor_pattern.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "reexport_ctor_expr_ok.solc",
+        path: "reexport_ctor_expr_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "reexport_ctor_expr_hidden_fail.solc",
+        path: "reexport_ctor_expr_hidden_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "reexport_ctor_hidden_fail.solc",
+        path: "reexport_ctor_hidden_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "hidden_ctor_expr_fail.solc",
+        path: "hidden_ctor_expr_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "hidden_ctor_dot_fail.solc",
+        path: "hidden_ctor_dot_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "hidden_ctor_pattern_fail.solc",
+        path: "hidden_ctor_pattern_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "hidden_ctor_nonexhaustive_fail.solc",
+        path: "hidden_ctor_nonexhaustive_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "hidden_ctor_wildcard_ok.solc",
+        path: "hidden_ctor_wildcard_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "rootcheck/nested/main.solc",
+        path: "rootcheck/nested/main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "rootcheck/nested/relative_and_lib_main.solc",
+        path: "rootcheck/nested/relative_and_lib_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "external_lib_main.solc",
+        path: "external_lib_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "external_lib_alias_main.solc",
+        path: "external_lib_alias_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "import_std_minimal.solc",
+        path: "import_std_minimal.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "select_alias_item_ok.solc",
+        path: "select_alias_item_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "select_alias_multi_ok.solc",
+        path: "select_alias_multi_ok.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "external_lib_missing_fail.solc",
+        path: "external_lib_missing_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "symlink_identity_fail.solc",
+        path: "symlink_identity_fail.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "private_bad_main.solc",
+        path: "private_bad_main.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "pragma_scope_main.solc",
+        path: "pragma_scope_main.sol",
         expected_failure: true,
     },
     ImportCorpusCase {
-        path: "selfcycle.solc",
+        path: "selfcycle.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "cycle_main.solc",
+        path: "cycle_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "wild_main.solc",
+        path: "wild_main.sol",
         expected_failure: false,
     },
     ImportCorpusCase {
-        path: "leak_main.solc",
+        path: "leak_main.sol",
         expected_failure: true,
     },
 ];

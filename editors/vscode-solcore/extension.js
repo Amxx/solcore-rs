@@ -104,7 +104,7 @@ function scheduleClientReplacement(outputChannel, fileWatcher) {
 
 function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("Solcore Language Server");
-  const fileWatcher = vscode.workspace.createFileSystemWatcher("**/*.solc");
+  const fileWatcher = vscode.workspace.createFileSystemWatcher("**/*.sol");
 
   context.subscriptions.push(outputChannel, fileWatcher);
   void scheduleClientReplacement(outputChannel, fileWatcher);

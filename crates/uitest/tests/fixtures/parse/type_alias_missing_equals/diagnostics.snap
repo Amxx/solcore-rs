@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/type_alias_missing_equals/main.solc
+input_file: crates/uitest/tests/fixtures/parse/type_alias_missing_equals/main.sol
 ---
 error[SC0001]: parse error: unexpected identifier `U`
- --> /main/main.solc:1:13
+ --> /main/main.sol:1:13
   |
 1 | type Amount U;
   |             ^ unexpected token

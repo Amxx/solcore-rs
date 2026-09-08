@@ -1,8 +1,8 @@
 # Solcore Vim/Neovim support
 
-This directory provides Vim runtime files for Solcore `.solc` files:
+This directory provides Vim runtime files for Solcore `.sol` files:
 
-- `ftdetect/solcore.vim` detects `*.solc` as the `solcore` filetype.
+- `ftdetect/solcore.vim` detects `*.sol` as the `solcore` filetype.
 - `ftplugin/solcore.vim` configures comments, formatting, suffix lookup, and word
   movement for Solcore buffers.
 - `syntax/solcore.vim` provides Vim script syntax highlighting.
@@ -21,7 +21,7 @@ Plugin managers can point at this directory as a local plugin.
 
 ## Syntax Highlighting
 
-Open any `.solc` file after the runtime path is configured. Vim/Neovim will set
+Open any `.sol` file after the runtime path is configured. Vim/Neovim will set
 `filetype=solcore` and load `syntax/solcore.vim` when syntax highlighting is
 enabled:
 

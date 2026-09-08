@@ -1,14 +1,14 @@
 # Backend E2E fixtures
 
-Both the Yul and Sonatina backends generate a test for every `**/main.solc`
-fixture in this directory. Selector-dispatched fixtures explicitly import both
-`std.{*}` and `std.dispatch.{*}`. Expectations live next to the contract
+Both the Yul and Sonatina backends generate a test for every `**/main.sol`
+fixture in this directory. Selector-dispatched fixtures explicitly open both
+`std` and `std.dispatch` with `import * from ...`. Expectations live next to the contract
 function they exercise:
 
 ```solcore
 // #[(0, 1) -> 1]
 // #[(1, 1) -> 2]
-public function add(x: uint256, y: uint256) -> uint256 {
+function add(x: uint256, y: uint256) public returns (uint256) {
   return Add.add(x, y);
 }
 ```
@@ -20,7 +20,7 @@ argument or result with the wrong type or arity is rejected while resolving the
 fixture, before any EVM call is made. The execution fixtures deliberately use
 only selector ABI types supported by the shared reference std. In particular,
 they do not expose primitive `word`. Direct ADTs and the
-`calldata(array(T))` ADT surface use raw JSON vectors instead: their selectors
+`calldata<array<T>>` ADT surface use raw JSON vectors instead: their selectors
 are derived from `T`'s structural Generic representation, and
 algebraic/dynamic-array values are outside the inline directive value grammar.
 
@@ -32,10 +32,10 @@ normal call directive on a later public method to assert the persisted state:
 
 ```solcore
 // #[send(41)]
-public function set(value: uint256) { stored = value; }
+function set(value: uint256) public { stored = value; }
 
 // #[() -> 41]
-public function readAfterSend() -> uint256 { return stored; }
+function readAfterSend() public returns (uint256) { return stored; }
 ```
 
 The outer parentheses delimit the argument or result list; another pair is
@@ -44,7 +44,7 @@ double parentheses:
 
 ```solcore
 // #[((7, 1)) -> (7, 1)]
-public function echo(point: (uint256, uint256)) -> (uint256, uint256) {
+function echo(point: (uint256, uint256)) public returns (uint256, uint256) {
   return point;
 }
 ```
@@ -54,11 +54,11 @@ right-nested tuple representation also flattens a nested tuple used as one ABI
 parameter: the single argument `((uint256, uint256), uint256)` is written as
 `((7, 1, 9))` in a directive. By contrast, two parameters consisting of a pair
 and a scalar are written as `((7, 1), 9)`. The complete shared example is in
-`composite-values/main.solc`. Normal comments are ignored, while a malformed
+`composite-values/main.sol`. Normal comments are ignored, while a malformed
 comment beginning with `#[` is an error.
 
 For ABI shapes that the compiler metadata cannot describe yet, a fixture may
-instead place an upstream-compatible `main.json` next to `main.solc`. The JSON
+instead place an upstream-compatible `main.json` next to `main.sol`. The JSON
 supplies complete calldata, call value, expected raw returndata or revert
 payload, the contract name, and optionally the upstream EVM-version metadata.
 Within each compiled backend/codegen variant, every entry is executed once as
@@ -70,10 +70,11 @@ on a fresh, dedicated Osaka Anvil instance. This keeps the byte-exact upstream
 JSON intact while using the one runtime supported consistently by both backend
 pipelines.
 
-The 2f372bde snapshot contains 51 executable source/vector pairs, all vendored
-byte-for-byte here. Its remaining `template.json` is a source-less placeholder
-used by the upstream generator, not an executable fixture. Every original
-`evmVersion` field, or its omission, remains preserved byte-for-byte.
+The 2f372bde snapshot contains 51 executable source/vector pairs. Their Core
+sources are syntax-migrated semantic ports; the adjacent JSON vectors retain
+the original calldata, expected output, and `evmVersion` metadata. Its
+remaining `template.json` is a source-less placeholder used by the upstream
+generator, not an executable fixture.
 
 This is also the migration format for Solcore's dispatch fixtures with dynamic
 arrays or ADTs. For a non-recursive, compiler-derived nullary ADT `T`, the ABI
@@ -84,12 +85,12 @@ uses the final Generic `SigString` (for example, `rt(sum(uint256,bytes))` or
 for a concrete parameterized ADT, but its `ContractDispatch.abiTypeOf` only
 handles `TyCon n []` and fails ABI JSON emission for that case. Rust
 intentionally extends the metadata surface with source spellings such as
-`Point(uint256)`.
+`Point<uint256>`.
 This extension is supported only when every type argument, including an unused
 phantom argument, has the required ABI evidence. Finite nested instantiations
 are distinguished from definition-recursive representations. Recursive,
 manually represented, and same-named non-std array/location types are rejected
-before backend execution, as is a `calldata(array(t))` handle nested anywhere
+before backend execution, as is a `calldata<array<t>>` handle nested anywhere
 inside an encoded ADT result.
 
 Each case is lowered by the selected backend, compiled to EVM creation

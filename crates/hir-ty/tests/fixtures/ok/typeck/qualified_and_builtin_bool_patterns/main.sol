@@ -1,0 +1,27 @@
+enum flag { off, on }
+
+function pick(f: flag) returns (word) {
+  match (f) {
+case flag.off {
+return 0;
+}
+case flag.on {
+return 1;
+}
+}
+}
+
+function flip(b: bool) returns (word) {
+  match (b) {
+case true {
+return 1;
+}
+case false {
+return 0;
+}
+}
+}
+
+function main() returns (word) {
+  return primAddWord(pick(flag.on), flip(true));
+}

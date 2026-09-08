@@ -3,7 +3,7 @@
 This directory is an independent Cargo workspace so normal compiler builds do
 not depend on `afl` or require an AFL-instrumented Rust toolchain.
 
-The three targets share one raw UTF-8 `main.solc` input and deliberately treat
+The three targets share one raw UTF-8 `main.sol` input and deliberately treat
 ordinary diagnostics as successful executions:
 
 - `parser`: parse and lower one source file.

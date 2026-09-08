@@ -1,0 +1,13 @@
+function f() returns (word) {
+    let x = ;
+    return 0;
+}
+
+function g(y: word) returns (word) {
+    if ( y ) { return 1; }
+    return 0;
+}
+
+function h() returns (word) {
+    return (1;
+}

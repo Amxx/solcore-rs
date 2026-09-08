@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/fallback_with_params/main.solc
+input_file: crates/uitest/tests/fixtures/parse/fallback_with_params/main.sol
 ---
 error[SC0001]: fallback function must not declare input parameters
- --> /main/main.solc:2:11
+ --> /main/main.sol:2:11
   |
 1 | contract Bad {
 2 |   fallback(x: word) {}

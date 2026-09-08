@@ -1,14 +1,14 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/nameres/unqualified_ctor_expr/main.solc
+input_file: crates/uitest/tests/fixtures/nameres/unqualified_ctor_expr/main.sol
 ---
 error[SC0106]: unqualified constructor: on
-  --> /main/main.solc:11:15
+  --> /main/main.sol:15:15
    |
-10 | function main() -> word {
-11 |   return pick(on);
+14 | function main() returns (word) {
+15 |   return pick(on);
    |               ^^ constructor must be qualified
-12 | }
+16 | }
    |
    = help: use `flag.on`

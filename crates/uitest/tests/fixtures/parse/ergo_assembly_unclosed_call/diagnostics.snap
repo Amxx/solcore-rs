@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/ergo_assembly_unclosed_call/main.solc
+input_file: crates/uitest/tests/fixtures/parse/ergo_assembly_unclosed_call/main.sol
 ---
 error[SC0001]: parse error: unexpected `(`
- --> /main/main.solc:4:17
+ --> /main/main.sol:4:17
   |
 3 |     assembly {
 4 |         r := add(1,
@@ -14,7 +14,7 @@ error[SC0001]: parse error: unexpected `(`
 ---
 
 error[SC0001]: parse error: unexpected `,`
- --> /main/main.solc:4:19
+ --> /main/main.sol:4:19
   |
 3 |     assembly {
 4 |         r := add(1,

@@ -1,0 +1,15 @@
+contract C {
+  enum Flag { Off, On }
+
+  function pick(x: Flag) public returns (word) {
+    match (x) {
+case Flag.Off {
+return 0;
+}
+}
+  }
+
+  function main() returns (word) {
+    return 0;
+  }
+}

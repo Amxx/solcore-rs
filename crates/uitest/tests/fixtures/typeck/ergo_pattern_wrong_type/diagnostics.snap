@@ -1,15 +1,15 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/ergo_pattern_wrong_type/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/ergo_pattern_wrong_type/main.sol
 ---
 error[SC0201]: type mismatch: expected Shape, found Color
- --> /main/main.solc:6:5
+ --> /main/main.sol:6:6
   |
-5 |   match c {
-6 |   | Shape.Circle(r) => return r;
-  |     ^^^^^^^^^^^^^^^ expression has mismatched type
-7 |   }
+5 |   match (c) {
+6 | case Shape.Circle(r) {
+  |      ^^^^^^^^^^^^^^^ expression has mismatched type
+7 | return r;
   |
   = note: expected type: Shape
   = note: found type: Color

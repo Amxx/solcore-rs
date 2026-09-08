@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/typeck/ergo_occurs_lambda_msg/main.solc
+input_file: crates/uitest/tests/fixtures/typeck/ergo_occurs_lambda_msg/main.sol
 ---
 error[SC0202]: recursive type would be required
- --> /main/main.solc:4:12
+ --> /main/main.sol:4:12
   |
 3 |     let g = x(y);
 4 |     return g(x);
@@ -12,5 +12,5 @@ error[SC0202]: recursive type would be required
 5 |   };
   |
   = note: an inferred type would need to contain itself
-  = note: recursive shape: ((_) -> _) -> _
+  = note: recursive shape: function(function(_) returns (_)) returns (_)
   = help: add an explicit type annotation or split the recursive call

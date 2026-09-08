@@ -1,0 +1,11 @@
+enum Shape { Circle(word) }
+
+enum Shape { Square(word) }
+
+trait Render<a> {
+  function render(x: a) returns (word) ;
+}
+
+trait Render<a> {
+  function paint(x: a) returns (word) ;
+}

@@ -1,0 +1,7 @@
+trait Wrap<t> {
+  function unwrap(comptime x: t) returns (comptime<word>) ;
+}
+
+function process<t>(z: t) returns (word) where t: Wrap {
+  return Wrap.unwrap(z);
+}

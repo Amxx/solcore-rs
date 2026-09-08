@@ -59,9 +59,9 @@ fn derived_clause_constrains_every_declared_type_parameter() {
     let key = load_main_source(
         &mut db,
         r#"
-forall a . class a:Marker {}
-instance word:Marker {}
-#[derive(Marker)] data Phantom(a) = Phantom(word);
+trait Marker<a> {}
+impl Marker<word> {}
+#[derive(Marker)] enum Phantom<a> { Phantom(word) }
 "#,
     );
     let module_id = module_id_from_key(&db, &key);
@@ -112,8 +112,8 @@ fn duplicate_derive_targets_remain_distinct_solver_candidates() {
     let key = load_main_source(
         &mut db,
         r#"
-forall a . class a:Marker {}
-#[derive(Marker, Marker)] data Target;
+trait Marker<a> {}
+#[derive(Marker, Marker)] enum Target {}
 "#,
     );
     let module_id = module_id_from_key(&db, &key);
@@ -147,9 +147,9 @@ fn manual_and_derived_instances_report_the_usual_overlap() {
     let key = load_main_source(
         &mut db,
         r#"
-forall a . class a:Marker {}
-#[derive(Marker)] data Target;
-instance Target:Marker {}
+trait Marker<a> {}
+#[derive(Marker)] enum Target {}
+impl Marker<Target> {}
 "#,
     );
     let module = module_id_from_key(&db, &key);
@@ -169,9 +169,9 @@ fn generic_contract_capture_does_not_create_an_unconditional_clause() {
     let key = load_main_source(
         &mut db,
         r#"
-forall a . class a:Marker {}
-contract C(t) {
-  #[derive(Marker)] data Local = Local(t);
+trait Marker<a> {}
+contract C<t> {
+  #[derive(Marker)] enum Local { Local(t) }
 }
 "#,
     );
@@ -194,8 +194,8 @@ fn multi_parameter_class_derive_is_rejected_at_the_declaration() {
     let key = load_main_source(
         &mut db,
         r#"
-forall a r . class a:Convert(r) {}
-#[derive(Convert)] data Target;
+trait Convert<a,r> {}
+#[derive(Convert)] enum Target {}
 "#,
     );
     let module = module_id_from_key(&db, &key);
@@ -207,7 +207,7 @@ forall a r . class a:Convert(r) {}
                 diagnostic,
                 AnyDiagnostic::Typeck(diagnostic)
                     if diagnostic.code.as_deref() == Some(DiagnosticCode::TYPECK_INVALID_DERIVE)
-                        && diagnostic.message.contains("only single-parameter classes")
+                        && diagnostic.message.contains("only single-parameter traits")
             ))
     );
 }

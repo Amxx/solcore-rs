@@ -34,7 +34,7 @@ impl hir::Db for TestDb {
 impl solcore_parser::Db for TestDb {}
 
 fn source_file(db: &TestDb, name: &str, src: &str) -> SourceFile {
-    let url = format!("memory:///{name}.solc").parse().expect("valid url");
+    let url = format!("memory:///{name}.sol").parse().expect("valid url");
     SourceFile::new(db, url, Some(src.to_owned()))
 }
 
@@ -119,6 +119,8 @@ fn block_comments_do_not_swallow_following_items_and_unterminated_comments_diagn
 #[test]
 fn function_hir_retains_only_directly_leading_source_comments() {
     let db = TestDb::default();
+    // The arrow-like text below is comment payload under test, not a legacy
+    // function result annotation.
     let (_, module) = parse_module(
         &db,
         "function-comments",
@@ -127,7 +129,7 @@ contract C {
   // ordinary documentation
   // #[(0, 1) -> 1]
   /* block /* nested */ documentation */
-  public function add(x: word, y: word) -> word { return x; }
+  function add(x: word, y: word) public returns (word) { return x; }
 
   function body_comment() {
     // this belongs to the body
@@ -192,20 +194,21 @@ export dependency;
 pragma feature Example;
 // top alias
 type Alias = word;
-// top data
-data TopData = // first constructor after equals
+// top enum
+enum TopData { // first constructor after opening brace
   First
   // second constructor before separator
-  | Second;
-// top class
-class a:Documented {
-  // class method
-  function describe(x: a) -> word;
+  , Second
 }
-// top instance
-instance word:Documented {
-  // instance method
-  function describe(x: word) -> word { return x; }
+// top trait
+trait Documented<a> {
+  // trait method
+  function describe(x: a) returns (word);
+}
+// top impl
+impl Documented<word> {
+  // impl method
+  function describe(x: word) returns (word) { return x; }
 }
 // top contract
 contract C {
@@ -213,18 +216,19 @@ contract C {
   value: word;
   // contract alias
   type LocalAlias = word;
-  // contract data
-  data LocalData =
+  // contract enum
+  enum LocalData {
     // local first constructor
     LocalFirst
-    | // local second constructor after separator
-      LocalSecond;
+    , // local second constructor after separator
+      LocalSecond
+  }
   // contract constructor
   constructor() {}
   // contract fallback
-  fallback() -> () {}
+  fallback() {}
   // contract function
-  function get() -> word { return value; }
+  function get() returns (word) { return value; }
 }
 // top function
 function top() {}
@@ -241,9 +245,9 @@ function top() {}
         " top export",
         " top pragma",
         " top alias",
-        " top data",
-        " top class",
-        " top instance",
+        " top enum",
+        " top trait",
+        " top impl",
         " top contract",
         " top function",
     ];
@@ -263,7 +267,7 @@ function top() {}
     assert_eq!(top_adt.ctors_with_comments(&db).len(), 2);
     assert_comment_texts(
         top_adt.ctor_leading_comments(&db, 0).expect("first ctor"),
-        &[" first constructor after equals"],
+        &[" first constructor after opening brace"],
     );
     assert_comment_texts(
         top_adt.ctor_leading_comments(&db, 1).expect("second ctor"),
@@ -281,7 +285,7 @@ function top() {}
     assert_eq!(class.methods_with_comments(&db).len(), 1);
     assert_comment_texts(
         class.method_leading_comments(&db, 0).expect("class method"),
-        &[" class method"],
+        &[" trait method"],
     );
 
     let instance = module
@@ -294,7 +298,7 @@ function top() {}
         .expect("instance");
     assert_comment_texts(
         instance.methods(&db)[0].leading_comments(&db),
-        &[" instance method"],
+        &[" impl method"],
     );
 
     let contract = module
@@ -315,7 +319,7 @@ function top() {}
 
     let expected_contract_item_comments = [
         " contract alias",
-        " contract data",
+        " contract enum",
         " contract constructor",
         " contract fallback",
         " contract function",
@@ -363,13 +367,13 @@ fn item_comments_do_not_cross_blank_lines_trailing_code_or_bodies() {
         "item-comment-boundaries",
         r#"
 type Owner = word; // trailing top-level comment
-data AfterTrailing;
+enum AfterTrailing {}
 // separated top-level comment
 
-class a:Boundary {
+trait Boundary<a> {
   // separated method comment
 
-  function method(x: a) -> word;
+  function method(x: a) returns (word);
 }
 contract C {
   first: word; // trailing field comment
@@ -377,12 +381,13 @@ contract C {
   // separated field comment
 
   second: word;
-  data Nested = First // trailing constructor comment
-    | Second
-    // separated from the constructor name by a blank line after `|`
-    |
+  enum Nested { First // trailing constructor comment
+    , Second
+    // separated from the constructor name by a blank line after `,`
+    ,
 
-    Third;
+    Third
+  }
   function body_owner() {
     // body-only comment
   }
@@ -507,11 +512,11 @@ fn equivalent_type_and_predicate_refs_share_semantic_shapes_without_sharing_occu
     let (_, module) = parse_module(
         &db,
         "type-ref-shapes",
-        "class self:C {}
+        "trait C<self> {}
          function a(x: word) {}
          function b(y: word) {}
-         forall t . t:C => function c(x: t) {}
-         forall t . t:C => function d(x: t) {}",
+         function c<t>(x: t) where t:C {}
+         function d<t>(x: t) where t:C {}",
     );
 
     let a = top_function(&db, module, "a");
@@ -536,19 +541,37 @@ fn equivalent_type_and_predicate_refs_share_semantic_shapes_without_sharing_occu
 }
 
 #[test]
-fn implicit_return_applies_to_function_definitions_but_not_lambdas() {
+fn implicit_return_applies_only_to_named_function_tail_expressions() {
     let db = TestDb::default();
     let (_, module) = parse_module(
         &db,
         "implicit-return",
-        "function id(x: word) -> word { x }
-         function make() { return lam (x: word) { x }; }",
+        "function id(x: word) returns (word) { x }
+         function sequence(x: word) returns (word) { let copy = x; copy }
+         function discarded(x: word) { x; }
+         function make() returns (function(word)) { return lam (x: word) { return x; }; }",
     );
 
     let id = top_function(&db, module, "id");
     let id_body = id.body(&db).expect("body");
     let id_stmt = id_body.stmts(&db).get(id_body.top_level_stmts(&db)[0]);
     assert!(matches!(&id_stmt.kind, StmtKind::Return(_)));
+
+    let sequence = top_function(&db, module, "sequence");
+    let sequence_body = sequence.body(&db).expect("body");
+    let sequence_stmts = sequence_body.top_level_stmts(&db);
+    assert_eq!(sequence_stmts.len(), 2);
+    assert!(matches!(
+        &sequence_body.stmts(&db).get(sequence_stmts[1]).kind,
+        StmtKind::Return(_)
+    ));
+
+    let discarded = top_function(&db, module, "discarded");
+    let discarded_body = discarded.body(&db).expect("body");
+    let discarded_stmt = discarded_body
+        .stmts(&db)
+        .get(discarded_body.top_level_stmts(&db)[0]);
+    assert!(matches!(&discarded_stmt.kind, StmtKind::Expr(_)));
 
     let make = top_function(&db, module, "make");
     let make_body = make.body(&db).expect("body");
@@ -563,7 +586,147 @@ fn implicit_return_applies_to_function_definitions_but_not_lambdas() {
     let lambda_stmt = lambda_body
         .stmts(&db)
         .get(lambda_body.top_level_stmts(&db)[0]);
-    assert!(matches!(&lambda_stmt.kind, StmtKind::Expr(_)));
+    assert!(matches!(&lambda_stmt.kind, StmtKind::Return(_)));
+
+    let (file, _) = parse_module(
+        &db,
+        "lambda-tail-expression",
+        "function invalid() returns (function(word)) { return lam (x: word) { x }; }",
+    );
+    let diagnostics = diagnostics(&db, file);
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("expression statement requires trailing `;`")),
+        "missing lambda tail-expression diagnostic: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn constructor_and_fallback_tail_expressions_require_semicolons() {
+    let db = TestDb::default();
+    let (file, _) = parse_module(
+        &db,
+        "entry-tail-expression",
+        "contract C {
+           constructor() { (); }
+           fallback() { () }
+         }",
+    );
+    let diagnostics = diagnostics(&db, file);
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("expression statement requires trailing `;`")),
+        "missing fallback tail-expression diagnostic: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn named_parameters_are_typed_while_lambda_parameters_may_be_inferred() {
+    let db = TestDb::default();
+    let (file, module) = parse_module(
+        &db,
+        "parameter-annotations",
+        "function apply(value: word) returns (word) {
+           let identity = lam (inferred) { return inferred; };
+           return identity(value);
+         }",
+    );
+    assert!(diagnostics(&db, file).is_empty());
+
+    let apply = top_function(&db, module, "apply");
+    assert!(matches!(
+        apply.sig(&db).params.atom().as_slice(),
+        [FuncParam::Typed { .. }]
+    ));
+    let body = apply.body(&db).expect("body");
+    let lambda_params = body
+        .exprs(&db)
+        .iter()
+        .find_map(|(_, expr)| match &expr.kind {
+            ExprKind::Lambda { params, .. } => Some(params.atom()),
+            _ => None,
+        })
+        .expect("lambda expression");
+    assert!(matches!(
+        lambda_params.as_slice(),
+        [FuncParam::Untyped { comptime: None, .. }]
+    ));
+
+    // These two sources intentionally omit the annotation to assert the
+    // canonical named-parameter rejection rule.
+    for (name, source) in [
+        ("untyped-named-parameter", "function invalid(value) {}"),
+        (
+            "untyped-comptime-parameter",
+            "function invalid(comptime value) {}",
+        ),
+    ] {
+        let file = source_file(&db, name, source);
+        assert!(diagnostics(&db, file).iter().any(|diagnostic| {
+            diagnostic.message == "named function parameter requires an explicit type"
+        }));
+    }
+}
+
+#[test]
+fn omitted_named_return_is_explicit_unit_even_when_the_body_returns_a_value() {
+    let db = TestDb::default();
+    let (file, module) = parse_module(
+        &db,
+        "omitted-return-is-unit",
+        "function noValue() {}
+         function valueInBody() { return 1; }
+         trait UnitMethod<T> { function unit(value: T); }",
+    );
+    assert!(diagnostics(&db, file).is_empty());
+
+    for name in ["noValue", "valueInBody"] {
+        let ret = top_function(&db, module, name)
+            .sig(&db)
+            .ret
+            .expect("omitted `returns` lowers to an explicit unit type");
+        assert!(matches!(ret.kind(&db), TypeRefKind::Tuple { elems } if elems.atom().is_empty()));
+    }
+
+    let trait_method = module
+        .items(&db)
+        .iter()
+        .find_map(|item| match item {
+            Item::ClassDef(class) => class.methods(&db).first().cloned(),
+            _ => None,
+        })
+        .expect("trait method");
+    let ret = trait_method
+        .ret
+        .expect("trait method omission lowers to unit");
+    assert!(matches!(ret.kind(&db), TypeRefKind::Tuple { elems } if elems.atom().is_empty()));
+}
+
+#[test]
+fn core_bindings_and_assignments_reject_yul_colon_equals() {
+    let db = TestDb::default();
+    // These are intentional legacy-rejection probes. `:=` remains valid only
+    // within an `assembly` block; canonical Core uses `=`.
+    // syntax-migration: preserve-literals-begin
+    for (name, source) in [
+        (
+            "colon-equals-binding",
+            "function invalid() { let value := 1; }",
+        ),
+        (
+            "colon-equals-assignment",
+            "function invalid() { value := 1; }",
+        ),
+    ] {
+        let file = source_file(&db, name, source);
+        assert!(
+            !diagnostics(&db, file).is_empty(),
+            "Core `:=` unexpectedly accepted in {name}"
+        );
+    }
+    // syntax-migration: preserve-literals-end
 }
 
 #[test]
@@ -630,15 +793,15 @@ function good() {}";
 }
 
 #[test]
-fn arrow_types_preserve_source_arity_and_explicit_tuple_domains() {
+fn function_types_preserve_source_arity_and_explicit_tuple_domains() {
     let db = TestDb::default();
     let (_, module) = parse_module(
         &db,
-        "arrow-types",
-        "type F = word -> word -> bool;
-         type G = (word, bool) -> uint;
-         type H = ((word, bool)) -> uint;
-         type I = () -> uint;",
+        "function-types",
+        "type F = function(word) returns (function(word) returns (bool));
+         type G = function(word, bool) returns (uint);
+         type H = function((word, bool)) returns (uint);
+         type I = function() returns (uint);",
     );
     let aliases = module
         .items(&db)
@@ -651,14 +814,14 @@ fn arrow_types_preserve_source_arity_and_explicit_tuple_domains() {
 
     let f = aliases[0].ty(&db);
     let TypeRefKind::Fn { params, ret } = f.kind(&db) else {
-        panic!("F should be an arrow type");
+        panic!("F should be a function type");
     };
     assert_eq!(params.atom().len(), 1);
     assert!(matches!(ret.kind(&db), TypeRefKind::Fn { .. }));
 
     let g = aliases[1].ty(&db);
     let TypeRefKind::Fn { params, .. } = g.kind(&db) else {
-        panic!("G should be an arrow type");
+        panic!("G should be a function type");
     };
     assert_eq!(params.atom().len(), 2);
     assert!(
@@ -670,7 +833,7 @@ fn arrow_types_preserve_source_arity_and_explicit_tuple_domains() {
 
     let h = aliases[2].ty(&db);
     let TypeRefKind::Fn { params, .. } = h.kind(&db) else {
-        panic!("H should be an arrow type");
+        panic!("H should be a function type");
     };
     assert_eq!(params.atom().len(), 1);
     assert!(matches!(
@@ -680,7 +843,7 @@ fn arrow_types_preserve_source_arity_and_explicit_tuple_domains() {
 
     let i = aliases[3].ty(&db);
     let TypeRefKind::Fn { params, .. } = i.kind(&db) else {
-        panic!("I should be an arrow type");
+        panic!("I should be a function type");
     };
     assert!(params.atom().is_empty());
 }
@@ -688,9 +851,9 @@ fn arrow_types_preserve_source_arity_and_explicit_tuple_domains() {
 #[test]
 fn type_and_predicate_argument_list_spans_are_precise() {
     let db = TestDb::default();
-    let src = "class self:C(arg) {}
-type T = Map(word, bool);
-forall t . t:C(word) => function f(x: t) {}";
+    let src = "trait C<self, arg> {}
+type T = Map<word, bool>;
+function f<t>(x: t) where t:C<word> {}";
     let (_, module) = parse_module(&db, "precise-type-spans", src);
 
     let alias = module
@@ -705,21 +868,21 @@ forall t . t:C(word) => function f(x: t) {}";
         panic!("alias target should be named");
     };
     let args_abs = args.span(&db).resolve_to_absolute(&db);
-    let expected_args_start = src.find("(word, bool)").expect("type args") as u32;
+    let expected_args_start = src.find("<word, bool>").expect("type args") as u32;
     assert_eq!(args_abs.start().as_u32(), expected_args_start);
     assert_eq!(
         args_abs.end().as_u32(),
-        expected_args_start + "(word, bool)".len() as u32
+        expected_args_start + "<word, bool>".len() as u32
     );
 
     let function = top_function(&db, module, "f");
     let pred = function.sig(&db).preds[0].kind(&db);
     let pred_args_abs = pred.args.span(&db).resolve_to_absolute(&db);
-    let expected_pred_start = src.find("(word) =>").expect("predicate args") as u32;
+    let expected_pred_start = src.find("<word>").expect("predicate args") as u32;
     assert_eq!(pred_args_abs.start().as_u32(), expected_pred_start);
     assert_eq!(
         pred_args_abs.end().as_u32(),
-        expected_pred_start + "(word)".len() as u32
+        expected_pred_start + "<word>".len() as u32
     );
 }
 
@@ -729,7 +892,7 @@ fn ternary_expression_lowers_to_conditional_expression() {
     let (_, module) = parse_module(
         &db,
         "ternary",
-        "function f(x: bool) -> word { return x ? 1 : 0; }",
+        "function f(x: bool) returns (word) { return x ? 1 : 0; }",
     );
     let function = top_function(&db, module, "f");
     let body = function.body(&db).expect("body");
@@ -744,13 +907,53 @@ fn ternary_expression_lowers_to_conditional_expression() {
 }
 
 #[test]
+fn ternary_expression_is_right_associative_and_allows_a_nested_then_arm() {
+    let db = TestDb::default();
+    let (file, module) = parse_module(
+        &db,
+        "nested-ternary",
+        "function right(x: bool, y: bool) returns (word) {
+           return x ? 1 : y ? 2 : 3;
+         }
+         function nestedThen(x: bool, y: bool) returns (word) {
+           return x ? y ? 1 : 2 : 3;
+         }",
+    );
+    assert!(diagnostics(&db, file).is_empty());
+
+    let conditional_parts = |name| {
+        let function = top_function(&db, module, name);
+        let body = function.body(&db).expect("body");
+        let stmt = body.stmts(&db).get(body.top_level_stmts(&db)[0]);
+        let StmtKind::Return(Some(expr_id)) = &stmt.kind else {
+            panic!("expected return with expression");
+        };
+        let ExprKind::If {
+            then_expr,
+            else_expr,
+            ..
+        } = &body.exprs(&db).get(*expr_id).kind
+        else {
+            panic!("expected outer conditional expression");
+        };
+        (
+            matches!(&body.exprs(&db).get(*then_expr).kind, ExprKind::If { .. }),
+            matches!(&body.exprs(&db).get(*else_expr).kind, ExprKind::If { .. }),
+        )
+    };
+
+    assert_eq!(conditional_parts("right"), (false, true));
+    assert_eq!(conditional_parts("nestedThen"), (true, false));
+}
+
+#[test]
 fn array_literals_lower_with_empty_nested_and_postfix_index_forms() {
     let db = TestDb::default();
     let (file, module) = parse_module(
         &db,
         "array-literals",
         r#"
-function f(a: word, b: word) -> word {
+function f(a: word, b: word) returns (word) {
   let empty = [];
   let nested = [[a], [b]];
   return [a, b][0];
@@ -852,8 +1055,8 @@ fn compound_assignments_lower_through_binary_operator_calls() {
 #[test]
 fn derive_attributes_lower_qualified_targets_and_precise_spans() {
     let db = TestDb::default();
-    let src = "#[derive(Eq, core.Show)] data Top(a) = Top(a);\n\
-contract C { #[derive(pkg.codec.Encode)] data Local; }";
+    let src = "#[derive(Eq, core.Show)] enum Top<a> { Top(a) }\n\
+contract C { #[derive(pkg.codec.Encode)] enum Local {} }";
     let (file, module) = parse_module(&db, "derive-attributes", src);
     let diagnostics = diagnostics(&db, file);
     assert!(
@@ -926,16 +1129,17 @@ contract C { #[derive(pkg.codec.Encode)] data Local; }";
 #[test]
 fn invalid_derive_attributes_diagnose_and_keep_following_declarations() {
     let db = TestDb::default();
+    // syntax-migration: preserve-next-literal
     let src = r#"
-#[derive()] data Empty;
-#[derive(Eq,)] data Malformed;
+#[derive()] enum Empty {}
+#[derive(Eq,)] enum Malformed {}
 #[derive(Eq)] function kept() {}
-data After;
+enum After {}
 contract C {
   #[derive(Eq)] field: word;
   #[derive(Eq)] function nested() {}
-  #[derive()] data EmptyLocal;
-  data AfterLocal;
+  #[derive()] enum EmptyLocal {}
+  enum AfterLocal {}
 }
 "#;
     let (file, module) = parse_module(&db, "invalid-derive-attributes", src);
@@ -948,19 +1152,19 @@ contract C {
         messages
             .iter()
             .filter(|message| {
-                message.as_str() == "derive attribute requires at least one class path"
+                message.as_str() == "derive attribute requires at least one trait path"
             })
             .count(),
         2
     );
     assert!(messages.iter().any(|message| {
-        message == "malformed derive attribute; expected `#[derive(Class, ...)]`"
+        message == "malformed derive attribute; expected `#[derive(Trait, ...)]`"
     }));
     assert_eq!(
         messages
             .iter()
             .filter(|message| {
-                message.as_str() == "derive attribute is only allowed on data declarations"
+                message.as_str() == "derive attribute is only allowed on enum declarations"
             })
             .count(),
         3
@@ -998,7 +1202,7 @@ contract C {
 #[test]
 fn unclosed_derive_attribute_recovers_at_the_next_declaration() {
     let db = TestDb::default();
-    let src = "#[derive(Eq)\ndata Recovered;\nfunction after() {}";
+    let src = "#[derive(Eq)\nenum Recovered {}\nfunction after() {}";
     let (file, module) = parse_module(&db, "unclosed-derive-attribute", src);
     assert!(!diagnostics(&db, file).is_empty());
     assert_eq!(
@@ -1017,10 +1221,10 @@ fn recovery_before_derive_preserves_top_level_and_contract_local_attributes() {
     let db = TestDb::default();
     let src = r#"
 @ stray
-#[derive(Eq)] data Top;
+#[derive(Eq)] enum Top {}
 contract C {
   @ stray
-  #[derive(Ord)] data Local;
+  #[derive(Ord)] enum Local {}
 }
 "#;
     let (file, module) = parse_module(&db, "recovery-before-derive", src);
@@ -1071,7 +1275,7 @@ contract C {
 #[test]
 fn derive_remains_an_ordinary_identifier_outside_attributes() {
     let db = TestDb::default();
-    let src = "data derive; function derive() -> derive { return derive; }";
+    let src = "enum derive {} function derive() returns (derive) { return derive; }";
     let (file, module) = parse_module(&db, "derive-soft-keyword", src);
     assert!(diagnostics(&db, file).is_empty());
     assert!(module.items(&db).iter().any(|item| {
@@ -1083,11 +1287,12 @@ fn derive_remains_an_ordinary_identifier_outside_attributes() {
 #[test]
 fn unclosed_derive_does_not_consume_later_declarations_or_contract_fields() {
     let db = TestDb::default();
+    // syntax-migration: preserve-next-literal
     let src = r#"
 #[derive(Eq)
 function kept() {}
 ]
-data After;
+enum After {}
 contract C {
   #[derive(Eq)
   slot: word;
@@ -1116,7 +1321,7 @@ contract C {
 #[test]
 fn derive_targets_reject_reserved_identifiers() {
     let db = TestDb::default();
-    let src = "#[derive(fallback)] data Kept;";
+    let src = "#[derive(fallback)] enum Kept {}";
     let (file, module) = parse_module(&db, "derive-reserved-target", src);
     assert!(!diagnostics(&db, file).is_empty());
     module
@@ -1126,5 +1331,5 @@ fn derive_targets_reject_reserved_identifiers() {
             Item::AdtDef(adt) => Some(*adt),
             _ => None,
         })
-        .expect("data declaration survives malformed attribute");
+        .expect("enum declaration survives malformed attribute");
 }

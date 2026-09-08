@@ -49,7 +49,7 @@ define_frontend_test_db!(SourceTestDb, hir_ty);
 fn test_span<'db>(db: &'db TestDb) -> Span<'db> {
     let file = SourceFile::new(
         db,
-        "memory:///sonatina_lowering.solc"
+        "memory:///sonatina_lowering.sol"
             .parse()
             .expect("valid URL"),
         Some(String::new()),
@@ -385,7 +385,7 @@ fn source_main_lowers_through_hull_to_verified_ir() {
     let (_, ir) = lower_source(
         r#"
 contract SimpleMain {
-  function main() -> word {
+  function main() returns (word) {
     return 42;
   }
 }
@@ -403,18 +403,17 @@ fn source_bool_product_sum_and_branches_lower_to_verified_ir() {
     let (_, ir) = lower_source(
         r#"
 contract AggregateContract {
-  data Choice = Left(word, word) | Right(word);
+  enum Choice {Left(word, word) , Right(word)}
 
-  function runtime_flag() -> bool {
+  function runtime_flag() returns (bool) {
     let raw : word;
     assembly { raw := callvalue() }
-    match raw {
-      | 0 => return false;
-      | _ => return true;
-    }
+    match (raw) {
+      case 0 { return false; }
+default { return true; }}
   }
 
-  function choose(flag : bool, x : word, y : word) -> Choice {
+  function choose(flag : bool, x : word, y : word) returns (Choice) {
     if (flag) {
       return Choice.Left(x, y);
     } else {
@@ -422,14 +421,13 @@ contract AggregateContract {
     }
   }
 
-  function unwrap(value : Choice) -> word {
-    match value {
-      | Choice.Left(x, y) => return x;
-      | Choice.Right(x) => return x;
-    }
+  function unwrap(value : Choice) returns (word) {
+    match (value) {
+      case Choice.Left(x, y) { return x; }
+case Choice.Right(x) { return x; }}
   }
 
-  function main() -> word {
+  function main() returns (word) {
     return unwrap(choose(runtime_flag(), 1, 42));
   }
 }
@@ -450,7 +448,7 @@ fn contract_object_data_symbols_and_inline_evm_lower_to_verified_ir() {
     let (_, ir) = lower_source(
         r#"
 contract MemoryContract {
-  function main() -> word {
+  function main() returns (word) {
     let result : word;
     assembly {
       mstore(0, 42)
@@ -476,7 +474,7 @@ fn memoryguard_reserves_aligned_literal_space_through_the_unified_allocator() {
     let (_, ir) = lower_source(
         r#"
 contract MemoryGuardContract {
-  function main() -> word {
+  function main() returns (word) {
     let guarded : word;
     assembly {
       mstore(0x40, memoryguard(128))
@@ -550,12 +548,12 @@ fn contract_storage_load_and_store_lower_to_snapshotted_verified_ir() {
 contract StorageContract {
   value: word;
 
-  function update(next: word) -> word {
+  function update(next: word) returns (word) {
     value = next;
     return value;
   }
 
-  function main() -> word {
+  function main() returns (word) {
     return update(42);
   }
 }
@@ -571,10 +569,10 @@ contract StorageContract {
 fn source_bit_not_lowers_to_verified_evm_not() {
     let (_, ir) = lower_source(
         r#"
-import std.{*};
+import * from std;
 
 contract BitNotContract {
-  public function main() -> word {
+  function main() public returns (word) {
     let value:word;
     assembly { value := callvalue() }
     return ~value;
@@ -591,7 +589,7 @@ fn inline_yul_for_init_binding_remains_in_loop_scope() {
     let (_, ir) = lower_source(
         r#"
 contract LoopContract {
-  function main() -> word {
+  function main() returns (word) {
     let result : word;
     assembly {
       result := 0
@@ -614,7 +612,7 @@ fn inline_yul_functions_lower_arguments_multi_returns_leave_and_recursion() {
     let (_, ir) = lower_source(
         r#"
 contract InlineYulFunctions {
-  function main() -> word {
+  function main() returns (word) {
     let left : word;
     let right : word;
     let result : word;
@@ -664,7 +662,7 @@ fn inline_yul_named_returns_preserve_zero_defaults_and_position() {
     let (_, ir) = lower_source(
         r#"
 contract InlineYulNamedReturns {
-  function main() -> word {
+  function main() returns (word) {
     let x : word;
     let y : word;
     let z : word;
@@ -760,7 +758,7 @@ fn inline_yul_functions_support_forward_calls_and_mutual_recursion() {
     let (_, ir) = lower_source(
         r#"
 contract InlineYulMutualRecursion {
-  function main() -> word {
+  function main() returns (word) {
     let result : word;
     assembly {
       result := even(6)
@@ -803,7 +801,7 @@ fn inline_yul_call_arguments_evaluate_right_to_left_without_reordering_parameter
     let (_, ir) = lower_source(
         r#"
 contract InlineYulArgumentOrder {
-  function main() -> word {
+  function main() returns (word) {
     let result : word;
     assembly {
       function left() -> value {
@@ -862,7 +860,7 @@ fn inline_yul_function_names_are_isolated_between_assembly_blocks() {
     let (_, ir) = lower_source(
         r#"
 contract InlineYulFunctionScopes {
-  function main() -> word {
+  function main() returns (word) {
     let result : word;
     assembly {
       function value() -> result { result := 1 }
@@ -1049,26 +1047,26 @@ fn inline_yul_functions_do_not_inherit_outer_loop_targets() {
 fn polymorphic_yul_terminators_end_value_returning_functions() {
     let (_, ir) = lower_source(
         r#"
-forall a . function viaStop() -> a {
+function viaStop<a>() returns (a) {
   assembly { stop() }
 }
 
-forall a . function viaInvalid() -> a {
+function viaInvalid<a>() returns (a) {
   assembly { invalid() }
 }
 
-forall a . function viaSelfdestruct(beneficiary : word) -> a {
+function viaSelfdestruct<a>(beneficiary : word) returns (a) {
   assembly { selfdestruct(beneficiary) }
 }
 
-forall a . function viaRevert() -> a {
+function viaRevert<a>() returns (a) {
   assembly { revert(0, 0) }
 }
 
-function useWord(value : word) -> () {}
+function useWord(value : word) returns () {}
 
 contract Terminators {
-  public function main() -> () {
+  function main() public returns () {
     useWord(viaStop());
     useWord(viaInvalid());
     useWord(viaSelfdestruct(0));
@@ -1090,9 +1088,9 @@ contract Terminators {
 fn literal_revert_preserves_its_payload() {
     let (_, ir) = lower_source_with_file_url_imports(
         r#"
-import std.{*};
+import * from std;
 
-function main() -> () {
+function main() returns () {
   revertLit("regression");
 }
 "#,

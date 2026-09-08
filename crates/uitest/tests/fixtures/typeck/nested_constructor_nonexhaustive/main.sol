@@ -1,0 +1,13 @@
+enum Inner { A, B }
+enum Outer { Other, Wrap(Inner) }
+
+function pick(x: Outer) returns (word) {
+  match (x) {
+case Outer.Other {
+return 0;
+}
+case Outer.Wrap(Inner.A) {
+return 1;
+}
+}
+}

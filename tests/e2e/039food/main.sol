@@ -1,0 +1,44 @@
+
+enum Food { Curry, Beans, Other }
+enum CFood { Red(Food), Green(Food), Nocolor }
+
+
+
+
+  function fromEnum(x: Food) returns (word) {
+     match (x) {
+case Food.Curry {
+return 1;
+}
+case Food.Beans {
+return 42;
+}
+case Food.Other {
+return 3;
+}
+}
+  }
+
+
+contract FoodContract {
+  function eat(x: CFood) returns (Food) {
+    match (x) {
+case CFood.Red(f) {
+return f;
+}
+case CFood.Green(f) {
+return f;
+}
+default {
+return Food.Other;
+}
+}
+  }
+
+  // #[() -> 42]
+  function run() public returns (uint256) {
+  return uint256(fromEnum(eat(CFood.Green(Food.Beans))));
+  }
+}
+import * from std;
+import * from std.dispatch;

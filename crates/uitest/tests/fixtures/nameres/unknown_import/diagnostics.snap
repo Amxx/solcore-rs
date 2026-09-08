@@ -1,13 +1,13 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/nameres/unknown_import/main.solc
+input_file: crates/uitest/tests/fixtures/nameres/unknown_import/main.sol
 ---
 error[SC0110]: unknown import item `missing`
- --> /main/main.solc:1:14
+ --> /main/main.sol:1:9
   |
-1 | import util.{missing};
-  |              ^^^^^^^ unknown import item
+1 | import {missing} from util;
+  |         ^^^^^^^ unknown import item
   |
   = note: `missing` is not exported by module `util`
   = help: check the imported module's exported names

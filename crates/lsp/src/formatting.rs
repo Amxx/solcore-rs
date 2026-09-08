@@ -286,15 +286,15 @@ mod tests {
 
     fn world_with_main(source: &str) -> (WorldState, Url) {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         (world, uri)
     }
 
     #[test]
     fn formats_whole_document_without_touching_braces_in_trivia() {
-        let source = "function main() -> word {   \nreturn \"{\";\n/* } { */\nif true {\nreturn 1; // }\n}\n}\n\n";
-        let expected = "function main() -> word {\n  return \"{\";\n  /* } { */\n  if true {\n    return 1; // }\n  }\n}\n";
+        let source = "function main() returns (word) {   \nreturn \"{\";\n/* } { */\nif (true) {\nreturn 1; // }\n}\n}\n\n";
+        let expected = "function main() returns (word) {\n  return \"{\";\n  /* } { */\n  if (true) {\n    return 1; // }\n  }\n}\n";
         let (world, uri) = world_with_main(source);
 
         let edits = handle_formatting(&world, &uri, &options(2, true)).expect("formatting");
@@ -311,8 +311,8 @@ mod tests {
 
     #[test]
     fn respects_tabs_and_preserves_crlf() {
-        let source = "function main() {\r\nreturn \"😀\";\r\n}";
-        let expected = "function main() {\r\n\treturn \"😀\";\r\n}\r\n";
+        let source = "function main() returns (string) {\r\nreturn \"😀\";\r\n}";
+        let expected = "function main() returns (string) {\r\n\treturn \"😀\";\r\n}\r\n";
         let (world, uri) = world_with_main(source);
 
         let edits = handle_formatting(&world, &uri, &options(8, false)).expect("formatting");
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn already_formatted_document_needs_no_edit() {
-        let source = "function main() {\n  return 1;\n}\n";
+        let source = "function main() returns (word) {\n  return 1;\n}\n";
         let (world, uri) = world_with_main(source);
 
         assert_eq!(
@@ -340,15 +340,15 @@ mod tests {
     #[test]
     fn formatting_requires_an_open_document() {
         let world = WorldState::new();
-        let uri = Url::parse("file:///main/missing.solc").expect("uri");
+        let uri = Url::parse("file:///main/missing.sol").expect("uri");
         assert_eq!(handle_formatting(&world, &uri, &options(2, true)), None);
     }
 
     #[test]
     fn preserves_multiline_string_and_block_comment_payload_whitespace() {
         for source in [
-            "function main() {\nreturn \"first\n    second  \";\n}\n",
-            "function main() {\n/* markdown\n    indented code  \n*/\nreturn 1;\n}\n",
+            "function main() returns (string) {\nreturn \"first\n    second  \";\n}\n",
+            "function main() returns (word) {\n/* markdown\n    indented code  \n*/\nreturn 1;\n}\n",
         ] {
             let (world, uri) = world_with_main(source);
             assert_eq!(
@@ -375,8 +375,8 @@ mod tests {
 
     #[test]
     fn honors_disabled_trailing_whitespace_trimming() {
-        let source = "function main() {   \n   \nreturn 1;   \n}\n";
-        let expected = "function main() {   \n   \n  return 1;   \n}\n";
+        let source = "function main() returns (word) {   \n   \nreturn 1;   \n}\n";
+        let expected = "function main() returns (word) {   \n   \n  return 1;   \n}\n";
         let (world, uri) = world_with_main(source);
         let mut options = options(2, true);
         options.trim_trailing_whitespace = Some(false);
@@ -387,8 +387,8 @@ mod tests {
 
     #[test]
     fn dedents_adjacent_leading_closing_braces() {
-        let source = "function main() {\n{\nreturn 1;\n  }}\n";
-        let expected = "function main() {\n  {\n    return 1;\n}}\n";
+        let source = "function main() returns (word) {\n{\nreturn 1;\n  }}\n";
+        let expected = "function main() returns (word) {\n  {\n    return 1;\n}}\n";
         let (world, uri) = world_with_main(source);
 
         let edits = handle_formatting(&world, &uri, &options(2, true)).expect("formatting");

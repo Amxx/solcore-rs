@@ -23,18 +23,18 @@ pragma no-patterson-condition;
 pragma no-bounded-variable-condition;
 pragma no-coverage-condition;
 
-forall a rep . class a:Generic(rep) {}
-forall self . class self:ABIDeriving {}
-forall self . class self:ABIAttribs {}
-forall decoder decoded . class decoder:ABIDecode(decoded) {}
-forall reader . class reader:WordReader {}
+trait Generic<a,rep> {}
+trait ABIDeriving<self> {}
+trait ABIAttribs<self> {}
+trait ABIDecode<decoder,decoded> {}
+trait WordReader<reader> {}
 
-data ABIDecoder(ty, reader) = ABIDecoder(reader);
-data Reader = Reader;
+enum ABIDecoder<ty, reader> {ABIDecoder(reader)}
+enum Reader {Reader}
 
-instance Reader:WordReader {}
-instance word:ABIAttribs {}
-instance ABIDecoder(word, Reader):ABIDecode(word) {}
+impl WordReader<Reader> {}
+impl ABIAttribs<word> {}
+impl ABIDecode<ABIDecoder<word, Reader>,word> {}
 "#;
 
 fn class_def<'db>(db: &'db TestDb, module: Module<'db>, name: &str) -> DefId<'db> {
@@ -86,13 +86,7 @@ fn decoder_ty<'db>(
 #[test]
 fn derives_parameterized_abi_evidence_once() {
     let mut db = TestDb::default();
-    let key = load_main_source(
-        &mut db,
-        &format!(
-            "{ABI_SOURCE}\n\
-             data Box(a) = Box(a);\n"
-        ),
-    );
+    let key = load_main_source(&mut db, &format!("{ABI_SOURCE}\nenum Box<a> {{Box(a)}}\n"));
     let module_id = module_id_from_key(&db, &key);
     let file = db.module_file(module_id).expect("main source file");
     let module = parse_file_to_hir(&db, file).module(&db);
@@ -171,13 +165,7 @@ fn excludes_recursive_no_generic_and_manual_generic_adts() {
     let key = load_main_source(
         &mut db,
         &format!(
-            "{ABI_SOURCE}\n\
-             pragma no-generic-instance-for Excluded;\n\
-             data Eligible = Eligible(word);\n\
-             data Excluded = Excluded(word);\n\
-             data Manual = Manual(word);\n\
-             data Recursive = Recursive(Recursive);\n\
-             instance Manual:Generic(word) {{}}\n"
+            "{ABI_SOURCE}\npragma no-generic-instance-for Excluded;\nenum Eligible {{Eligible(word)}}\nenum Excluded {{Excluded(word)}}\nenum Manual {{Manual(word)}}\nenum Recursive {{Recursive(Recursive)}}\nimpl Generic<Manual,word> {{}}\n"
         ),
     );
     let module_id = module_id_from_key(&db, &key);
@@ -314,12 +302,7 @@ fn excludes_contract_local_adts_with_inherited_type_binders() {
     let mut db = TestDb::default();
     let key = load_main_source(
         &mut db,
-        &format!(
-            "{ABI_SOURCE}\n\
-             contract C(t) {{\n\
-               data Local(a) = Local(a);\n\
-             }}\n"
-        ),
+        &format!("{ABI_SOURCE}\ncontract C<t> {{\nenum Local<a> {{Local(a)}}\n}}\n"),
     );
     let module_id = module_id_from_key(&db, &key);
     let file = db.module_file(module_id).expect("main source file");

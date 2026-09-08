@@ -1,0 +1,24 @@
+// integer value that survives to runtime because it is chosen by a runtime
+// branch: the comptime evaluator cannot fold sload, so the integer inside
+// Box cannot be erased.  Judge cascade volume and span quality.
+import std;
+
+enum Box { MkBox(integer) }
+
+contract IntegerEscapesBranch {
+  function main() returns (word) {
+    let v : word;
+    assembly {
+      v := sload(0)
+    }
+    let b : Box = Box.MkBox(1);
+    if (v > 0) {
+      b = Box.MkBox(2);
+    }
+    match (b) {
+case Box.MkBox(i) {
+return wordFromInteger(i);
+}
+}
+  }
+}

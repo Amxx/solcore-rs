@@ -1,0 +1,19 @@
+trait C<a> {
+  function c(x: a) returns (word) ;
+}
+
+impl C<word> {
+  function c(x: word) returns (word) {
+    return 1;
+  }
+}
+
+impl C<word> {
+  function c(x: word) returns (word) {
+    return 2;
+  }
+}
+
+function f() returns (word) {
+  return C.c(0);
+}

@@ -1,0 +1,16 @@
+enum flag { off, on }
+
+function pick(f: flag) returns (word) {
+  match (f) {
+case off {
+return 0;
+}
+case on {
+return 1;
+}
+}
+}
+
+function main() returns (word) {
+  return pick(flag.on);
+}

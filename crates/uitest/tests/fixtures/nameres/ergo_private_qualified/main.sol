@@ -1,0 +1,5 @@
+import vault;
+
+function main() returns (word) {
+  return vault.secret(1);
+}

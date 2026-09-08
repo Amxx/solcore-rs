@@ -117,7 +117,7 @@ fn collect_module_fs_snapshot(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("solc") {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("sol") {
             if path.is_file() {
                 existing_files.insert(path.clone());
             }
@@ -180,8 +180,8 @@ mod tests {
 
     #[test]
     fn lexical_normalization_removes_dot_and_parent_components() {
-        let normalized = normalize_lexically(Path::new("alpha/./beta/../gamma/main.solc"));
-        assert_eq!(normalized, PathBuf::from("alpha/gamma/main.solc"));
+        let normalized = normalize_lexically(Path::new("alpha/./beta/../gamma/main.sol"));
+        assert_eq!(normalized, PathBuf::from("alpha/gamma/main.sol"));
     }
 
     #[test]

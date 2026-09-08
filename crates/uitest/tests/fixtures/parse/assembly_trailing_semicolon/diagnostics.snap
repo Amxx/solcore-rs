@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/assembly_trailing_semicolon/main.solc
+input_file: crates/uitest/tests/fixtures/parse/assembly_trailing_semicolon/main.sol
 ---
 error[SC0001]: parse error: unexpected `;`
- --> /main/main.solc:4:4
+ --> /main/main.sol:4:4
   |
 3 |     mstore(0, 0)
 4 |   };

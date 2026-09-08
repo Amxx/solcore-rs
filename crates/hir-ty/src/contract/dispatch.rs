@@ -303,13 +303,13 @@ pub(crate) fn module_manual_generic_abi_diagnostics<'db>(
                         Some("external ABI evidence must be compiler-owned and canonical"),
                     )
                     .with_note(format!(
-                        "instance `{}` can override canonical `{class_name}` behavior",
+                        "impl `{}` can override canonical `{class_name}` behavior",
                         instance
                             .name(db)
                             .unwrap_or_else(|| class_name.to_string())
                     ))
                     .with_help(
-                        "remove the visible manual ABI instance or keep this declaration out of the external ABI",
+                        "remove the visible manual ABI impl or keep this declaration out of the external ABI",
                     ),
                 );
             }

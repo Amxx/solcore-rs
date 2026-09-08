@@ -1,4 +1,4 @@
 augroup solcore_filetype
   autocmd!
-  autocmd BufNewFile,BufRead *.solc setfiletype solcore
+  autocmd BufNewFile,BufRead *.sol setfiletype solcore
 augroup END

@@ -1,14 +1,14 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/nameres/ergo_undef_constructor/main.solc
+input_file: crates/uitest/tests/fixtures/nameres/ergo_undef_constructor/main.sol
 ---
 error[SC0101]: undefined name: Option.Nope
- --> /main/main.solc:5:12
+ --> /main/main.sol:5:13
   |
-4 |   match o {
-5 |   | Option.Nope => return 0;
-  |            ^^^^ unknown name
-6 |   | Option.Some(v) => return v;
+4 |   match (o) {
+5 | case Option.Nope {
+  |             ^^^^ unknown name
+6 | return 0;
   |
   = help: did you mean `Option.None`?

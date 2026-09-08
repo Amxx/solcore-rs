@@ -1,13 +1,13 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/trailing_constructor_comma/main.solc
+input_file: crates/uitest/tests/fixtures/parse/trailing_constructor_comma/main.sol
 ---
 error[SC0001]: parse error: unexpected `)`
- --> /main/main.solc:1:17
+ --> /main/main.sol:1:17
   |
-1 | data D = C(word,);
+1 | enum D { C(word,) }
   |                 ^ unexpected token
   |
   = note: expecting type
-  = note: while parsing data declaration
+  = note: while parsing enum declaration

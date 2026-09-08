@@ -166,7 +166,7 @@ fn instance_symbol<'db>(
     Some(document_symbol(
         db,
         line_index,
-        format!("instance {}", class.atom().text(db)),
+        format!("impl {}", class.atom().text(db)),
         SymbolKind::OBJECT,
         instance.span(db),
         class.span(db),
@@ -214,29 +214,14 @@ mod tests {
 
     fn world_with_main(source: &str) -> (WorldState, Url) {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), source.to_owned()));
         (world, uri)
     }
 
     #[test]
     fn document_symbols_include_top_level_items_and_contract_children() {
-        let source = "\
-function foo(x: word) -> word {
-  return x;
-}
-
-type Pair = pair(word, word);
-
-data Maybe = None | Some(word);
-
-contract Box {
-  item: word;
-  function get() -> word {
-    return item;
-  }
-}
-";
+        let source = "function foo(x: word) returns (word) {\n  return x;\n}\n\ntype Pair = pair<word, word>;\n\nenum Maybe {None , Some(word)}\n\ncontract Box {\n  item: word;\n  function get() returns (word) {\n    return item;\n  }\n}\n";
         let (world, uri) = world_with_main(source);
         let response = handle_document_symbol(&world, &uri).expect("symbols");
         let DocumentSymbolResponse::Nested(symbols) = response else {

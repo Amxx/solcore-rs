@@ -1,0 +1,24 @@
+enum B { A, C }
+
+function choose(x: bool) returns (B) {
+  if (x) {
+    return B.A;
+  }
+  return B.C;
+}
+
+function onlyA(b: B) returns (word) {
+  match (b) {
+case B.A {
+return 1;
+}
+}
+}
+
+contract C {
+  function main() public returns (word) {
+    let x: bool;
+    assembly { x := calldataload(0) }
+    return onlyA(choose(x));
+  }
+}

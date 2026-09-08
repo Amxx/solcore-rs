@@ -148,7 +148,7 @@ fn is_runtime_string_location<'db>(
     if name == "storage" && is_canonical_std_def_named(db, def, "storage") {
         // Every storage reference has a one-word runtime representation. Its
         // payload is a layout tag and may recursively contain the source-only
-        // `string` tag (for example storage(array(string))). Do not treat that
+        // `string` tag (for example `storage<array<string>>`). Do not treat that
         // nested tag as a runtime comptime-string value.
         return true;
     }

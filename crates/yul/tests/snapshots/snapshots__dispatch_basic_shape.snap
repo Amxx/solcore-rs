@@ -485,7 +485,6 @@ object "DispatchBasicShapeDeploy" {
       }
       function usr$std_set_free_memory_d65c817cd(src$loc_103) {
         usr$opcodes_mstore_d7415bc7e(0x40, src$loc_103)
-        leave
       }
       usr$dispatch_basic_shape_DispatchBasicShape_main_d302fef00()
     }

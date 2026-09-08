@@ -557,7 +557,7 @@ impl WorldState {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .filter(|name| !name.is_empty())
-                    .unwrap_or("document.solc")
+                    .unwrap_or("document.sol")
                     .to_owned();
                 (hex_encode(identity.as_bytes()), filename)
             });
@@ -605,7 +605,7 @@ impl WorldState {
             .extension()
             .and_then(|extension| extension.to_str())
             .filter(|extension| !extension.is_empty())
-            .unwrap_or("solc");
+            .unwrap_or("sol");
         Some(format!("/main/__virtual__/{id}.{extension}"))
     }
 }
@@ -731,22 +731,22 @@ mod tests {
 
     #[test]
     fn maps_main_file_uris_to_vfs_paths() {
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
-        assert_eq!(uri_to_vfs_path(&uri), Some("/main/main.solc".to_owned()));
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
+        assert_eq!(uri_to_vfs_path(&uri), Some("/main/main.sol".to_owned()));
 
-        let std_uri = Url::parse("file:///std/std.solc").expect("uri");
+        let std_uri = Url::parse("file:///std/std.sol").expect("uri");
         assert_eq!(uri_to_vfs_path(&std_uri), None);
 
-        let memory_uri = Url::parse("memory:///main/main.solc").expect("uri");
+        let memory_uri = Url::parse("memory:///main/main.sol").expect("uri");
         assert_eq!(uri_to_vfs_path(&memory_uri), None);
     }
 
     #[test]
     fn open_change_and_close_document() {
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
-        let clean = "function main() -> word {\n  return 1;\n}\n";
-        let changed = "function main() -> word {\n  return 2;\n}\n";
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
+        let clean = "function main() returns (word) {\n  return 1;\n}\n";
+        let changed = "function main() returns (word) {\n  return 2;\n}\n";
 
         assert!(world.open_document(uri.clone(), clean.to_owned()));
         assert_eq!(world.document_text(&uri), Some(clean));
@@ -763,7 +763,7 @@ mod tests {
         use lsp_types::{Position, Range};
 
         let mut world = WorldState::new();
-        let uri = Url::parse("file:///main/main.solc").expect("uri");
+        let uri = Url::parse("file:///main/main.sol").expect("uri");
         assert!(world.open_document(uri.clone(), "a😀c\n".to_owned()));
 
         assert!(world.apply_document_changes(
@@ -799,8 +799,8 @@ mod tests {
         let mut world = WorldState::new();
         let root_path = std::env::temp_dir().join("solcore-lsp-state-project");
         let root = Url::from_directory_path(&root_path).expect("root uri");
-        let main_uri = Url::from_file_path(root_path.join("src/main.solc")).expect("main uri");
-        let util_uri = Url::from_file_path(root_path.join("src/util.solc")).expect("util uri");
+        let main_uri = Url::from_file_path(root_path.join("src/main.sol")).expect("main uri");
+        let util_uri = Url::from_file_path(root_path.join("src/util.sol")).expect("util uri");
 
         assert_eq!(
             world.load_workspace_documents(
@@ -808,11 +808,11 @@ mod tests {
                 [
                     (
                         main_uri.clone(),
-                        "function main() -> word { return 1; }\n".to_owned()
+                        "function main() returns (word) { return 1; }\n".to_owned()
                     ),
                     (
                         util_uri.clone(),
-                        "function util() -> word { return 2; }\n".to_owned()
+                        "function util() returns (word) { return 2; }\n".to_owned()
                     ),
                 ],
             ),
@@ -820,15 +820,15 @@ mod tests {
         );
         assert_eq!(
             world.vfs_path_for_uri(&main_uri),
-            Some("/main/src/main.solc".to_owned())
+            Some("/main/src/main.sol".to_owned())
         );
         assert_eq!(
-            world.client_uri_for_vfs_url("file:///main/src/util.solc"),
+            world.client_uri_for_vfs_url("file:///main/src/util.sol"),
             Some(util_uri)
         );
         assert!(world.open_document(
             main_uri.clone(),
-            "function main() -> word { return 1; }\n".to_owned()
+            "function main() returns (word) { return 1; }\n".to_owned()
         ));
         assert_eq!(world.open_document_uris(), vec![main_uri]);
         assert_eq!(world.workspace_document_uris().len(), 2);
@@ -839,23 +839,23 @@ mod tests {
         let mut world = WorldState::new();
         let root_path = std::env::temp_dir().join("solcore-lsp-state-encoded-project");
         let root = Url::from_directory_path(&root_path).expect("root uri");
-        let uri = Url::from_file_path(root_path.join("src/数 学.solc")).expect("encoded uri");
+        let uri = Url::from_file_path(root_path.join("src/数 学.sol")).expect("encoded uri");
         assert_eq!(
             world.load_workspace_documents(
                 root,
                 [(
                     uri.clone(),
-                    "function value() -> word { return 1; }\n".to_owned()
+                    "function value() returns (word) { return 1; }\n".to_owned()
                 )]
             ),
             1
         );
         assert_eq!(
             world.vfs_path_for_uri(&uri),
-            Some("/main/src/数 学.solc".to_owned())
+            Some("/main/src/数 学.sol".to_owned())
         );
         assert_eq!(
-            world.client_uri_for_vfs_url("file:///main/src/%E6%95%B0%20%E5%AD%A6.solc"),
+            world.client_uri_for_vfs_url("file:///main/src/%E6%95%B0%20%E5%AD%A6.sol"),
             Some(uri)
         );
     }
@@ -867,9 +867,9 @@ mod tests {
         let right_path = base.join("right");
         let left_root = Url::from_directory_path(&left_path).expect("left root uri");
         let right_root = Url::from_directory_path(&right_path).expect("right root uri");
-        let left_uri = Url::from_file_path(left_path.join("src/main.solc")).expect("left uri");
-        let right_uri = Url::from_file_path(right_path.join("src/main.solc")).expect("right uri");
-        let source = "function value() -> word { return 1; }\n";
+        let left_uri = Url::from_file_path(left_path.join("src/main.sol")).expect("left uri");
+        let right_uri = Url::from_file_path(right_path.join("src/main.sol")).expect("right uri");
+        let source = "function value() returns (word) { return 1; }\n";
 
         let mut world = WorldState::new();
         assert_eq!(
@@ -890,8 +890,8 @@ mod tests {
         let right_vfs = world.vfs_path_for_uri(&right_uri).expect("right vfs path");
         assert!(left_vfs.starts_with("/main/__solcore_workspace__/"));
         assert!(right_vfs.starts_with("/main/__solcore_workspace__/"));
-        assert!(left_vfs.ends_with("/src/main.solc"));
-        assert!(right_vfs.ends_with("/src/main.solc"));
+        assert!(left_vfs.ends_with("/src/main.sol"));
+        assert!(right_vfs.ends_with("/src/main.sol"));
         assert_ne!(left_vfs, right_vfs);
         assert_eq!(world.workspace_root_count(), 2);
         assert_eq!(
@@ -916,8 +916,8 @@ mod tests {
     fn configured_main_file_root_uses_multi_root_namespace_before_virtual_mapping() {
         let main_root = Url::parse("file:///main/").expect("main root");
         let other_root = Url::parse("file:///workspace/other/").expect("other root");
-        let main_uri = Url::parse("file:///main/project.solc").expect("main uri");
-        let other_uri = Url::parse("file:///workspace/other/project.solc").expect("other uri");
+        let main_uri = Url::parse("file:///main/project.sol").expect("main uri");
+        let other_uri = Url::parse("file:///workspace/other/project.sol").expect("other uri");
         let mut world = WorldState::new();
 
         world.load_workspace_roots([
@@ -942,15 +942,15 @@ mod tests {
     fn rootless_main_document_is_remapped_when_workspace_folders_arrive() {
         let main_root = Url::parse("file:///main/").expect("main root");
         let other_root = Url::parse("file:///workspace/other/").expect("other root");
-        let main_uri = Url::parse("file:///main/project.solc").expect("main uri");
+        let main_uri = Url::parse("file:///main/project.sol").expect("main uri");
         let mut world = WorldState::new();
         assert!(world.open_document(
             main_uri.clone(),
-            "function value() -> word { return 1; }\n".to_owned()
+            "function value() returns (word) { return 1; }\n".to_owned()
         ));
         assert_eq!(
             world.vfs_path_for_uri(&main_uri),
-            Some("/main/project.solc".to_owned())
+            Some("/main/project.sol".to_owned())
         );
 
         world.update_workspace_roots(
@@ -973,16 +973,16 @@ mod tests {
         let right_path = base.join("right");
         let left_root = Url::from_directory_path(&left_path).expect("left root uri");
         let right_root = Url::from_directory_path(&right_path).expect("right root uri");
-        let left_main = Url::from_file_path(left_path.join("main.solc")).expect("left main uri");
-        let left_math = Url::from_file_path(left_path.join("math.solc")).expect("left math uri");
-        let right_main = Url::from_file_path(right_path.join("main.solc")).expect("right main uri");
-        let right_math = Url::from_file_path(right_path.join("math.solc")).expect("right math uri");
-        let left_source =
-            "import lib.math.{leftValue};\nfunction runLeft() -> word { return leftValue(); }\n";
-        let left_library = "function leftValue() -> word { return 1; }\nexport { leftValue };\n";
-        let right_source =
-            "import lib.math.{rightValue};\nfunction runRight() -> word { return rightValue(); }\n";
-        let right_library = "function rightValue() -> word { return 2; }\nexport { rightValue };\n";
+        let left_main = Url::from_file_path(left_path.join("main.sol")).expect("left main uri");
+        let left_math = Url::from_file_path(left_path.join("math.sol")).expect("left math uri");
+        let right_main = Url::from_file_path(right_path.join("main.sol")).expect("right main uri");
+        let right_math = Url::from_file_path(right_path.join("math.sol")).expect("right math uri");
+        let left_source = "import {leftValue} from lib.math;\nfunction runLeft() returns (word) { return leftValue(); }\n";
+        let left_library =
+            "function leftValue() returns (word) { return 1; }\nexport { leftValue };\n";
+        let right_source = "import {rightValue} from lib.math;\nfunction runRight() returns (word) { return rightValue(); }\n";
+        let right_library =
+            "function rightValue() returns (word) { return 2; }\nexport { rightValue };\n";
 
         let mut world = WorldState::new();
         world.load_workspace_roots([
@@ -1036,10 +1036,10 @@ mod tests {
         let right_path = base.join("right");
         let left_root = Url::from_directory_path(&left_path).expect("left root uri");
         let right_root = Url::from_directory_path(&right_path).expect("right root uri");
-        let left_uri = Url::from_file_path(left_path.join("shared.solc")).expect("left uri");
-        let right_uri = Url::from_file_path(right_path.join("shared.solc")).expect("right uri");
+        let left_uri = Url::from_file_path(left_path.join("shared.sol")).expect("left uri");
+        let right_uri = Url::from_file_path(right_path.join("shared.sol")).expect("right uri");
         let generated_uri =
-            Url::from_file_path(right_path.join("generated.solc")).expect("generated uri");
+            Url::from_file_path(right_path.join("generated.sol")).expect("generated uri");
 
         let mut world = WorldState::new();
         world.load_workspace_roots([
@@ -1083,11 +1083,11 @@ mod tests {
         let right_path = base.join("right");
         let left_root = Url::from_directory_path(&left_path).expect("left root uri");
         let right_root = Url::from_directory_path(&right_path).expect("right root uri");
-        let left_main = Url::from_file_path(left_path.join("main.solc")).expect("left main uri");
-        let left_util = Url::from_file_path(left_path.join("util.solc")).expect("left util uri");
-        let right_main = Url::from_file_path(right_path.join("main.solc")).expect("right main uri");
-        let disk_source = "function value() -> word { return 1; }\n";
-        let unsaved_source = "function value() -> word { return 99; }\n";
+        let left_main = Url::from_file_path(left_path.join("main.sol")).expect("left main uri");
+        let left_util = Url::from_file_path(left_path.join("util.sol")).expect("left util uri");
+        let right_main = Url::from_file_path(right_path.join("main.sol")).expect("right main uri");
+        let disk_source = "function value() returns (word) { return 1; }\n";
+        let unsaved_source = "function value() returns (word) { return 99; }\n";
 
         let mut world = WorldState::new();
         world.load_workspace_roots([
@@ -1164,14 +1164,15 @@ mod tests {
         let left_root = Url::from_directory_path(&left_path).expect("left root");
         let right_root = Url::from_directory_path(&right_path).expect("right root");
         let third_root = Url::from_directory_path(&third_path).expect("third root");
-        let left_main = Url::from_file_path(left_path.join("main.solc")).expect("left main");
-        let left_math = Url::from_file_path(left_path.join("math.solc")).expect("left math");
-        let right_math = Url::from_file_path(right_path.join("math.solc")).expect("right math");
-        let third_file = Url::from_file_path(third_path.join("third.solc")).expect("third file");
-        let main_source =
-            "import lib.math.{leftValue};\nfunction main() -> word { return leftValue(); }\n";
-        let left_source = "function leftValue() -> word { return 1; }\nexport { leftValue };\n";
-        let right_source = "function rightValue() -> word { return 2; }\nexport { rightValue };\n";
+        let left_main = Url::from_file_path(left_path.join("main.sol")).expect("left main");
+        let left_math = Url::from_file_path(left_path.join("math.sol")).expect("left math");
+        let right_math = Url::from_file_path(right_path.join("math.sol")).expect("right math");
+        let third_file = Url::from_file_path(third_path.join("third.sol")).expect("third file");
+        let main_source = "import {leftValue} from lib.math;\nfunction main() returns (word) { return leftValue(); }\n";
+        let left_source =
+            "function leftValue() returns (word) { return 1; }\nexport { leftValue };\n";
+        let right_source =
+            "function rightValue() returns (word) { return 2; }\nexport { rightValue };\n";
 
         let mut world = WorldState::new();
         world.load_workspace_roots([
@@ -1207,7 +1208,7 @@ mod tests {
                 third_root,
                 vec![(
                     third_file,
-                    "function third() -> word { return 3; }\n".to_owned(),
+                    "function third() returns (word) { return 3; }\n".to_owned(),
                 )],
             )],
         );
@@ -1240,13 +1241,13 @@ mod tests {
     fn file_uri_drive_letters_are_normalized_without_folding_path_case() {
         let root = Url::parse("file:///c:/CaseSensitive/Project").expect("root uri");
         let matching =
-            Url::parse("file:///C:/CaseSensitive/Project/main.solc").expect("matching uri");
+            Url::parse("file:///C:/CaseSensitive/Project/main.sol").expect("matching uri");
         let wrong_case =
-            Url::parse("file:///C:/casesensitive/Project/main.solc").expect("wrong-case uri");
+            Url::parse("file:///C:/casesensitive/Project/main.sol").expect("wrong-case uri");
 
         assert_eq!(
             workspace_relative_path(&root, &matching).as_deref(),
-            Some("main.solc")
+            Some("main.sol")
         );
         assert_eq!(workspace_relative_path(&root, &wrong_case), None);
     }
@@ -1256,18 +1257,18 @@ mod tests {
         let mut world = WorldState::new();
         let file = std::env::temp_dir()
             .join("solcore-lsp-inferred-root")
-            .join("main.solc");
+            .join("main.sol");
         let uri = Url::from_file_path(file).expect("real file uri");
 
         assert!(world.open_document(
             uri.clone(),
-            "function main() -> word { return 1; }\n".to_owned()
+            "function main() returns (word) { return 1; }\n".to_owned()
         ));
 
         assert!(world.has_workspace_root());
         assert_eq!(
             world.vfs_path_for_uri(&uri),
-            Some("/main/main.solc".to_owned())
+            Some("/main/main.sol".to_owned())
         );
     }
 
@@ -1277,14 +1278,14 @@ mod tests {
         let uri = Url::parse("untitled:Untitled-1").expect("untitled uri");
         assert!(world.open_document(
             uri.clone(),
-            "function main() -> word { return 1; }\n".to_owned()
+            "function main() returns (word) { return 1; }\n".to_owned()
         ));
         assert_eq!(
             world.vfs_path_for_uri(&uri),
-            Some("/main/__virtual__/0.solc".to_owned())
+            Some("/main/__virtual__/0.sol".to_owned())
         );
         assert_eq!(
-            world.client_uri_for_vfs_url("file:///main/__virtual__/0.solc"),
+            world.client_uri_for_vfs_url("file:///main/__virtual__/0.sol"),
             Some(uri)
         );
     }
@@ -1295,7 +1296,7 @@ mod tests {
         let uri = Url::parse("untitled:Untitled-1").expect("untitled uri");
         assert!(world.open_document(
             uri.clone(),
-            "function main() -> word { return 1; }\n".to_owned()
+            "function main() returns (word) { return 1; }\n".to_owned()
         ));
 
         world.close_document(&uri);
@@ -1308,8 +1309,8 @@ mod tests {
     #[test]
     fn unix_backslash_in_filename_does_not_become_a_path_separator() {
         assert_eq!(
-            relative_url_path("src/name\\part.solc"),
-            Some("src/name\\part.solc".to_owned())
+            relative_url_path("src/name\\part.sol"),
+            Some("src/name\\part.sol".to_owned())
         );
     }
 }

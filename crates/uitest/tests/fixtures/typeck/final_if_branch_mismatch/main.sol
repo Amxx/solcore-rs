@@ -1,0 +1,3 @@
+function f(x: bool) returns (word) {
+  if ( x ) { 1; } else { true; }
+}

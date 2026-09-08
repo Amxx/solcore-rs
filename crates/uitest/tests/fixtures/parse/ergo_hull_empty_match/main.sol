@@ -1,0 +1,12 @@
+enum B { A, C }
+
+function impossible(b: B) returns (word) {
+  match (b) {
+  }
+}
+
+contract T {
+  function main(x: word) public returns (word) {
+    return impossible(B.A);
+  }
+}

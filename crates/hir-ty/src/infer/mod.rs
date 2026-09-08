@@ -35,7 +35,7 @@ use tracing::field;
 use crate::{
     BinderEnv, BodyDesugarView, BodyPreTypeckDesugarPlan, BoolUnitSumView, BuiltinClassId,
     BuiltinTyCtor, ClassId, Db, LoweredFunction, Pred, PredKind, ProductShape, QualTy,
-    SourceOrigin, Ty, TyCtor, TyKind, TyScheme, TypeLowering, TypeLoweringDiagnostic,
+    SourceOrigin, Ty, TyCtor, TyKind, TyScheme, TypeLowering, TypeLoweringDiagnostic, UserTyCtor,
     UserTyCtorKind,
     alias::{AliasError, AliasNormalizer, AliasType, AliasTypeKind},
     builtin_scheme, canonical_goal_with_allowed, class_method_type_vars,

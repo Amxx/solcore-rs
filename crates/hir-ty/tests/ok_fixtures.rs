@@ -12,7 +12,7 @@ define_frontend_test_db!(TestDb, solcore_hir_ty);
 
 #[dir_test(
     dir: "$CARGO_MANIFEST_DIR/tests/fixtures/ok",
-    glob: "**/main.solc"
+    glob: "**/main.sol"
 )]
 fn hir_ty_ok_fixture_has_no_diagnostics(fixture: Fixture<&str>) {
     let case_dir = PathBuf::from(fixture.path())

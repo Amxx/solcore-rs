@@ -81,7 +81,7 @@ impl RawE2eConstructor {
     }
 }
 
-/// Loads `main.json` next to a `main.solc` fixture when it exists.
+/// Loads `main.json` next to a `main.sol` fixture when it exists.
 pub fn load_raw_e2e_vector(source_path: &Path) -> Result<Option<RawE2eVector>, E2eFailure> {
     let vector_path = source_path.with_extension("json");
     let source = match fs::read_to_string(&vector_path) {

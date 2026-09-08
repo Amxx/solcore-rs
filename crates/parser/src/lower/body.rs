@@ -20,15 +20,36 @@ use crate::{parse::parse_body_statements, types::*};
 const MAX_EXPRESSION_NESTING: usize = 32;
 
 fn apply_implicit_return(stmts: &mut Vec<ParsedStmt<'_>>) {
-    let [stmt] = stmts.as_mut_slice() else {
+    let Some(stmt) = stmts.last_mut() else {
         return;
     };
 
     let kind = std::mem::replace(&mut stmt.kind, ParsedStmtKind::Error);
     stmt.kind = match kind {
-        ParsedStmtKind::Expr(expr) => ParsedStmtKind::Return(Some(expr)),
+        ParsedStmtKind::Expr {
+            expr,
+            trailing_semi: false,
+        } => ParsedStmtKind::Return(Some(expr)),
         other => other,
     };
+}
+
+fn reject_unterminated_tail_expr(parsed: &mut ParseOutput<ParsedStmt<'_>>) {
+    let Some(ParsedStmt {
+        span,
+        kind: ParsedStmtKind::Expr {
+            trailing_semi: false,
+            ..
+        },
+    }) = parsed.output.last()
+    else {
+        return;
+    };
+
+    parsed.errors.push(ParsedError::new(
+        *span,
+        "expression statement requires trailing `;`",
+    ));
 }
 
 fn lower_parsed_lit(lit: ParsedLitKind<'_>) -> function::LitKind {
@@ -150,9 +171,6 @@ impl<'db, 'a> LoweringCtx<'db, 'a> {
             ParsedExprKind::Field { base, field } => {
                 self.lower_field_expr(anchor, base_start, *base, field, arenas)
             }
-            ParsedExprKind::TypeAnnot { expr, ty } => {
-                self.lower_type_annot_expr(anchor, base_start, *expr, ty, arenas)
-            }
             ParsedExprKind::UnaryOp { op, expr } => {
                 self.lower_unary_expr(anchor, base_start, op, *expr, arenas)
             }
@@ -242,19 +260,6 @@ impl<'db, 'a> LoweringCtx<'db, 'a> {
         function::ExprKind::Field { base, field }
     }
 
-    fn lower_type_annot_expr(
-        &mut self,
-        anchor: AnchorId<'db>,
-        base_start: usize,
-        expr: ParsedExpr<'_>,
-        ty: ParsedTy<'_>,
-        arenas: &mut BodyArenas<'db>,
-    ) -> function::ExprKind<'db> {
-        let expr = self.lower_expr(anchor, base_start, expr, arenas);
-        let ty = lower_type_ref(self.db, anchor, base_start, ty);
-        function::ExprKind::TypeAnnot { expr, ty }
-    }
-
     fn lower_unary_expr(
         &mut self,
         anchor: AnchorId<'db>,
@@ -327,7 +332,8 @@ impl<'db, 'a> LoweringCtx<'db, 'a> {
         );
         let body_anchor = AnchorId::def(self.db, body_def);
 
-        let parsed_body = parse_body_statements(self.source, body_span);
+        let mut parsed_body = parse_body_statements(self.source, body_span);
+        reject_unterminated_tail_expr(&mut parsed_body);
         self.parse_errors.extend(parsed_body.errors);
 
         let mut lambda_arenas = BodyArenas::new();
@@ -414,7 +420,7 @@ impl<'db, 'a> LoweringCtx<'db, 'a> {
             ParsedStmtKind::Return(expr) => function::StmtKind::Return(
                 expr.map(|expr| self.lower_expr(anchor, base_start, expr, arenas)),
             ),
-            ParsedStmtKind::Expr(expr) => {
+            ParsedStmtKind::Expr { expr, .. } => {
                 function::StmtKind::Expr(self.lower_expr(anchor, base_start, expr, arenas))
             }
             ParsedStmtKind::Assign { op, lhs, rhs } => function::StmtKind::Assign {
@@ -527,6 +533,9 @@ impl<'db, 'a> LoweringCtx<'db, 'a> {
         implicit_return: bool,
     ) -> Vec<hir::arena::Id<function::Stmt<'db>>> {
         let mut parsed = parse_body_statements(self.source, body_span);
+        if !implicit_return {
+            reject_unterminated_tail_expr(&mut parsed);
+        }
         self.parse_errors.extend(parsed.errors);
 
         if implicit_return {
@@ -563,7 +572,7 @@ fn drop_parsed_expr_iteratively(root: ParsedExpr<'_>) {
                 pending.extend(args);
             }
             ParsedExprKind::Field { base, .. } => pending.push(*base),
-            ParsedExprKind::TypeAnnot { expr, .. } | ParsedExprKind::UnaryOp { expr, .. } => {
+            ParsedExprKind::UnaryOp { expr, .. } => {
                 pending.push(*expr);
             }
             ParsedExprKind::If {

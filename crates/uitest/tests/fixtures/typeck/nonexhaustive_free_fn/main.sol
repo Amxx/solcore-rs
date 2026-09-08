@@ -1,0 +1,9 @@
+enum Flag { Off, On }
+
+function pick(x: Flag) returns (word) {
+  match (x) {
+case Flag.Off {
+return 0;
+}
+}
+}

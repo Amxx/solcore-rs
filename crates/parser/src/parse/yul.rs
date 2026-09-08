@@ -12,6 +12,9 @@ where
         select! {
             Token::YulIdent(name) => name,
             Token::Underscore => "_",
+            // `fallback` is reserved by the Core surface, not by Yul. Keep
+            // the two identifier grammars independent inside assembly.
+            Token::Fallback => "fallback",
         }
         .map_with(|name, e| (name, e.span())),
     ))

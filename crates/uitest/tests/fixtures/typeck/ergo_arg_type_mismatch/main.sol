@@ -1,0 +1,9 @@
+enum Color { Red, Green }
+
+function paint(name: word, c: Color) returns (Color) {
+  return c;
+}
+
+function go() returns (Color) {
+  return paint(1, true);
+}

@@ -1,0 +1,13 @@
+import * from std;
+import * from std.dispatch;
+
+contract Compose {
+  function id(x: word) returns (word) { return x; }
+
+  function idid(x: word) returns (word) { return id(id(x)); }
+
+  // #[() -> 42]
+  function run() public returns (uint256) {
+    return uint256(idid(42));
+  }
+}

@@ -1,0 +1,5 @@
+enum P<a> { Mk(a) }
+
+function f(x: P) returns (word) {
+  return 0;
+}

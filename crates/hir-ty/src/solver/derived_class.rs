@@ -109,7 +109,7 @@ pub(crate) fn class_derivation_diagnostics<'db>(
                 span,
                 ty,
                 class: class_name,
-                reason: "only single-parameter classes can be derived".to_owned(),
+                reason: "only single-parameter traits can be derived".to_owned(),
             });
             continue;
         }
@@ -118,7 +118,7 @@ pub(crate) fn class_derivation_diagnostics<'db>(
                 span,
                 ty,
                 class: class_name,
-                reason: "a contract-local data type cannot capture generic contract parameters"
+                reason: "a contract-local enum cannot capture generic contract parameters"
                     .to_owned(),
             });
         }

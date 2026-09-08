@@ -1,0 +1,13 @@
+enum Bool { True, False }
+
+trait Eq<a> {
+  function eq(x: a, y: a) returns (Bool) ;
+}
+
+contract Check {
+  function go(x: word) returns (Bool) {
+    return Eq.eq(x, x);
+  }
+
+  function main() {}
+}

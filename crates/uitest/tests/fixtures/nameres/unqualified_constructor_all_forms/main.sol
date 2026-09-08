@@ -1,0 +1,27 @@
+enum Option { None, Some(word) }
+enum flag { off, on }
+
+function exprCall(x: word) returns (Option) { return Some(x); }
+function exprBare(f: flag) returns (flag) { return on; }
+
+function patLower(f: flag) returns (word) {
+  match (f) {
+case off {
+return 0;
+}
+case on {
+return 1;
+}
+}
+}
+
+function patUpper(o: Option) returns (word) {
+  match (o) {
+case None {
+return 0;
+}
+default {
+return 1;
+}
+}
+}

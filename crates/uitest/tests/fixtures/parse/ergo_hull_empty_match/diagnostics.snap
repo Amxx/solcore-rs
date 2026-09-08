@@ -1,16 +1,14 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/parse/ergo_hull_empty_match/main.solc
+input_file: crates/uitest/tests/fixtures/parse/ergo_hull_empty_match/main.sol
 ---
-error[SC0001]: match statement requires at least one arm
- --> /main/main.solc:4:11
+error[SC0001]: match requires at least one `case` or `default` arm
+ --> /main/main.sol:4:3
   |
-3 |   function impossible(b : B) -> word {
-4 |     match b {
-  |  ___________^
+3 |   function impossible(b: B) returns (word) {
+4 | /   match (b) {
 5 | |   }
-  | |___^ empty match arm list
+  | |___^
 6 |   }
   |
-  = note: add a `| pattern =>` arm

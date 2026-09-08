@@ -1,0 +1,24 @@
+import * from std;
+import * from std.dispatch;
+
+contract Option {
+  enum Option<a> { None, Some(a) }
+
+  function just(x: word) returns (Option<word>) { return Option.Some(x); }
+
+  function maybe(n: word, o: Option<word>) returns (word) {
+    match (o) {
+case Option.None {
+return n;
+}
+case Option.Some(x) {
+return x;
+}
+}
+  }
+
+  // #[() -> 42]
+  function run() public returns (uint256) {
+    return uint256(maybe(0, Option.Some(42)));
+  }
+}

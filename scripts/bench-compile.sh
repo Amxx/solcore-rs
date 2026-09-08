@@ -41,10 +41,10 @@ case_names=(
   "multi-file"
 )
 case_files=(
-  "crates/parser/tests/fixtures/corpus/ok/test/examples/cases/SingleFun.solc"
-  "tests/e2e/022add/main.solc"
-  "tests/e2e/128minierc20/main.solc"
-  "tests/e2e/ltimp/main.solc"
+  "crates/parser/tests/fixtures/corpus/ok/test/examples/cases/SingleFun.sol"
+  "tests/e2e/022add/main.sol"
+  "tests/e2e/128minierc20/main.sol"
+  "tests/e2e/ltimp/main.sol"
 )
 stages=("frontend" "hull" "yul" "sonatina" "all")
 

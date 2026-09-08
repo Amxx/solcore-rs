@@ -1,0 +1,9 @@
+enum Pair { MkPair(word, word) }
+
+function first(p: MkPair) returns (word) {
+  match (p) {
+case Pair.MkPair(a, b) {
+return a;
+}
+}
+}

@@ -65,14 +65,61 @@ fn cli_reports_usage_errors_with_exit_code_2() {
 }
 
 #[test]
+fn cli_accepts_sol_input_and_rejects_other_source_extensions() {
+    let dir = temp_dir("source-extension");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let source = "function main() returns (word) { return 0; }\n";
+    let sol = dir.join("main.sol");
+    let solc = dir.join("main.solc");
+    let txt = dir.join("main.txt");
+    for input in [&sol, &solc, &txt] {
+        fs::write(input, source).expect("write source");
+    }
+
+    let accepted = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
+        .arg(&sol)
+        .output()
+        .expect("run driver with .sol input");
+    assert!(
+        accepted.status.success(),
+        ".sol input failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&accepted.stdout),
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+
+    for (option, input) in [(None, &solc), (Some("--file"), &txt)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_solcore-driver"));
+        if let Some(option) = option {
+            command.arg(option);
+        }
+        let rejected = command
+            .arg(input)
+            .output()
+            .expect("run driver with invalid source extension");
+        assert_eq!(rejected.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&rejected.stderr);
+        assert!(
+            stderr.contains("must use the `.sol` extension"),
+            "stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&input.display().to_string()),
+            "stderr:\n{stderr}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cli_trace_reports_pipeline_summaries_without_verbose_intern_events() {
     let dir = temp_dir("trace-pipeline");
     let output_dir = dir.join("artifacts");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     fs::write(
         &input,
-        "contract C { public function main() -> word { return 42; } }\n",
+        "contract C { function main() public returns (word) { return 42; } }\n",
     )
     .expect("write source");
 
@@ -117,7 +164,10 @@ fn cli_trace_reports_pipeline_summaries_without_verbose_intern_events() {
 
 #[test]
 fn cli_prints_typeck_mismatch_diagnostic() {
-    let stderr = driver_stderr("mismatch", "function main() -> word { return true; }\n");
+    let stderr = driver_stderr(
+        "mismatch",
+        "function main() returns (word) { return true; }\n",
+    );
 
     assert!(stderr.contains("error[SC0201]"), "stderr:\n{stderr}");
     assert_eq!(
@@ -126,7 +176,7 @@ fn cli_prints_typeck_mismatch_diagnostic() {
         "expected one SC0201 diagnostic:\n{stderr}"
     );
     assert!(
-        stderr.contains("1 | function main() -> word { return true; }"),
+        stderr.contains("1 | function main() returns (word) { return true; }"),
         "expected source line in stderr:\n{stderr}"
     );
     assert!(
@@ -139,8 +189,8 @@ fn cli_prints_typeck_mismatch_diagnostic() {
 fn cli_prints_short_diagnostics() {
     let dir = temp_dir("short-diagnostic");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
-    fs::write(&input, "function main() -> word { return true; }\n").expect("write source");
+    let input = dir.join("main.sol");
+    fs::write(&input, "function main() returns (word) { return true; }\n").expect("write source");
 
     let output = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
         .arg("--color=never")
@@ -154,7 +204,7 @@ fn cli_prints_short_diagnostics() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("main.solc:1:34: error[SC0201]: type mismatch: expected word, found bool"),
+        stderr.contains("main.sol:1:41: error[SC0201]: type mismatch: expected word, found bool"),
         "stderr:\n{stderr}"
     );
     assert!(
@@ -172,7 +222,7 @@ fn cli_reports_non_utf8_input_path_without_panic() {
     fs::create_dir_all(&dir).expect("create temp dir");
     let root = dir.clone();
     let mut raw = dir.into_os_string().into_vec();
-    raw.extend_from_slice(b"/bad-\xff.solc");
+    raw.extend_from_slice(b"/bad-\xff.sol");
     let input = OsString::from_vec(raw);
 
     let output = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
@@ -196,11 +246,11 @@ fn cli_reports_non_utf8_input_path_without_panic() {
 fn cli_reports_reachable_missing_external_lib_root() {
     let dir = temp_dir("missing-external-root");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     let missing = dir.join("missing-ext");
     fs::write(
         &input,
-        "import @pkg.util;\nfunction main() -> word { return 0; }\n",
+        "import @pkg.util;\nfunction main() returns (word) { return 0; }\n",
     )
     .expect("write source");
 
@@ -234,11 +284,11 @@ fn cli_reports_reachable_missing_external_lib_root() {
 fn cli_reports_unreadable_reachable_module_as_io_error() {
     let dir = temp_dir("invalid-utf8-module");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
-    let dependency = dir.join("util.solc");
+    let input = dir.join("main.sol");
+    let dependency = dir.join("util.sol");
     fs::write(
         &input,
-        "import util;\nfunction main() -> word { return 0; }\n",
+        "import util;\nfunction main() returns (word) { return 0; }\n",
     )
     .expect("write source");
     fs::write(&dependency, [0xff, 0xfe]).expect("write invalid UTF-8 dependency");
@@ -271,8 +321,8 @@ fn cli_reports_unreadable_reachable_module_as_io_error() {
 fn cli_accepts_warning_policy_and_diagnostic_rendering_flags() {
     let dir = temp_dir("warning-policy");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
-    fs::write(&input, "function main() -> word { return 0; }\n").expect("write source");
+    let input = dir.join("main.sol");
+    fs::write(&input, "function main() returns (word) { return 0; }\n").expect("write source");
 
     for policy in ["default", "always", "never", "deny"] {
         let output = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
@@ -322,15 +372,16 @@ fn cli_accepts_warning_policy_and_diagnostic_rendering_flags() {
 fn cli_warning_policy_default_prints_warnings() {
     let dir = temp_dir("warning-policy-output");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     fs::write(
         &input,
-        r#"data Flag = Off | On;
+        r#"enum Flag {Off , On}
 
-function pick(x : Flag) -> word {
-  match x {
-  | _ => return 0;
-  | Flag.Off => return 1;
+function pick(x : Flag) returns (word) {
+  match (x) {
+    case Flag.Off { return 0; }
+    case Flag.Off { return 1; }
+    default { return 0; }
   }
 }
 "#,
@@ -389,15 +440,15 @@ function pick(x : Flag) -> word {
 fn cli_prints_solver_diagnostic_with_obligation_span() {
     let stderr = driver_stderr(
         "solver",
-        r#"forall a . class a:C {}
-forall a . a:C => function use(x : a) -> word { return 0; }
-function main(x : word) -> word { return use(x); }
+        r#"trait C<a> {}
+function use<a>(x : a) returns (word) where a: C { return 0; }
+function main(x : word) returns (word) { return use(x); }
 "#,
     );
 
     assert!(stderr.contains("error[SC0207]"), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("3 | function main(x : word) -> word { return use(x); }"),
+        stderr.contains("3 | function main(x : word) returns (word) { return use(x); }"),
         "expected source line in stderr:\n{stderr}"
     );
     assert!(
@@ -407,23 +458,23 @@ function main(x : word) -> word { return use(x); }
 }
 
 #[test]
-fn cli_prints_instance_soundness_diagnostic_with_head_span() {
+fn cli_prints_impl_soundness_diagnostic_with_head_span() {
     let stderr = driver_stderr(
-        "instance-soundness",
-        r#"data Box(a) = Box(word);
-forall a b . class a:MyClass(b) {}
-forall a b . instance Box(a):MyClass(b) {}
+        "impl-soundness",
+        r#"enum Box<a> {Box(word)}
+trait MyClass<a,b> {}
+impl<a,b> MyClass<Box<a>,b> {}
 "#,
     );
 
     assert!(stderr.contains("error[SC0212]"), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("3 | forall a b . instance Box(a):MyClass(b) {}"),
-        "expected instance source line in stderr:\n{stderr}"
+        stderr.contains("3 | impl<a,b> MyClass<Box<a>,b> {}"),
+        "expected impl source line in stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("^^^^^^^^^^^^^^^^^ instance head does not determine these variables"),
-        "expected instance head caret label in stderr:\n{stderr}"
+        stderr.contains("^^^^^^^^^^^^^^^^^ impl head does not determine these variables"),
+        "expected impl head caret label in stderr:\n{stderr}"
     );
 }
 
@@ -433,14 +484,14 @@ fn cli_uses_root_override_for_main_library() {
     let nested = dir.join("nested");
     fs::create_dir_all(&nested).expect("create temp dirs");
     fs::write(
-        dir.join("lib.solc"),
-        "export { value };\nfunction value() -> word { return 5; }\n",
+        dir.join("lib.sol"),
+        "export { value };\nfunction value() returns (word) { return 5; }\n",
     )
     .expect("write lib");
-    let input = nested.join("main.solc");
+    let input = nested.join("main.sol");
     fs::write(
         &input,
-        "import lib.lib;\nfunction main() -> word { return lib.value(); }\n",
+        "import lib.lib;\nfunction main() returns (word) { return lib.value(); }\n",
     )
     .expect("write source");
 
@@ -469,7 +520,7 @@ fn cli_uses_explicit_std_root() {
     fs::create_dir_all(&std_root).expect("create std dir");
     fs::create_dir_all(&input_dir).expect("create input dir");
     write_fake_std(&std_root);
-    let input = input_dir.join("main.solc");
+    let input = input_dir.join("main.sol");
     write_fake_std_importer(&input);
 
     let output = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
@@ -494,9 +545,9 @@ fn cli_uses_explicit_std_root() {
 fn cli_rejects_missing_std_root_with_actionable_configuration_help() {
     let dir = temp_dir("missing-std-root");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     let missing = dir.join("missing-std");
-    fs::write(&input, "function main() -> word { return 0; }\n").expect("write source");
+    fs::write(&input, "function main() returns (word) { return 0; }\n").expect("write source");
 
     let output = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
         .arg("--std-root")
@@ -529,17 +580,17 @@ fn cli_normalizes_parent_components_before_deriving_the_entry_module() {
     let src = dir.join("src");
     fs::create_dir_all(&src).expect("create source directory");
     fs::write(
-        src.join("util.solc"),
-        "export { value }; function value() -> word { return 9; }\n",
+        src.join("util.sol"),
+        "export { value }; function value() returns (word) { return 9; }\n",
     )
     .expect("write utility module");
-    let input = src.join("main.solc");
+    let input = src.join("main.sol");
     fs::write(
         &input,
-        "import util; function main() -> word { return util.value(); }\n",
+        "import util; function main() returns (word) { return util.value(); }\n",
     )
     .expect("write source");
-    let spelled_with_parent = src.join("..").join("src").join("main.solc");
+    let spelled_with_parent = src.join("..").join("src").join("main.sol");
 
     let output = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
         .arg("--root")
@@ -566,7 +617,7 @@ fn copied_binary_resolves_std_next_to_current_exe() {
     let copied_driver = dir.join("solcore-driver");
     fs::copy(env!("CARGO_BIN_EXE_solcore-driver"), &copied_driver).expect("copy driver");
     write_fake_std(&dir.join("std"));
-    let input = input_dir.join("main.solc");
+    let input = input_dir.join("main.sol");
     write_fake_std_importer(&input);
 
     let output = Command::new(&copied_driver)
@@ -589,14 +640,14 @@ fn copied_binary_resolves_std_next_to_current_exe() {
 fn cli_emits_yul_to_stdout_and_hull_to_file() {
     let dir = temp_dir("emit-backends");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     let output_dir = dir.join("artifacts");
     let hull_output = output_dir.join("main.hull");
     fs::write(
         &input,
         r#"
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return 42;
   }
 }
@@ -648,10 +699,10 @@ contract C {
 fn cli_emits_sonatina_to_stdout_and_output_dir() {
     let dir = temp_dir("emit-sonatina");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     let output_dir = dir.join("artifacts");
     let sonatina_output = output_dir.join("main.sonatina");
-    fs::write(&input, "function main() -> word { return 42; }\n").expect("write source");
+    fs::write(&input, "function main() returns (word) { return 42; }\n").expect("write source");
 
     let stdout_output = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
         .arg("--emit-sonatina")
@@ -692,8 +743,8 @@ fn cli_emits_sonatina_to_stdout_and_output_dir() {
 fn cli_rejects_multiple_backend_stdout_targets() {
     let dir = temp_dir("multiple-backend-stdout");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
-    fs::write(&input, "function main() -> word { return 42; }\n").expect("write source");
+    let input = dir.join("main.sol");
+    fs::write(&input, "function main() returns (word) { return 42; }\n").expect("write source");
 
     for (first, second) in [
         ("--emit-hull", "--emit-yul"),
@@ -727,14 +778,14 @@ fn cli_rejects_multiple_backend_stdout_targets() {
 fn cli_emits_abi_to_output_dir() {
     let dir = temp_dir("emit-abi");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     let output_dir = dir.join("abi");
     let abi_output = output_dir.join("C.abi");
     fs::write(
         &input,
         r#"
 contract C {
-  public function main() -> word {
+  function main() public returns (word) {
     return 42;
   }
 }
@@ -770,14 +821,14 @@ fn cli_abi_ignores_reachable_external_library_contracts() {
     let output_dir = dir.join("abi");
     fs::create_dir_all(&external).expect("create external root");
     fs::write(
-        external.join("token.solc"),
-        "contract ExternalToken { public function main() -> word { return 7; } }\n",
+        external.join("token.sol"),
+        "contract ExternalToken { function main() public returns (word) { return 7; } }\n",
     )
     .expect("write external module");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     fs::write(
         &input,
-        "import @pkg.token; contract Local { public function main() -> word { return 1; } }\n",
+        "import @pkg.token; contract Local { function main() public returns (word) { return 1; } }\n",
     )
     .expect("write main module");
 
@@ -809,19 +860,19 @@ fn cli_abi_rejects_colliding_local_contract_filenames_before_writing() {
     let output_dir = dir.join("abi");
     fs::create_dir_all(&dir).expect("create temp dir");
     fs::write(
-        dir.join("a.solc"),
-        "contract Token { public function main() -> word { return 1; } }\n",
+        dir.join("a.sol"),
+        "contract Token { function main() public returns (word) { return 1; } }\n",
     )
     .expect("write first module");
     fs::write(
-        dir.join("b.solc"),
-        "contract Token { public function main() -> word { return 2; } }\n",
+        dir.join("b.sol"),
+        "contract Token { function main() public returns (word) { return 2; } }\n",
     )
     .expect("write second module");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     fs::write(
         &input,
-        "import a; import b; function main() -> word { return 0; }\n",
+        "import a; import b; function main() returns (word) { return 0; }\n",
     )
     .expect("write main module");
 
@@ -851,13 +902,13 @@ fn cli_abi_rejects_colliding_local_contract_filenames_before_writing() {
 fn cli_renders_backend_diagnostics_with_stable_codes() {
     let dir = temp_dir("backend-diagnostic");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     fs::write(
         &input,
         r#"
-import std.{string};
+import {string} from std;
 contract C {
-  public function main() -> string {
+  function main() public returns (string) {
     return "nope";
   }
 }
@@ -892,15 +943,15 @@ contract C {
 fn cli_partial_evaluation_fuel_is_configurable() {
     let dir = temp_dir("configurable-pe-fuel");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     fs::write(
         &input,
         r#"
-import std.{*};
-function g2() -> word { return 1; }
-function g1() -> word { return g2() + g2(); }
-function g0() -> word { return g1() + g1(); }
-contract C { function main() -> word { return g0(); } }
+import * from std;
+function g2() returns (word) { return 1; }
+function g1() returns (word) { return g2() + g2(); }
+function g0() returns (word) { return g1() + g1(); }
+contract C { function main() returns (word) { return g0(); } }
 "#,
     )
     .expect("write source");
@@ -949,16 +1000,16 @@ contract C { function main() -> word { return g0(); } }
 fn cli_emit_yul_requires_one_top_level_object_or_selection() {
     let dir = temp_dir("emit-yul-multi-object");
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     fs::write(
         &input,
         r#"
 contract A {
-  public function main() -> word { return 1; }
+  function main() public returns (word) { return 1; }
 }
 
 contract B {
-  public function main() -> word { return 2; }
+  function main() public returns (word) { return 2; }
 }
 "#,
     )
@@ -1005,7 +1056,7 @@ contract B {
 fn driver_stderr(label: &str, source: &str) -> String {
     let dir = temp_dir(label);
     fs::create_dir_all(&dir).expect("create temp dir");
-    let input = dir.join("main.solc");
+    let input = dir.join("main.sol");
     fs::write(&input, source).expect("write source");
 
     let output = Command::new(env!("CARGO_BIN_EXE_solcore-driver"))
@@ -1022,8 +1073,8 @@ fn driver_stderr(label: &str, source: &str) -> String {
 fn write_fake_std(std_root: &Path) {
     fs::create_dir_all(std_root).expect("create fake std root");
     fs::write(
-        std_root.join("std.solc"),
-        "export { solcoreTempStdValue };\nfunction solcoreTempStdValue() -> word { return 7; }\n",
+        std_root.join("std.sol"),
+        "export { solcoreTempStdValue };\nfunction solcoreTempStdValue() returns (word) { return 7; }\n",
     )
     .expect("write fake std");
 }
@@ -1031,7 +1082,7 @@ fn write_fake_std(std_root: &Path) {
 fn write_fake_std_importer(path: &Path) {
     fs::write(
         path,
-        "import std;\nfunction main() -> word { return std.solcoreTempStdValue(); }\n",
+        "import std;\nfunction main() returns (word) { return std.solcoreTempStdValue(); }\n",
     )
     .expect("write fake std importer");
 }

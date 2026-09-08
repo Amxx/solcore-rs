@@ -1,10 +1,10 @@
 ---
 source: crates/test-utils/src/lib.rs
 expression: rendered
-input_file: crates/uitest/tests/fixtures/comptime/ct_asm_ret/main.solc
+input_file: crates/uitest/tests/fixtures/comptime/ct_asm_ret/main.sol
 ---
 error[SC0409]: comptime evaluation failed: function annotated '-> comptime' returns a runtime expression
-  --> /main/main.solc:12:5
+  --> /main/main.sol:12:5
    |
 11 |     }
 12 |     return v;

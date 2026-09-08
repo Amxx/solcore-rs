@@ -62,7 +62,7 @@ impl<'db> InferCtx<'db> {
                 args,
                 expected.clone(),
             ),
-            ExprKind::Proxy { .. } => self.engine.fresh_var(),
+            ExprKind::Proxy { ty, .. } => self.infer_proxy_expr(*ty, expected.clone()),
             ExprKind::Lambda {
                 params,
                 ret,
@@ -224,6 +224,49 @@ impl<'db> InferCtx<'db> {
         }
 
         self.memory_dyn_array_ty(elem_ty).unwrap_or(InferTy::Error)
+    }
+
+    /// Gives `@T` the same `Proxy<T>` constructor selected by its call-site
+    /// context. A source tree can contain both the bundled std module and a
+    /// main-library mirror of it, so choosing an arbitrary canonical `Proxy`
+    /// definition would make otherwise identical types nominally distinct.
+    fn infer_proxy_expr(
+        &mut self,
+        ty: TypeRef<'db>,
+        expected: Option<InferTy<'db>>,
+    ) -> InferTy<'db> {
+        let inner = self.lower_type_ref(ty);
+        if let Some(expected) = expected {
+            let resolved = self.engine.resolve(expected.clone());
+            if let InferTy::Named { ctor, args } = &resolved
+                && args.len() == 1
+                && matches!(
+                    ctor,
+                    TyCtor::User(user)
+                        if user.def.name(self.db).as_deref() == Some("Proxy")
+                )
+            {
+                self.unify_span(ty.span(self.db), args[0].clone(), inner);
+                return resolved;
+            }
+        }
+
+        crate::support::canonical_std_adt_defs(self.db, "Proxy")
+            .into_iter()
+            .find(|def| {
+                self.entry_module.is_some_and(|entry| {
+                    crate::support::module_for_def_via_graph(self.db, entry, *def).is_some()
+                })
+            })
+            .or_else(|| crate::support::canonical_std_adt_def(self.db, "Proxy"))
+            .map(|def| InferTy::Named {
+                ctor: TyCtor::User(UserTyCtor {
+                    def,
+                    kind: UserTyCtorKind::Adt,
+                }),
+                args: vec![inner],
+            })
+            .unwrap_or_else(|| self.engine.fresh_var())
     }
 
     fn report_numeric_if_branch_mismatch(

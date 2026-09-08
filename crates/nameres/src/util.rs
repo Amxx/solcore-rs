@@ -194,13 +194,13 @@ pub(super) fn main_workspace_prefix(logical_path: &[String]) -> &[String] {
 /// Converts a logical module path into the conventional source file path.
 ///
 /// Each logical segment becomes a path component and the file extension is
-/// `.solc`.
+/// `.sol`.
 pub fn module_file_path(logical_path: &[String]) -> PathBuf {
     let mut path = PathBuf::new();
     for segment in logical_path {
         path.push(segment);
     }
-    path.set_extension("solc");
+    path.set_extension("sol");
     path
 }
 
@@ -288,7 +288,7 @@ fn virtual_module_id_for_source_file<'db>(
         _ => return None,
     };
     let last = logical_path.last_mut()?;
-    *last = last.strip_suffix(".solc")?.to_owned();
+    *last = last.strip_suffix(".sol")?.to_owned();
     if last.is_empty() {
         return None;
     }
@@ -505,7 +505,7 @@ fn namespace_name(namespace: Namespace) -> &'static str {
     match namespace {
         Namespace::Term => "term",
         Namespace::Type => "type",
-        Namespace::Class => "class",
+        Namespace::Class => "trait",
     }
 }
 
