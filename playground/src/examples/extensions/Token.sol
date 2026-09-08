@@ -1,30 +1,40 @@
 import * from std;
 import * from std.dispatch;
 import {sender} from context;
-import {balance, supply, move, mintTo} from erc20core;
-import {isPaused, setPaused, requireNotPaused} from pausable;
-import {setCap, requireUnderCap} from capped;
+import {Option} from option;
+import {Stacked} from hooks;
+import {balance, supply, apply} from erc20core;
+import {isPaused, setPaused, Pausable} from pausable;
+import {setCap, Capped} from capped;
 import {owner as storedOwner, initOwner, requireOwner, transferOwnership as setOwner} from ownable;
 
 // A token composed from self-contained feature modules. Each module owns
-// its own storage; the contract chooses which module functions reach the
-// ABI and calls the feature guards explicitly, in written order.
+// its own storage and ships a transfer hook; the contract routes every
+// balance change through one update function, where the hook chain is
+// declared once. Access control stays on the entry points that need it.
 contract Token {
     constructor() {
         initOwner(sender());
         setCap(uint256(1000000));
     }
 
+    // The single choke point: every balance change flows through here,
+    // and the ledger will not move balances without a hook chain.
+    function update(from: Option<address>, to: Option<address>, amount: uint256) {
+        apply(Stacked(Pausable, Capped), from, to, amount);
+    }
+
     function transfer(to: address, amount: uint256) public {
-        requireNotPaused();
-        move(sender(), to, amount);
+        update(Option.Some(sender()), Option.Some(to), amount);
     }
 
     function mint(to: address, amount: uint256) public {
         requireOwner();
-        requireNotPaused();
-        requireUnderCap(supply() + amount);
-        mintTo(to, amount);
+        update(Option.None, Option.Some(to), amount);
+    }
+
+    function burn(amount: uint256) public {
+        update(Option.Some(sender()), Option.None, amount);
     }
 
     function balanceOf(who: address) public returns (uint256) {

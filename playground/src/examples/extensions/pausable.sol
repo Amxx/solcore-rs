@@ -1,7 +1,9 @@
 import * from std;
 import {sload, sstore} from std.opcodes;
+import {Option} from option;
+import {TransferHook} from hooks;
 
-export { isPaused, setPaused, requireNotPaused };
+export { isPaused, setPaused, requireNotPaused, Pausable(*) };
 
 // Pause flag owned by this module at an ERC-7201 namespaced slot.
 
@@ -23,4 +25,13 @@ function setPaused(flag: bool) {
 
 function requireNotPaused() {
     require(!isPaused(), "paused");
+}
+
+// Transfer hook: no balance may change while paused.
+enum Pausable { Pausable }
+
+impl TransferHook<Pausable> {
+    function on(hook: Pausable, from: Option<address>, to: Option<address>, amount: uint256) {
+        requireNotPaused();
+    }
 }

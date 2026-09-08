@@ -19,6 +19,8 @@ import extensionsPausable from "./extensions/pausable.sol?raw";
 import extensionsCapped from "./extensions/capped.sol?raw";
 import extensionsContext from "./extensions/context.sol?raw";
 import extensionsOwnable from "./extensions/ownable.sol?raw";
+import extensionsHooks from "./extensions/hooks.sol?raw";
+import extensionsOption from "./extensions/option.sol?raw";
 import comptimeAnswer from "./comptime/Answer.sol?raw";
 
 export interface ExampleFile {
@@ -125,7 +127,7 @@ export const examples: PlaygroundExample[] = [
   {
     id: "extensions",
     name: "Extensions",
-    description: "A token composed from self-contained feature modules that own their storage at namespaced slots.",
+    description: "A token composed from feature modules: each owns its storage and ships a transfer hook, chained once in a single update function.",
     entry: "Token.sol",
     files: [
       { path: "Token.sol", content: extensionsToken },
@@ -133,6 +135,8 @@ export const examples: PlaygroundExample[] = [
       { path: "pausable.sol", content: extensionsPausable },
       { path: "capped.sol", content: extensionsCapped },
       { path: "ownable.sol", content: extensionsOwnable },
+      { path: "hooks.sol", content: extensionsHooks },
+      { path: "option.sol", content: extensionsOption },
       { path: "context.sol", content: extensionsContext },
     ],
   },
