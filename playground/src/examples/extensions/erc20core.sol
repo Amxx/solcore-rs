@@ -41,17 +41,17 @@ function apply<h>(hooksBefore: Option<h>, hooksAfter: Option<h>, from: Option<ad
         case Option.None {
             sstore(supplySlot(), Typedef.rep(supply() + amount));
         }
-        case Option.Some(src) {
-            require(balance(from) >= amount, "insufficient balance");
-            sstore(balanceSlot(from), Typedef.rep(balance(from) - amount));
+        case Option.Some(from_) {
+            require(balance(from_) >= amount, "insufficient balance");
+            sstore(balanceSlot(from_), Typedef.rep(balance(from_) - amount));
         }
     }
     match (to) {
         case Option.None {
             sstore(supplySlot(), Typedef.rep(supply() - amount));
         }
-        case Option.Some(dst) {
-            sstore(balanceSlot(to), Typedef.rep(balance(to) + amount));
+        case Option.Some(to_) {
+            sstore(balanceSlot(to_), Typedef.rep(balance(to_) + amount));
         }
     }
     match (hooksAfter) {
