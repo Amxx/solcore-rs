@@ -25,18 +25,13 @@ function balance(who: address) returns (uint256) {
     return uint256(sload(balanceSlot(who)));
 }
 
-// The only exported way to change balances: the hook chain runs before the
-// effects, so one cannot be invoked without the other. from = None mints,
-// to = None burns.
-function apply<h>(hooksBefore: Option<h>, hooksAfter: Option<h>, from: Option<address>, to: Option<address>, amount: uint256)
-    where h: TransferHook
+// The only exported way to change balances: the before and after hook
+// chains run around the effects, so none of them can be skipped. A side
+// with no hooks takes NoHook. from = None mints, to = None burns.
+function apply<b, a>(before: b, after: a, from: Option<address>, to: Option<address>, amount: uint256)
+    where b: TransferHook, a: TransferHook
 {
-    match (hooksBefore) {
-        case Option.Some(hooks) {
-            TransferHook.on(hooks, from, to, amount);
-        }
-        default {}
-    }
+    TransferHook.on(before, from, to, amount);
     match (from) {
         case Option.None {
             sstore(supplySlot(), Typedef.rep(supply() + amount));
@@ -54,10 +49,5 @@ function apply<h>(hooksBefore: Option<h>, hooksAfter: Option<h>, from: Option<ad
             sstore(balanceSlot(to_), Typedef.rep(balance(to_) + amount));
         }
     }
-    match (hooksAfter) {
-        case Option.Some(hooks) {
-            TransferHook.on(hooks, from, to, amount);
-        }
-        default {}
-    }
+    TransferHook.on(after, from, to, amount);
 }
