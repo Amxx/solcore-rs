@@ -21,7 +21,13 @@ contract Token {
     // The single choke point: every balance change flows through here,
     // and the ledger will not move balances without a hook chain.
     function update(from: Option<address>, to: Option<address>, amount: uint256) {
-        apply(Stacked(Pausable, Capped), from, to, amount);
+        apply(
+            Option.Some(Stacked(Pausable, Capped)),
+            Option.None,
+            from,
+            to,
+            amount
+        );
     }
 
     function transfer(to: address, amount: uint256) public {
